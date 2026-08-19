@@ -1,0 +1,45 @@
+{
+  "name": "ai-web-test-engine-web",
+  "description": "AI Web 测试执行引擎本地前端",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "eslint": "eslint --ext .ts,.tsx ./src",
+    "test": "vitest run --environment jsdom"
+  },
+  "dependencies": {
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-router-dom": "7.18.2"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "7.0.1",
+    "@testing-library/react": "16.3.2",
+    "@testing-library/user-event": "14.6.5",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "@typescript-eslint/parser": "7.18.0",
+    "@vitejs/plugin-react": "6.0.5",
+    "jsdom": "30.0.1",
+    "vite": "8.2.1",
+    "vitest": "4.1.11"
+  },
+  "nx": {
+    "targets": {
+      "build": {
+        "outputs": [
+          "{projectRoot}/dist"
+        ]
+      },
+      "eslint": {
+        "outputs": []
+      },
+      "test": {
+        "outputs": []
+      }
+    }
+  }
+}

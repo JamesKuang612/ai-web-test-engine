@@ -1,0 +1,134 @@
+:root {
+    color: #1d2433;
+    background: #f4f6f9;
+    font-family:
+        Inter, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    min-width: 320px;
+    min-height: 100vh;
+}
+
+a {
+    color: inherit;
+}
+
+button,
+input,
+textarea {
+    font: inherit;
+}
+
+.app-shell {
+    min-height: 100vh;
+}
+
+.app-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 64px;
+    padding: 0 32px;
+    border-bottom: 1px solid #dde2ea;
+    background: #ffffff;
+}
+
+.brand {
+    color: #101828;
+    font-size: 17px;
+    font-weight: 700;
+    text-decoration: none;
+}
+
+.app-header nav {
+    display: flex;
+    gap: 8px;
+}
+
+.app-header nav a {
+    padding: 8px 12px;
+    border-radius: 7px;
+    color: #667085;
+    text-decoration: none;
+}
+
+.app-header nav a.active {
+    color: #175cd3;
+    background: #eff8ff;
+}
+
+main {
+    padding: 48px 32px;
+}
+
+.page-panel {
+    width: min(760px, 100%);
+    margin: 0 auto;
+    padding: 40px;
+    border: 1px solid #e4e7ec;
+    border-radius: 16px;
+    background: #ffffff;
+    box-shadow: 0 12px 32px rgb(16 24 40 / 8%);
+}
+
+.page-panel h1 {
+    margin: 6px 0 16px;
+    font-size: 30px;
+}
+
+.page-panel p {
+    color: #667085;
+    line-height: 1.7;
+}
+
+.eyebrow {
+    margin: 0;
+    color: #175cd3;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.primary-link {
+    display: inline-flex;
+    margin-top: 16px;
+    padding: 10px 16px;
+    border-radius: 8px;
+    color: #ffffff;
+    background: #175cd3;
+    font-weight: 600;
+    text-decoration: none;
+}
+
+code {
+    padding: 2px 6px;
+    border-radius: 5px;
+    color: #344054;
+    background: #f2f4f7;
+}
+
+@media (max-width: 640px) {
+    .app-header {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 12px;
+        padding: 16px 20px;
+    }
+
+    main {
+        padding: 24px 16px;
+    }
+
+    .page-panel {
+        padding: 24px;
+    }
+}
