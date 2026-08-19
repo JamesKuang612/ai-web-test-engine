@@ -12,7 +12,8 @@ export type JsonValue =
 
 /** 一个本地运行证据的稳定引用，不暴露绝对文件路径。 */
 export interface EvidenceRef {
-    kind: 'dom' | 'model' | 'network' | 'screenshot' | 'trace';
+    kind: 'dom' | 'json' | 'model' | 'network' | 'screenshot' | 'trace';
     ref: string;
+    mediaType?: string;
     summary?: string;
 }

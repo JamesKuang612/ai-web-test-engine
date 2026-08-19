@@ -211,11 +211,15 @@
                 "kind": {
                     "enum": [
                         "dom",
+                        "json",
                         "model",
                         "network",
                         "screenshot",
                         "trace"
                     ],
+                    "type": "string"
+                },
+                "mediaType": {
                     "type": "string"
                 },
                 "ref": {
