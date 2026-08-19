@@ -56,16 +56,41 @@ describe('App routes', () => {
         )).not.toBeInTheDocument();
     });
 
-    it('renders the selected test in the editor route', () => {
+    it('renders the selected test in the Chinese editor workbench', () => {
         render(
-            <MemoryRouter initialEntries={['/tests/login-flow']}>
+            <MemoryRouter initialEntries={[
+                '/tests/login-and-open-workbench'
+            ]}>
                 <App />
             </MemoryRouter>
         );
 
-        expect(screen.getByRole('heading', {
-            name: '测试编辑与执行工作台'
-        })).toBeInTheDocument();
-        expect(screen.getByText('login-flow')).toBeInTheDocument();
+        expect(screen.getByText(
+            'login-and-open-workbench.test.yaml'
+        )).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: '运行' }))
+            .toBeInTheDocument();
+        expect(screen.getByRole('tab', { name: '上下文' }))
+            .toHaveAttribute('aria-selected', 'true');
+        expect(screen.getByLabelText('浏览器地址'))
+            .toHaveValue('https://test.jdydevelop.com/portal/signin');
+    });
+
+    it('supports adding a step and switching inspector tabs', async () => {
+        const user = userEvent.setup();
+        render(
+            <MemoryRouter initialEntries={['/tests/dashboard-navigation']}>
+                <App />
+            </MemoryRouter>
+        );
+
+        await user.click(screen.getByRole('button', { name: '添加步骤' }));
+        expect(screen.getByText('点击此处描述下一个测试步骤。'))
+            .toBeInTheDocument();
+
+        await user.click(screen.getByRole('tab', { name: '控制台' }));
+        expect(screen.getByText(
+            '运行测试后，页面日志会显示在这里。'
+        )).toBeInTheDocument();
     });
 });
