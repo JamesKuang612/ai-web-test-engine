@@ -1,6 +1,6 @@
 :root {
-    color: #1d2433;
-    background: #f4f6f9;
+    color: #202124;
+    background: #ffffff;
     font-family:
         Inter, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
     font-synthesis: none;
@@ -11,124 +11,596 @@
     box-sizing: border-box;
 }
 
+html {
+    min-width: 320px;
+    min-height: 100%;
+}
+
 body {
     margin: 0;
     min-width: 320px;
     min-height: 100vh;
+    background: #ffffff;
+}
+
+button,
+input,
+select,
+textarea {
+    font: inherit;
+}
+
+button,
+select {
+    cursor: pointer;
 }
 
 a {
     color: inherit;
 }
 
-button,
-input,
-textarea {
-    font: inherit;
-}
-
-.app-shell {
+.repository-shell {
+    display: grid;
+    grid-template-columns: 264px minmax(0, 1fr);
     min-height: 100vh;
 }
 
-.app-header {
+.repository-sidebar {
+    position: sticky;
+    top: 0;
+    display: flex;
+    justify-content: space-between;
+    flex-direction: column;
+    height: 100vh;
+    border-right: 1px solid #e3e5e8;
+    background: #fafafa;
+}
+
+.sidebar-main {
+    padding: 18px 14px;
+}
+
+.project-switcher {
+    display: grid;
+    align-items: center;
+    grid-template-columns: 28px minmax(0, 1fr) 18px;
+    gap: 9px;
+    width: 100%;
+    min-height: 42px;
+    padding: 4px 8px;
+    border: 0;
+    border-radius: 8px;
+    color: #17191c;
+    background: transparent;
+    text-align: left;
+}
+
+.project-switcher:hover,
+.sidebar-search-button:hover,
+.folder-navigation a:hover,
+.sidebar-footer button:hover {
+    background: #f0f1f2;
+}
+
+.project-mark {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
+    color: #ffffff;
+    background: #17191c;
+    font-size: 10px;
+    font-weight: 750;
+    letter-spacing: -0.02em;
+}
+
+.project-name {
+    overflow: hidden;
+    font-size: 14px;
+    font-weight: 680;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sidebar-search-button {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    margin-top: 12px;
+    padding: 9px 10px;
+    border: 0;
+    border-radius: 8px;
+    color: #313338;
+    background: transparent;
+    text-align: left;
+}
+
+.sidebar-search-button span {
+    flex: 1;
+}
+
+.sidebar-search-button kbd {
+    padding: 1px 5px;
+    border: 1px solid #dedfe2;
+    border-radius: 4px;
+    color: #8b8d92;
+    background: #ffffff;
+    font-family: inherit;
+    font-size: 10px;
+}
+
+.sidebar-search-field {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 5px 2px 0;
+    padding: 8px 9px;
+    border: 1px solid #cfd2d7;
+    border-radius: 7px;
+    color: #8b8d92;
+    background: #ffffff;
+    box-shadow: 0 0 0 3px rgb(23 92 211 / 7%);
+}
+
+.sidebar-search-field input {
+    width: 100%;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    outline: none;
+    color: #202124;
+    background: transparent;
+    font-size: 13px;
+}
+
+.sidebar-section-label {
+    margin: 30px 10px 10px;
+    color: #777a80;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.folder-navigation {
+    display: grid;
+    gap: 3px;
+}
+
+.folder-navigation a {
+    display: grid;
+    align-items: center;
+    grid-template-columns: 21px minmax(0, 1fr) 16px;
+    gap: 9px;
+    padding: 9px 10px;
+    border-radius: 7px;
+    color: #25272b;
+    font-size: 14px;
+    font-weight: 560;
+    text-decoration: none;
+}
+
+.folder-chevron {
+    color: #96999f;
+}
+
+.sidebar-footer {
+    padding: 12px 14px 18px;
+}
+
+.sidebar-footer button {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 7px;
+    color: #3e4147;
+    background: transparent;
+    text-align: left;
+}
+
+.sidebar-footer p {
+    margin: 16px 10px 0;
+    color: #92959b;
+    font-size: 11px;
+}
+
+.repository-main {
+    min-width: 0;
+    background: #ffffff;
+}
+
+.repository-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    min-height: 64px;
-    padding: 0 32px;
-    border-bottom: 1px solid #dde2ea;
-    background: #ffffff;
+    min-height: 92px;
+    padding: 18px 28px 18px 30px;
+    border-bottom: 1px solid #e5e7ea;
 }
 
-.brand {
-    color: #101828;
-    font-size: 17px;
-    font-weight: 700;
-    text-decoration: none;
+.page-kicker {
+    margin: 0 0 4px;
+    color: #91949a;
+    font-size: 11px;
+    font-weight: 650;
+    letter-spacing: 0.06em;
 }
 
-.app-header nav {
-    display: flex;
-    gap: 8px;
-}
-
-.app-header nav a {
-    padding: 8px 12px;
-    border-radius: 7px;
-    color: #667085;
-    text-decoration: none;
-}
-
-.app-header nav a.active {
-    color: #175cd3;
-    background: #eff8ff;
-}
-
-main {
-    padding: 48px 32px;
-}
-
-.page-panel {
-    width: min(760px, 100%);
-    margin: 0 auto;
-    padding: 40px;
-    border: 1px solid #e4e7ec;
-    border-radius: 16px;
-    background: #ffffff;
-    box-shadow: 0 12px 32px rgb(16 24 40 / 8%);
-}
-
-.page-panel h1 {
-    margin: 6px 0 16px;
-    font-size: 30px;
-}
-
-.page-panel p {
-    color: #667085;
-    line-height: 1.7;
-}
-
-.eyebrow {
+.repository-header h1 {
     margin: 0;
-    color: #175cd3;
-    font-size: 13px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    color: #1e2024;
+    font-size: 20px;
+    font-weight: 620;
+    letter-spacing: -0.02em;
 }
 
-.primary-link {
+.header-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.git-state {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 36px;
+    padding: 0 10px;
+    border: 1px solid #e0e2e5;
+    border-radius: 7px;
+    color: #5c6067;
+    background: #ffffff;
+    font-size: 12px;
+}
+
+.git-state i {
+    width: 1px;
+    height: 14px;
+    margin: 0 2px;
+    background: #e0e2e5;
+}
+
+.git-state svg:nth-of-type(2) {
+    color: #1b9a59;
+}
+
+.create-test-button {
     display: inline-flex;
-    margin-top: 16px;
-    padding: 10px 16px;
-    border-radius: 8px;
+    align-items: center;
+    gap: 7px;
+    height: 36px;
+    padding: 0 13px;
+    border-radius: 7px;
     color: #ffffff;
-    background: #175cd3;
-    font-weight: 600;
+    background: #181a1e;
+    font-size: 13px;
+    font-weight: 620;
     text-decoration: none;
+}
+
+.create-test-button:hover {
+    background: #303238;
+}
+
+.repository-content {
+    padding: 24px 28px 50px 30px;
+}
+
+.repository-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 44px;
+    margin-bottom: 12px;
+}
+
+.filter-select-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 34px;
+    padding: 0 7px;
+    border: 1px solid #dedfe2;
+    border-radius: 17px;
+    color: #32353a;
+    background: #ffffff;
+}
+
+.filter-select-wrap select {
+    padding: 0 20px 0 2px;
+    border: 0;
+    outline: none;
+    color: inherit;
+    background: transparent;
+    font-size: 12px;
+    font-weight: 560;
+}
+
+.toolbar-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #8b8e94;
+    font-size: 12px;
+}
+
+.toolbar-summary button {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    color: #6e7177;
+    background: transparent;
+}
+
+.toolbar-summary button:hover {
+    border-color: #e1e3e6;
+    background: #f8f8f9;
+}
+
+.repository-table-wrap {
+    overflow: hidden;
+    border: 1px solid #e1e3e6;
+    border-radius: 9px;
+    background: #ffffff;
+}
+
+.repository-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+}
+
+.repository-table th {
+    height: 44px;
+    padding: 0 12px;
+    border-bottom: 1px solid #e4e6e9;
+    color: #74777d;
+    background: #fcfcfc;
+    font-size: 11px;
+    font-weight: 580;
+    text-align: left;
+}
+
+.repository-table th:first-child {
+    width: auto;
+}
+
+.repository-table th:nth-child(2),
+.repository-table th:nth-child(3) {
+    width: 126px;
+}
+
+.repository-table th span,
+.repository-table th svg {
+    display: inline-block;
+    vertical-align: middle;
+}
+
+.repository-table th svg {
+    margin-left: 3px;
+    color: #9da0a5;
+}
+
+.repository-table td {
+    height: 66px;
+    padding: 11px 12px;
+    border-bottom: 1px solid #e7e8ea;
+    color: #5f6268;
+    vertical-align: middle;
+}
+
+.repository-table tr:last-child td {
+    border-bottom: 0;
+}
+
+.repository-table tbody tr {
+    scroll-margin-top: 12px;
+    transition: background-color 120ms ease;
+}
+
+.repository-table tbody tr:hover {
+    background: #fafbfc;
+}
+
+.entry-name-cell {
+    display: grid;
+    align-items: start;
+    grid-template-columns: 25px minmax(0, 1fr);
+    gap: 9px;
+}
+
+.entry-icon {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    margin-top: 1px;
+}
+
+.entry-icon.folder {
+    color: #73777d;
+}
+
+.entry-icon.test {
+    color: #1769e0;
+}
+
+.entry-name {
+    color: #27292e;
+    font-size: 13px;
+    font-weight: 590;
+    line-height: 22px;
+    text-decoration: none;
+}
+
+.entry-name:hover {
+    color: #155dc5;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.entry-name-cell p {
+    display: -webkit-box;
+    overflow: hidden;
+    margin: 2px 0 0;
+    color: #777a80;
+    font-size: 12px;
+    line-height: 18px;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+
+.time-value {
+    padding-bottom: 1px;
+    border-bottom: 1px dashed #c9cbd0;
+    color: #6f7278;
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+.empty-repository {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 7px;
+    min-height: 220px;
+    color: #898c92;
+}
+
+.empty-repository strong {
+    color: #3f4247;
+    font-size: 14px;
+}
+
+.empty-repository span {
+    font-size: 12px;
+}
+
+.editor-placeholder {
+    min-height: 100vh;
+    padding: 24px 28px;
+    background: #f7f8fa;
+}
+
+.editor-back-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: #60646b;
+    font-size: 13px;
+    text-decoration: none;
+}
+
+.editor-back-link svg {
+    transform: rotate(180deg);
+}
+
+.editor-placeholder section {
+    width: min(720px, 100%);
+    margin: 64px auto;
+    padding: 36px;
+    border: 1px solid #e1e3e6;
+    border-radius: 12px;
+    background: #ffffff;
+}
+
+.editor-placeholder section > p:first-child {
+    margin: 0 0 6px;
+    color: #777b82;
+    font-size: 12px;
+}
+
+.editor-placeholder h1 {
+    margin: 0 0 20px;
+    font-size: 26px;
+}
+
+.editor-placeholder section > p:last-child {
+    color: #70747b;
+    line-height: 1.7;
 }
 
 code {
     padding: 2px 6px;
-    border-radius: 5px;
+    border-radius: 4px;
     color: #344054;
-    background: #f2f4f7;
+    background: #f0f1f3;
 }
 
-@media (max-width: 640px) {
-    .app-header {
+@media (max-width: 980px) {
+    .repository-shell {
+        grid-template-columns: 220px minmax(0, 1fr);
+    }
+
+    .git-state span:last-child,
+    .git-state svg:nth-of-type(2),
+    .git-state i {
+        display: none;
+    }
+
+    .repository-table th:nth-child(2),
+    .repository-table td:nth-child(2) {
+        display: none;
+    }
+}
+
+@media (max-width: 720px) {
+    .repository-shell {
+        display: block;
+    }
+
+    .repository-sidebar {
+        position: static;
+        height: auto;
+        border-right: 0;
+        border-bottom: 1px solid #e3e5e8;
+    }
+
+    .sidebar-main {
+        padding: 10px 12px;
+    }
+
+    .sidebar-section-label,
+    .folder-navigation,
+    .sidebar-footer,
+    .sidebar-search-button kbd {
+        display: none;
+    }
+
+    .project-switcher {
+        width: auto;
+    }
+
+    .sidebar-search-button {
+        width: auto;
+        margin-top: 2px;
+    }
+
+    .repository-header {
         align-items: flex-start;
         flex-direction: column;
-        gap: 12px;
-        padding: 16px 20px;
+        gap: 14px;
+        padding: 18px;
     }
 
-    main {
-        padding: 24px 16px;
+    .header-actions {
+        justify-content: space-between;
+        width: 100%;
     }
 
-    .page-panel {
-        padding: 24px;
+    .repository-content {
+        padding: 16px 12px 32px;
+    }
+
+    .repository-table th:nth-child(3),
+    .repository-table td:nth-child(3) {
+        display: none;
     }
 }
