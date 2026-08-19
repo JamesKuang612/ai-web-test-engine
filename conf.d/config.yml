@@ -1,0 +1,37 @@
+server:
+  http:
+    port: 3000
+  session:
+    secret: '!passw0rd'
+    name: SID
+  cookie:
+    secret: '!passw0rd'
+    policy:
+      httpOnly: true
+      signed: true
+      secure: false
+storage: {}
+system:
+  timezone: UTC
+  log:
+    console:
+      enabled: true
+      level: info
+      colorize: true
+    file:
+      enabled: false
+      level: info
+      dir: ./log/
+      zip: true
+      rotate_days: 14
+  req_log:
+    enabled: true
+  trace: {}
+  monitor:
+    port: 3100
+  trusted_proxy: []
+components:
+  grpc: {}
+includes:
+  - ./conf.d/config.includes.yml
+

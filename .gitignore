@@ -1,0 +1,32 @@
+node_modules/
+package-lock.json
+
+## CI
+dist/
+log/
+lint/
+build/
+
+coverage/
+.nyc_output/
+
+*.tgz
+
+resources/*.json
+
+## IDE
+*.code-workspace
+.vscode/
+.idea/
+
+## OS
+.DS_Store
+
+
+.nx/cache
+.nx/workspace-data
+
+#
+config.schema.json
+
+/resources/*.schema.json
