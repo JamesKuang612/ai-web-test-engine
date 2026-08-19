@@ -39,7 +39,7 @@ export interface ISystemConf {
     // 日志
     readonly log: {
         readonly console?: IConsoleLogConf,
-        readonly file?: IFileLogConf,
+        readonly file?: IFileLogConf
     };
     readonly req_log: {
         readonly enabled: boolean

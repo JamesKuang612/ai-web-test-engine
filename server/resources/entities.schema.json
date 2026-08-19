@@ -1,0 +1,230 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+        "Config": {
+            "additionalProperties": false,
+            "description": "配置对象实体",
+            "properties": {
+                "components": {
+                    "$ref": "#/definitions/IComponentsConf"
+                },
+                "env": {
+                    "type": "string"
+                },
+                "hostname": {
+                    "type": "string"
+                },
+                "includes": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "server": {
+                    "$ref": "#/definitions/IServerConf"
+                },
+                "storage": {
+                    "$ref": "#/definitions/IStorageConf"
+                },
+                "system": {
+                    "$ref": "#/definitions/ISystemConf"
+                },
+                "version": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "components",
+                "env",
+                "hostname",
+                "server",
+                "storage",
+                "system",
+                "version"
+            ],
+            "type": "object"
+        },
+        "IComponentsConf": {
+            "additionalProperties": false,
+            "type": "object"
+        },
+        "IConsoleLogConf": {
+            "additionalProperties": false,
+            "properties": {
+                "colorize": {
+                    "description": "开启彩色输出",
+                    "type": "boolean"
+                },
+                "enabled": {
+                    "description": "是否启用日志记录",
+                    "type": "boolean"
+                },
+                "level": {
+                    "description": "日志级别",
+                    "type": "string"
+                }
+            },
+            "required": [
+                "enabled",
+                "level"
+            ],
+            "type": "object"
+        },
+        "IFileLogConf": {
+            "additionalProperties": false,
+            "properties": {
+                "dir": {
+                    "description": "日志输出目录",
+                    "type": "string"
+                },
+                "enabled": {
+                    "description": "是否启用日志记录",
+                    "type": "boolean"
+                },
+                "level": {
+                    "description": "日志级别",
+                    "type": "string"
+                },
+                "rotate_days": {
+                    "type": "number"
+                },
+                "zip": {
+                    "type": "boolean"
+                }
+            },
+            "required": [
+                "enabled",
+                "level"
+            ],
+            "type": "object"
+        },
+        "IServerConf": {
+            "additionalProperties": false,
+            "properties": {
+                "cookie": {
+                    "additionalProperties": false,
+                    "properties": {
+                        "policy": {
+                            "additionalProperties": false,
+                            "properties": {
+                                "domain": {
+                                    "type": "string"
+                                },
+                                "httpOnly": {
+                                    "type": "boolean"
+                                },
+                                "maxAge": {
+                                    "type": "number"
+                                },
+                                "secure": {
+                                    "type": "boolean"
+                                },
+                                "signed": {
+                                    "type": "boolean"
+                                }
+                            },
+                            "required": [
+                                "httpOnly",
+                                "secure",
+                                "signed"
+                            ],
+                            "type": "object"
+                        },
+                        "secret": {
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "policy",
+                        "secret"
+                    ],
+                    "type": "object"
+                },
+                "http": {
+                    "additionalProperties": false,
+                    "properties": {
+                        "port": {
+                            "type": "number"
+                        }
+                    },
+                    "required": [
+                        "port"
+                    ],
+                    "type": "object"
+                },
+                "session": {
+                    "additionalProperties": false,
+                    "properties": {
+                        "name": {
+                            "type": "string"
+                        },
+                        "secret": {
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "name",
+                        "secret"
+                    ],
+                    "type": "object"
+                }
+            },
+            "required": [
+                "cookie",
+                "http",
+                "session"
+            ],
+            "type": "object"
+        },
+        "IStorageConf": {
+            "additionalProperties": false,
+            "type": "object"
+        },
+        "ISystemConf": {
+            "additionalProperties": false,
+            "properties": {
+                "log": {
+                    "additionalProperties": false,
+                    "properties": {
+                        "console": {
+                            "$ref": "#/definitions/IConsoleLogConf"
+                        },
+                        "file": {
+                            "$ref": "#/definitions/IFileLogConf"
+                        }
+                    },
+                    "type": "object"
+                },
+                "req_log": {
+                    "additionalProperties": false,
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean"
+                        }
+                    },
+                    "required": [
+                        "enabled"
+                    ],
+                    "type": "object"
+                },
+                "timezone": {
+                    "type": "string"
+                },
+                "trusted_proxy": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                }
+            },
+            "required": [
+                "log",
+                "req_log",
+                "timezone",
+                "trusted_proxy"
+            ],
+            "type": "object"
+        }
+    }
+}
+

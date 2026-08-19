@@ -6,7 +6,6 @@ import cookieParser from 'cookie-parser';
 import {
     component,
     initRequestId,
-    injectComponent,
     RequestLogger,
     ContextProvider,
     BaseComponent,
