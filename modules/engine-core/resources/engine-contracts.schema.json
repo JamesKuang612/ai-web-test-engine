@@ -1,0 +1,1276 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+        "ActionCommand": {
+            "additionalProperties": false,
+            "description": "Planner 每轮只能返回的一个受控动作或终止建议。",
+            "properties": {
+                "expectedEffect": {
+                    "type": "string"
+                },
+                "reasonSummary": {
+                    "type": "string"
+                },
+                "risk": {
+                    "enum": [
+                        "read-only",
+                        "reversible",
+                        "side-effect"
+                    ],
+                    "type": "string"
+                },
+                "target": {
+                    "$ref": "#/definitions/TargetDescription"
+                },
+                "type": {
+                    "$ref": "#/definitions/ActionType"
+                },
+                "value": {
+                    "$ref": "#/definitions/ValueReference"
+                }
+            },
+            "required": [
+                "reasonSummary",
+                "risk",
+                "type"
+            ],
+            "type": "object"
+        },
+        "ActionResult": {
+            "additionalProperties": false,
+            "properties": {
+                "browserSignals": {
+                    "additionalProperties": false,
+                    "properties": {
+                        "dialogOpened": {
+                            "type": "boolean"
+                        },
+                        "downloadStarted": {
+                            "type": "boolean"
+                        },
+                        "newTabOpened": {
+                            "type": "boolean"
+                        },
+                        "urlChanged": {
+                            "type": "boolean"
+                        }
+                    },
+                    "required": [
+                        "dialogOpened",
+                        "downloadStarted",
+                        "newTabOpened",
+                        "urlChanged"
+                    ],
+                    "type": "object"
+                },
+                "error": {
+                    "additionalProperties": false,
+                    "properties": {
+                        "code": {
+                            "type": "string"
+                        },
+                        "message": {
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "code",
+                        "message"
+                    ],
+                    "type": "object"
+                },
+                "finishedAt": {
+                    "type": "string"
+                },
+                "startedAt": {
+                    "type": "string"
+                },
+                "status": {
+                    "enum": [
+                        "executed",
+                        "failed",
+                        "rejected",
+                        "timed-out"
+                    ],
+                    "type": "string"
+                }
+            },
+            "required": [
+                "browserSignals",
+                "finishedAt",
+                "startedAt",
+                "status"
+            ],
+            "type": "object"
+        },
+        "ActionType": {
+            "enum": [
+                "BACK",
+                "CHECK",
+                "CLICK",
+                "FAIL",
+                "FINISH",
+                "INSPECT",
+                "NAVIGATE",
+                "SCROLL",
+                "SELECT",
+                "TYPE",
+                "UNCERTAIN",
+                "WAIT"
+            ],
+            "type": "string"
+        },
+        "DataPolicy": {
+            "additionalProperties": false,
+            "properties": {
+                "generatedValues": {
+                    "$ref": "#/definitions/Record<string,string>"
+                }
+            },
+            "required": [
+                "generatedValues"
+            ],
+            "type": "object"
+        },
+        "EffectVerification": {
+            "additionalProperties": false,
+            "properties": {
+                "evidence": {
+                    "items": {
+                        "$ref": "#/definitions/EvidenceRef"
+                    },
+                    "type": "array"
+                },
+                "expectedEffect": {
+                    "type": "string"
+                },
+                "status": {
+                    "enum": [
+                        "confirmed",
+                        "contradicted",
+                        "not-observed",
+                        "uncertain"
+                    ],
+                    "type": "string"
+                },
+                "summary": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "evidence",
+                "expectedEffect",
+                "status",
+                "summary"
+            ],
+            "type": "object"
+        },
+        "EnvironmentDefinition": {
+            "additionalProperties": false,
+            "description": "可提交 Git 的非敏感环境定义及本机变量引用。",
+            "properties": {
+                "allowedHosts": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "baseUrl": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "schemaVersion": {
+                    "const": 1,
+                    "description": "当前核心领域数据契约的版本。",
+                    "type": "number"
+                },
+                "variables": {
+                    "$ref": "#/definitions/Record<string,EnvironmentVariable>"
+                }
+            },
+            "required": [
+                "allowedHosts",
+                "baseUrl",
+                "id",
+                "name",
+                "schemaVersion",
+                "variables"
+            ],
+            "type": "object"
+        },
+        "EvidenceRef": {
+            "additionalProperties": false,
+            "description": "一个本地运行证据的稳定引用，不暴露绝对文件路径。",
+            "properties": {
+                "kind": {
+                    "enum": [
+                        "dom",
+                        "model",
+                        "network",
+                        "screenshot",
+                        "trace"
+                    ],
+                    "type": "string"
+                },
+                "ref": {
+                    "type": "string"
+                },
+                "summary": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "kind",
+                "ref"
+            ],
+            "type": "object"
+        },
+        "EvidenceType": {
+            "enum": [
+                "dom",
+                "network",
+                "screenshot",
+                "url"
+            ],
+            "type": "string"
+        },
+        "FailureCategory": {
+            "enum": [
+                "ACTION_FAILED",
+                "ACTION_REJECTED",
+                "BROWSER_CRASHED",
+                "BUDGET_EXHAUSTED",
+                "EFFECT_CONTRADICTED",
+                "EFFECT_NOT_OBSERVED",
+                "INTENT_INCORRECT",
+                "LOCAL_STORAGE_ERROR",
+                "LOOP_DETECTED",
+                "MODEL_UNAVAILABLE",
+                "OBSERVATION_MISSING",
+                "OBSERVATION_TOO_NOISY",
+                "PAGE_TIMEOUT",
+                "PLANNER_INVALID_OUTPUT",
+                "PLANNER_WRONG_ACTION",
+                "REPLAY_FAILED",
+                "TARGET_AMBIGUOUS",
+                "TARGET_NOT_FOUND",
+                "TARGET_WRONG",
+                "TRACE_COMPILE_ERROR",
+                "VERDICT_INSUFFICIENT"
+            ],
+            "type": "string"
+        },
+        "FailureCriterion": {
+            "additionalProperties": false,
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "description",
+                "id"
+            ],
+            "type": "object"
+        },
+        "FailureRecord": {
+            "additionalProperties": false,
+            "properties": {
+                "category": {
+                    "$ref": "#/definitions/FailureCategory"
+                },
+                "evidence": {
+                    "items": {
+                        "$ref": "#/definitions/EvidenceRef"
+                    },
+                    "type": "array"
+                },
+                "lastObservationRef": {
+                    "type": "string"
+                },
+                "phase": {
+                    "$ref": "#/definitions/RunLifecycleState"
+                },
+                "recoverable": {
+                    "type": "boolean"
+                },
+                "relatedTraceSequence": {
+                    "type": "number"
+                },
+                "summary": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "category",
+                "evidence",
+                "phase",
+                "recoverable",
+                "summary"
+            ],
+            "type": "object"
+        },
+        "JsonValue": {
+            "anyOf": [
+                {
+                    "items": {
+                        "$ref": "#/definitions/JsonValue"
+                    },
+                    "type": "array"
+                },
+                {
+                    "additionalProperties": {
+                        "$ref": "#/definitions/JsonValue"
+                    },
+                    "type": "object"
+                },
+                {
+                    "type": [
+                        "string",
+                        "number",
+                        "boolean"
+                    ]
+                }
+            ],
+            "description": "可以安全写入 JSON、JSONL 和运行事件的数据。"
+        },
+        "LocatorHint": {
+            "additionalProperties": false,
+            "properties": {
+                "strategy": {
+                    "enum": [
+                        "css",
+                        "label",
+                        "placeholder",
+                        "role-name",
+                        "test-id",
+                        "text"
+                    ],
+                    "type": "string"
+                },
+                "value": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "strategy",
+                "value"
+            ],
+            "type": "object"
+        },
+        "ObservedElement": {
+            "additionalProperties": false,
+            "properties": {
+                "attributes": {
+                    "$ref": "#/definitions/Record<string,string>"
+                },
+                "boundingBox": {
+                    "additionalProperties": false,
+                    "properties": {
+                        "height": {
+                            "type": "number"
+                        },
+                        "width": {
+                            "type": "number"
+                        },
+                        "x": {
+                            "type": "number"
+                        },
+                        "y": {
+                            "type": "number"
+                        }
+                    },
+                    "required": [
+                        "height",
+                        "width",
+                        "x",
+                        "y"
+                    ],
+                    "type": "object"
+                },
+                "candidateId": {
+                    "type": "string"
+                },
+                "checked": {
+                    "type": "boolean"
+                },
+                "disabled": {
+                    "type": "boolean"
+                },
+                "inViewport": {
+                    "type": "boolean"
+                },
+                "label": {
+                    "type": "string"
+                },
+                "locatorHints": {
+                    "items": {
+                        "$ref": "#/definitions/LocatorHint"
+                    },
+                    "type": "array"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "nearbyText": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "placeholder": {
+                    "type": "string"
+                },
+                "role": {
+                    "type": "string"
+                },
+                "tag": {
+                    "type": "string"
+                },
+                "text": {
+                    "type": "string"
+                },
+                "valueState": {
+                    "enum": [
+                        "empty",
+                        "filled",
+                        "masked",
+                        "unknown"
+                    ],
+                    "type": "string"
+                },
+                "visible": {
+                    "type": "boolean"
+                }
+            },
+            "required": [
+                "attributes",
+                "candidateId",
+                "disabled",
+                "inViewport",
+                "locatorHints",
+                "nearbyText",
+                "tag",
+                "visible"
+            ],
+            "type": "object"
+        },
+        "PageNotice": {
+            "additionalProperties": false,
+            "properties": {
+                "level": {
+                    "enum": [
+                        "error",
+                        "info",
+                        "success",
+                        "warning"
+                    ],
+                    "type": "string"
+                },
+                "text": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "level",
+                "text"
+            ],
+            "type": "object"
+        },
+        "PageObservation": {
+            "additionalProperties": false,
+            "description": "经过压缩、脱敏后提供给 Planner 的页面快照。",
+            "properties": {
+                "capturedAt": {
+                    "type": "string"
+                },
+                "interactiveElements": {
+                    "items": {
+                        "$ref": "#/definitions/ObservedElement"
+                    },
+                    "type": "array"
+                },
+                "notices": {
+                    "items": {
+                        "$ref": "#/definitions/PageNotice"
+                    },
+                    "type": "array"
+                },
+                "observationId": {
+                    "type": "string"
+                },
+                "page": {
+                    "additionalProperties": false,
+                    "properties": {
+                        "loading": {
+                            "type": "boolean"
+                        },
+                        "title": {
+                            "type": "string"
+                        },
+                        "url": {
+                            "type": "string"
+                        },
+                        "viewport": {
+                            "additionalProperties": false,
+                            "properties": {
+                                "height": {
+                                    "type": "number"
+                                },
+                                "width": {
+                                    "type": "number"
+                                }
+                            },
+                            "required": [
+                                "height",
+                                "width"
+                            ],
+                            "type": "object"
+                        }
+                    },
+                    "required": [
+                        "loading",
+                        "title",
+                        "url",
+                        "viewport"
+                    ],
+                    "type": "object"
+                },
+                "schemaVersion": {
+                    "const": 1,
+                    "description": "当前核心领域数据契约的版本。",
+                    "type": "number"
+                },
+                "screenshotRef": {
+                    "type": "string"
+                },
+                "stateFingerprint": {
+                    "type": "string"
+                },
+                "tabs": {
+                    "items": {
+                        "$ref": "#/definitions/TabSummary"
+                    },
+                    "type": "array"
+                },
+                "truncated": {
+                    "type": "boolean"
+                },
+                "visibleText": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                }
+            },
+            "required": [
+                "capturedAt",
+                "interactiveElements",
+                "notices",
+                "observationId",
+                "page",
+                "schemaVersion",
+                "screenshotRef",
+                "stateFingerprint",
+                "tabs",
+                "truncated",
+                "visibleText"
+            ],
+            "type": "object"
+        },
+        "ProjectContext": {
+            "additionalProperties": false,
+            "description": "项目规则、业务术语和执行保护组成的运行上下文。",
+            "properties": {
+                "projectId": {
+                    "type": "string"
+                },
+                "rules": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "terms": {
+                    "$ref": "#/definitions/Record<string,string>"
+                }
+            },
+            "required": [
+                "projectId",
+                "rules",
+                "terms"
+            ],
+            "type": "object"
+        },
+        "Record<string,EnvironmentVariable>": {
+            "additionalProperties": false,
+            "type": "object"
+        },
+        "Record<string,JsonValue>": {
+            "additionalProperties": false,
+            "type": "object"
+        },
+        "Record<string,string>": {
+            "additionalProperties": false,
+            "type": "object"
+        },
+        "ResolvedTarget": {
+            "additionalProperties": false,
+            "properties": {
+                "actionable": {
+                    "type": "boolean"
+                },
+                "confidence": {
+                    "type": "number"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "evidence": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "locatorData": {
+                    "$ref": "#/definitions/Record<string,JsonValue>"
+                },
+                "strategy": {
+                    "enum": [
+                        "css",
+                        "label",
+                        "placeholder",
+                        "role-name",
+                        "test-id",
+                        "text",
+                        "vision"
+                    ],
+                    "type": "string"
+                },
+                "unique": {
+                    "type": "boolean"
+                }
+            },
+            "required": [
+                "actionable",
+                "confidence",
+                "description",
+                "evidence",
+                "locatorData",
+                "strategy",
+                "unique"
+            ],
+            "type": "object"
+        },
+        "RunBudgets": {
+            "additionalProperties": false,
+            "properties": {
+                "maxActions": {
+                    "type": "number"
+                },
+                "maxDurationMs": {
+                    "type": "number"
+                },
+                "maxModelCalls": {
+                    "type": "number"
+                },
+                "maxRepeatedStateActions": {
+                    "type": "number"
+                }
+            },
+            "required": [
+                "maxActions",
+                "maxDurationMs",
+                "maxModelCalls",
+                "maxRepeatedStateActions"
+            ],
+            "type": "object"
+        },
+        "RunEvent": {
+            "additionalProperties": false,
+            "description": "通过 SSE 推送给本地编辑器的追加式运行事件。",
+            "properties": {
+                "eventId": {
+                    "type": "string"
+                },
+                "payload": {
+                    "$ref": "#/definitions/Record<string,JsonValue>"
+                },
+                "runId": {
+                    "type": "string"
+                },
+                "schemaVersion": {
+                    "const": 1,
+                    "description": "当前核心领域数据契约的版本。",
+                    "type": "number"
+                },
+                "sequence": {
+                    "type": "number"
+                },
+                "timestamp": {
+                    "type": "string"
+                },
+                "type": {
+                    "$ref": "#/definitions/RunEventType"
+                }
+            },
+            "required": [
+                "eventId",
+                "payload",
+                "runId",
+                "schemaVersion",
+                "sequence",
+                "timestamp",
+                "type"
+            ],
+            "type": "object"
+        },
+        "RunEventType": {
+            "enum": [
+                "action.completed",
+                "action.failed",
+                "action.planned",
+                "action.started",
+                "browser.frame.updated",
+                "browser.started",
+                "effect.verified",
+                "observation.created",
+                "plan.compilation.completed",
+                "plan.compilation.started",
+                "replay.validation.completed",
+                "run.cancelled",
+                "run.completed",
+                "run.crashed",
+                "run.created",
+                "run.status.changed",
+                "target.resolved",
+                "trace.appended",
+                "verdict.completed"
+            ],
+            "type": "string"
+        },
+        "RunLifecycleState": {
+            "enum": [
+                "ACTING",
+                "BUILDING_INTENT",
+                "CANCELLED",
+                "COMPILING_PLAN",
+                "COMPLETED",
+                "CRASHED",
+                "DECIDING_VERDICT",
+                "OBSERVING",
+                "PLANNING",
+                "QUEUED",
+                "RECORDING",
+                "REPLAY_VALIDATING",
+                "RESOLVING",
+                "STARTING",
+                "VERIFYING"
+            ],
+            "type": "string"
+        },
+        "RunMetrics": {
+            "additionalProperties": false,
+            "properties": {
+                "actionCount": {
+                    "type": "number"
+                },
+                "durationMs": {
+                    "type": "number"
+                },
+                "modelCallCount": {
+                    "type": "number"
+                },
+                "repeatedStateActionCount": {
+                    "type": "number"
+                }
+            },
+            "required": [
+                "actionCount",
+                "durationMs",
+                "modelCallCount",
+                "repeatedStateActionCount"
+            ],
+            "type": "object"
+        },
+        "RunMode": {
+            "enum": [
+                "ai-explore",
+                "auto",
+                "structured-replay"
+            ],
+            "type": "string"
+        },
+        "RunResult": {
+            "additionalProperties": false,
+            "description": "一次运行的最终输出，生命周期和测试结果相互独立。",
+            "properties": {
+                "compiledPlanRef": {
+                    "type": "string"
+                },
+                "evidence": {
+                    "items": {
+                        "$ref": "#/definitions/EvidenceRef"
+                    },
+                    "type": "array"
+                },
+                "failure": {
+                    "$ref": "#/definitions/FailureRecord"
+                },
+                "lifecycle": {
+                    "enum": [
+                        "CANCELLED",
+                        "COMPLETED",
+                        "CRASHED"
+                    ],
+                    "type": "string"
+                },
+                "metrics": {
+                    "$ref": "#/definitions/RunMetrics"
+                },
+                "result": {
+                    "$ref": "#/definitions/TestResult"
+                },
+                "runId": {
+                    "type": "string"
+                },
+                "schemaVersion": {
+                    "const": 1,
+                    "description": "当前核心领域数据契约的版本。",
+                    "type": "number"
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "traceRef": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "evidence",
+                "lifecycle",
+                "metrics",
+                "runId",
+                "schemaVersion",
+                "summary",
+                "traceRef"
+            ],
+            "type": "object"
+        },
+        "RunSnapshot": {
+            "additionalProperties": false,
+            "description": "用于 API 查询和页面刷新恢复的当前 Run 快照。",
+            "properties": {
+                "createdAt": {
+                    "type": "string"
+                },
+                "failure": {
+                    "$ref": "#/definitions/FailureRecord"
+                },
+                "lifecycle": {
+                    "$ref": "#/definitions/RunLifecycleState"
+                },
+                "metadata": {
+                    "$ref": "#/definitions/Record<string,JsonValue>"
+                },
+                "result": {
+                    "$ref": "#/definitions/TestResult"
+                },
+                "runId": {
+                    "type": "string"
+                },
+                "schemaVersion": {
+                    "const": 1,
+                    "description": "当前核心领域数据契约的版本。",
+                    "type": "number"
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "testId": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "createdAt",
+                "lifecycle",
+                "metadata",
+                "runId",
+                "schemaVersion",
+                "summary",
+                "testId",
+                "updatedAt"
+            ],
+            "type": "object"
+        },
+        "StartRunInput": {
+            "additionalProperties": false,
+            "properties": {
+                "budgets": {
+                    "$ref": "#/definitions/RunBudgets"
+                },
+                "environment": {
+                    "$ref": "#/definitions/EnvironmentDefinition"
+                },
+                "mode": {
+                    "$ref": "#/definitions/RunMode"
+                },
+                "projectContext": {
+                    "$ref": "#/definitions/ProjectContext"
+                },
+                "test": {
+                    "$ref": "#/definitions/TestDefinition"
+                }
+            },
+            "required": [
+                "budgets",
+                "environment",
+                "mode",
+                "projectContext",
+                "test"
+            ],
+            "type": "object"
+        },
+        "SuccessCriterion": {
+            "additionalProperties": false,
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "preferredEvidence": {
+                    "items": {
+                        "$ref": "#/definitions/EvidenceType"
+                    },
+                    "type": "array"
+                },
+                "required": {
+                    "type": "boolean"
+                }
+            },
+            "required": [
+                "description",
+                "id",
+                "preferredEvidence",
+                "required"
+            ],
+            "type": "object"
+        },
+        "TabSummary": {
+            "additionalProperties": false,
+            "properties": {
+                "active": {
+                    "type": "boolean"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "url": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "active",
+                "title",
+                "url"
+            ],
+            "type": "object"
+        },
+        "TargetDescription": {
+            "additionalProperties": false,
+            "properties": {
+                "candidateId": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "description"
+            ],
+            "type": "object"
+        },
+        "TestDefinition": {
+            "additionalProperties": false,
+            "description": "用户通过 Git 维护的一条自然语言测试用例。",
+            "properties": {
+                "action": {
+                    "type": "string"
+                },
+                "environmentId": {
+                    "type": "string"
+                },
+                "execution": {
+                    "additionalProperties": false,
+                    "properties": {
+                        "planRef": {
+                            "type": "string"
+                        },
+                        "preferredMode": {
+                            "$ref": "#/definitions/RunMode"
+                        }
+                    },
+                    "type": "object"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "schemaVersion": {
+                    "const": 1,
+                    "description": "当前核心领域数据契约的版本。",
+                    "type": "number"
+                },
+                "startUrl": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "action",
+                "environmentId",
+                "id",
+                "name",
+                "schemaVersion"
+            ],
+            "type": "object"
+        },
+        "TestIntent": {
+            "additionalProperties": false,
+            "description": "从自然语言用例提取出的内部测试意图。",
+            "properties": {
+                "allowedHosts": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "constraints": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "dataPolicy": {
+                    "$ref": "#/definitions/DataPolicy"
+                },
+                "failureCriteria": {
+                    "items": {
+                        "$ref": "#/definitions/FailureCriterion"
+                    },
+                    "type": "array"
+                },
+                "objective": {
+                    "type": "string"
+                },
+                "preconditions": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "schemaVersion": {
+                    "const": 1,
+                    "description": "当前核心领域数据契约的版本。",
+                    "type": "number"
+                },
+                "successCriteria": {
+                    "items": {
+                        "$ref": "#/definitions/SuccessCriterion"
+                    },
+                    "type": "array"
+                }
+            },
+            "required": [
+                "allowedHosts",
+                "constraints",
+                "dataPolicy",
+                "failureCriteria",
+                "objective",
+                "preconditions",
+                "schemaVersion",
+                "successCriteria"
+            ],
+            "type": "object"
+        },
+        "TestResult": {
+            "enum": [
+                "FAIL",
+                "PASS",
+                "UNCERTAIN"
+            ],
+            "type": "string"
+        },
+        "TraceEvent": {
+            "additionalProperties": false,
+            "description": "追加写入 trace.jsonl 的单个真实动作记录。",
+            "properties": {
+                "actionResult": {
+                    "$ref": "#/definitions/ActionResult"
+                },
+                "afterObservationRef": {
+                    "type": "string"
+                },
+                "artifacts": {
+                    "items": {
+                        "$ref": "#/definitions/EvidenceRef"
+                    },
+                    "type": "array"
+                },
+                "beforeObservationRef": {
+                    "type": "string"
+                },
+                "command": {
+                    "$ref": "#/definitions/ActionCommand"
+                },
+                "effect": {
+                    "$ref": "#/definitions/EffectVerification"
+                },
+                "resolvedTarget": {
+                    "$ref": "#/definitions/ResolvedTarget"
+                },
+                "retryOf": {
+                    "type": "number"
+                },
+                "runId": {
+                    "type": "string"
+                },
+                "schemaVersion": {
+                    "const": 1,
+                    "description": "当前核心领域数据契约的版本。",
+                    "type": "number"
+                },
+                "sequence": {
+                    "type": "number"
+                }
+            },
+            "required": [
+                "artifacts",
+                "beforeObservationRef",
+                "command",
+                "runId",
+                "schemaVersion",
+                "sequence"
+            ],
+            "type": "object"
+        },
+        "ValueReference": {
+            "anyOf": [
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "key": {
+                            "type": "string"
+                        },
+                        "source": {
+                            "const": "environment",
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "key",
+                        "source"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "key": {
+                            "type": "string"
+                        },
+                        "source": {
+                            "const": "generated",
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "key",
+                        "source"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "source": {
+                            "const": "literal",
+                            "type": "string"
+                        },
+                        "value": {
+                            "$ref": "#/definitions/JsonValue"
+                        }
+                    },
+                    "required": [
+                        "source",
+                        "value"
+                    ],
+                    "type": "object"
+                }
+            ]
+        }
+    },
+    "description": "JSON Schema 生成入口。这里只聚合跨进程或持久化边界上的根对象。",
+    "properties": {
+        "actionCommand": {
+            "$ref": "#/definitions/ActionCommand"
+        },
+        "environmentDefinition": {
+            "$ref": "#/definitions/EnvironmentDefinition"
+        },
+        "pageObservation": {
+            "$ref": "#/definitions/PageObservation"
+        },
+        "runEvent": {
+            "$ref": "#/definitions/RunEvent"
+        },
+        "runResult": {
+            "$ref": "#/definitions/RunResult"
+        },
+        "runSnapshot": {
+            "$ref": "#/definitions/RunSnapshot"
+        },
+        "startRunInput": {
+            "$ref": "#/definitions/StartRunInput"
+        },
+        "testDefinition": {
+            "$ref": "#/definitions/TestDefinition"
+        },
+        "testIntent": {
+            "$ref": "#/definitions/TestIntent"
+        },
+        "traceEvent": {
+            "$ref": "#/definitions/TraceEvent"
+        }
+    },
+    "required": [
+        "actionCommand",
+        "environmentDefinition",
+        "pageObservation",
+        "runEvent",
+        "runResult",
+        "runSnapshot",
+        "startRunInput",
+        "testDefinition",
+        "testIntent",
+        "traceEvent"
+    ],
+    "type": "object"
+}
+

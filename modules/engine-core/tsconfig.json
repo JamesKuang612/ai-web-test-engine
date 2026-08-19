@@ -1,0 +1,10 @@
+{
+  "extends": "nstarter-tsconfig",
+  "compilerOptions": {
+    "declaration": true
+  },
+  "include": [
+    "${configDir}/src/**/*",
+    "${configDir}/test/**/*"
+  ]
+}

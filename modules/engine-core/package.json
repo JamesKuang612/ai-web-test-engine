@@ -1,0 +1,40 @@
+{
+  "name": "@ai-web-test-engine/core",
+  "description": "AI Web 测试执行引擎的纯 TypeScript 核心契约与状态机",
+  "private": true,
+  "version": "0.1.0",
+  "exports": {
+    ".": {
+      "default": "./dist/index.js",
+      "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
+      "require": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "rimraf dist && tsc --build tsconfig.build.json",
+    "eslint": "eslint --ext .js,.ts ./src ./test",
+    "eslint:html": "npm run eslint -- --output-file ./lint/eslint.html --format html",
+    "json-schema": "typescript-json-schema \"./src/contracts/schema.ts\" \"EngineContracts\" --out ./resources/engine-contracts.schema.json --required --excludePrivate --ignoreErrors --noExtraProps",
+    "test": "nyc --nycrc-path ../../.nycrc mocha --config ../../.mocharc.yml"
+  },
+  "nx": {
+    "targets": {
+      "build": {
+        "dependsOn": [
+          "json-schema"
+        ],
+        "outputs": [
+          "{projectRoot}/dist",
+          "{projectRoot}/resources/engine-contracts.schema.json"
+        ]
+      },
+      "json-schema": {
+        "cache": true,
+        "outputs": [
+          "{projectRoot}/resources/engine-contracts.schema.json"
+        ]
+      }
+    }
+  }
+}
