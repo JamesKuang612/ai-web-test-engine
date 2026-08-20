@@ -1,7 +1,7 @@
 import type { IRequestMetaFormatter } from 'nstarter-core';
 
 /**
- * 请求日志元数据处理方法
+ * 将请求 ID 补充到访问日志元数据中，便于串联同一次请求的日志。
  * @param req
  * @param res
  * @param meta

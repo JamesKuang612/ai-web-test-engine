@@ -5,10 +5,11 @@ import {
     pingService,
 } from '../services';
 
+/** 提供 NStarter 脚手架自带的页面渲染、错误处理和请求追踪示例。 */
 @controller()
 export class DemoController {
     /**
-     * 主页渲染 & 国际化示例
+     * 渲染脚手架欢迎页，展示基础页面响应方式。
      * @param req
      * @param res
      */
@@ -20,7 +21,7 @@ export class DemoController {
     };
 
     /**
-     * 错误页面示例
+     * 主动抛出业务错误，展示页面路由的统一错误处理。
      * @param req
      * @param res
      */
@@ -30,7 +31,7 @@ export class DemoController {
     };
 
     /**
-     * POST 请求 & 上下文跟踪示例
+     * 调用示例服务并返回当前请求的 traceId。
      * @param req
      * @param res
      */

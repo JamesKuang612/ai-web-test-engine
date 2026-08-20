@@ -3,6 +3,7 @@ import type {
     JsonValue,
 } from './common';
 
+/** 决定本次运行使用 AI 探索、自动选择还是结构化回放。 */
 export type RunMode =
     | 'ai-explore'
     | 'auto'
@@ -22,6 +23,7 @@ export interface TestDefinition {
     };
 }
 
+/** 环境变量既可以直接给出非敏感值，也可以引用只存在本机的值。 */
 export type EnvironmentVariable =
     | {
         source: 'literal',
@@ -50,6 +52,7 @@ export interface ProjectContext {
     terms: Record<string, string>;
 }
 
+/** 限制单次运行可消耗的时间、动作和模型调用，防止失控循环。 */
 export interface RunBudgets {
     maxActions: number;
     maxDurationMs: number;
@@ -57,6 +60,7 @@ export interface RunBudgets {
     maxRepeatedStateActions: number;
 }
 
+/** 启动执行引擎时所需的完整输入。 */
 export interface StartRunInput {
     test: TestDefinition;
     environment: EnvironmentDefinition;

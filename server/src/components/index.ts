@@ -14,5 +14,6 @@ beforeLoad();
 
 
 import { HttpServerComponent } from './http_server.component';
+// 将 HTTP 组件交给 NStarter 容器管理，并导出容器中的单例实例。
 registerComponent(HttpServerComponent);
 export const httpServerComponent = getComponent<HttpServerComponent>(HttpServerComponent);

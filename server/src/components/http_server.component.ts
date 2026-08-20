@@ -17,11 +17,14 @@ import { Consts } from '../constants';
 import { router, securityMiddlewares } from '../routes';
 import { ErrorHandler } from '../routes/middlewares/error.handler';
 
+/**
+ * 组装 Express 中间件、路由和底层 HTTP Server，并管理服务启停生命周期。
+ */
 @component()
 export class HttpServerComponent extends BaseComponent {
     private readonly _server: http.Server;
 
-
+    /** 创建 Express 应用并按固定顺序注册会话、解析、安全和日志中间件。 */
     constructor() {
         super();
 
@@ -77,6 +80,7 @@ export class HttpServerComponent extends BaseComponent {
         this._server.headersTimeout = 71_000;
     }
 
+    /** 返回 Express 可以信任的内置及用户配置代理地址。 */
     public get trustedProxy() {
         let trustedProxy = [
             'loopback',     // 127.0.0.1/8, ::1/128
@@ -89,10 +93,12 @@ export class HttpServerComponent extends BaseComponent {
         return trustedProxy;
     }
 
+    /** 暴露底层 HTTP Server，供框架组件和测试读取。 */
     public get server() {
         return this._server;
     }
 
+    /** 在配置端口上启动 HTTP Server，并记录监听或启动错误。 */
     public async init() {
         const port = config.server.http.port;
         this._server.listen(port);
@@ -105,6 +111,7 @@ export class HttpServerComponent extends BaseComponent {
         });
     }
 
+    /** 停止接收新请求、关闭空闲连接，并为异常连接保留强制超时兜底。 */
     public async shutdown() {
         Logger.info('web server shutting down.');
         await new Promise<void>((resolve) => {

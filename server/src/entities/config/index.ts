@@ -6,7 +6,7 @@ import { ISystemConf } from './system.config';
 import { IComponentsConf } from './components.config';
 
 /**
- * 配置对象实体
+ * 聚合服务启动所需的系统、HTTP、存储和组件配置。
  */
 export class Config extends AbstractEntity {
     env: string;

@@ -4,6 +4,7 @@ import type {
     JsonValue,
 } from './common';
 
+/** 一次测试运行从排队到结束所处的细粒度阶段。 */
 export type RunLifecycleState =
     | 'ACTING'
     | 'BUILDING_INTENT'
@@ -21,8 +22,10 @@ export type RunLifecycleState =
     | 'STARTING'
     | 'VERIFYING';
 
+/** 测试业务结论；它与运行是否正常结束是两个独立维度。 */
 export type TestResult = 'FAIL' | 'PASS' | 'UNCERTAIN';
 
+/** 对失败原因进行稳定分类，供重试、统计和界面展示使用。 */
 export type FailureCategory =
     | 'ACTION_FAILED'
     | 'ACTION_REJECTED'
@@ -46,6 +49,7 @@ export type FailureCategory =
     | 'TRACE_COMPILE_ERROR'
     | 'VERDICT_INSUFFICIENT';
 
+/** 保存一次失败的分类、发生阶段以及相关证据。 */
 export interface FailureRecord {
     category: FailureCategory;
     phase: RunLifecycleState;
@@ -56,6 +60,7 @@ export interface FailureRecord {
     evidence: EvidenceRef[];
 }
 
+/** 汇总一次运行的耗时、动作和模型调用等基本指标。 */
 export interface RunMetrics {
     actionCount: number;
     durationMs: number;

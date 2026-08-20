@@ -1,4 +1,4 @@
-
+/** HTTP、Session 和 Cookie 相关的服务端配置。 */
 export interface IServerConf {
     readonly http: {
         readonly port: number

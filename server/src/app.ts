@@ -6,11 +6,13 @@ import {
 } from './components';
 import { Consts } from './constants';
 
+// 兜底记录未捕获异常，防止进程静默退出而没有诊断信息。
 process.on('uncaughtException', (err) => {
     Logger.error(err);
     return false;
 });
 
+/** 负责按顺序启动服务组件，并在进程退出前完成资源清理。 */
 class AppManager {
 
     /**
@@ -40,6 +42,7 @@ class AppManager {
         });
     }
 
+    /** 初始化当前应用需要的全部组件并开始监听关闭事件。 */
     public static async start() {
 
         // 基础组件
@@ -55,5 +58,6 @@ class AppManager {
 }
 
 if (require.main === module) {
+    // 仅在该文件作为程序入口运行时启动服务，测试或导入时不会自动启动。
     AppManager.start().then();
 }

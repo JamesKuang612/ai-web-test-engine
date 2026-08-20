@@ -2,6 +2,7 @@ import { getSvc, registerSvc } from 'nstarter-core';
 import { PingService } from './ping.service';
 import { PongService } from './pong.service';
 
+// 先完成服务注册，再从 NStarter 容器中取得可复用的单例。
 registerSvc(PingService);
 registerSvc(PongService);
 

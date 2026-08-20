@@ -7,6 +7,7 @@ import type {
     JsonValue,
 } from './common';
 
+/** 将规划器的语义目标转换为浏览器可以实际操作的定位结果。 */
 export interface ResolvedTarget {
     description: string;
     strategy: 'css' | 'label' | 'placeholder' | 'role-name' | 'test-id' | 'text' | 'vision';
@@ -17,6 +18,7 @@ export interface ResolvedTarget {
     evidence: string[];
 }
 
+/** 浏览器执行一个动作后返回的状态、时间和页面信号。 */
 export interface ActionResult {
     status: 'executed' | 'failed' | 'rejected' | 'timed-out';
     startedAt: string;
@@ -33,6 +35,7 @@ export interface ActionResult {
     };
 }
 
+/** 比较动作前后页面，记录预期效果是否真实发生。 */
 export interface EffectVerification {
     status: 'confirmed' | 'contradicted' | 'not-observed' | 'uncertain';
     expectedEffect: string;

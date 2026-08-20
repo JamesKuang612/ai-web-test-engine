@@ -2,11 +2,13 @@ import type {
     EngineSchemaVersion,
 } from './common';
 
+/** 浏览器适配器为页面元素提供的候选定位方式。 */
 export interface LocatorHint {
     strategy: 'css' | 'label' | 'placeholder' | 'role-name' | 'test-id' | 'text';
     value: string;
 }
 
+/** 页面上一个可观察元素的语义、状态和位置摘要。 */
 export interface ObservedElement {
     candidateId: string;
     tag: string;
@@ -31,11 +33,13 @@ export interface ObservedElement {
     locatorHints: LocatorHint[];
 }
 
+/** 页面中可能影响测试判断的提示、成功或错误消息。 */
 export interface PageNotice {
     level: 'error' | 'info' | 'success' | 'warning';
     text: string;
 }
 
+/** 浏览器中一个标签页的最小状态摘要。 */
 export interface TabSummary {
     active: boolean;
     title: string;

@@ -39,6 +39,7 @@
         },
         "ActionResult": {
             "additionalProperties": false,
+            "description": "浏览器执行一个动作后返回的状态、时间和页面信号。",
             "properties": {
                 "browserSignals": {
                     "additionalProperties": false,
@@ -105,6 +106,7 @@
             "type": "object"
         },
         "ActionType": {
+            "description": "执行引擎允许规划器选择的有限动作集合。",
             "enum": [
                 "BACK",
                 "CHECK",
@@ -123,6 +125,7 @@
         },
         "DataPolicy": {
             "additionalProperties": false,
+            "description": "记录测试执行期间需要动态生成的数据规则。",
             "properties": {
                 "generatedValues": {
                     "$ref": "#/definitions/Record<string,string>"
@@ -135,6 +138,7 @@
         },
         "EffectVerification": {
             "additionalProperties": false,
+            "description": "比较动作前后页面，记录预期效果是否真实发生。",
             "properties": {
                 "evidence": {
                     "items": {
@@ -236,6 +240,7 @@
             "type": "object"
         },
         "EvidenceType": {
+            "description": "判断条件可依赖的页面证据类型。",
             "enum": [
                 "dom",
                 "network",
@@ -245,6 +250,7 @@
             "type": "string"
         },
         "FailureCategory": {
+            "description": "对失败原因进行稳定分类，供重试、统计和界面展示使用。",
             "enum": [
                 "ACTION_FAILED",
                 "ACTION_REJECTED",
@@ -272,6 +278,7 @@
         },
         "FailureCriterion": {
             "additionalProperties": false,
+            "description": "描述出现后即可判定测试失败的单项条件。",
             "properties": {
                 "description": {
                     "type": "string"
@@ -288,6 +295,7 @@
         },
         "FailureRecord": {
             "additionalProperties": false,
+            "description": "保存一次失败的分类、发生阶段以及相关证据。",
             "properties": {
                 "category": {
                     "$ref": "#/definitions/FailureCategory"
@@ -349,6 +357,7 @@
         },
         "LocatorHint": {
             "additionalProperties": false,
+            "description": "浏览器适配器为页面元素提供的候选定位方式。",
             "properties": {
                 "strategy": {
                     "enum": [
@@ -373,6 +382,7 @@
         },
         "ObservedElement": {
             "additionalProperties": false,
+            "description": "页面上一个可观察元素的语义、状态和位置摘要。",
             "properties": {
                 "attributes": {
                     "$ref": "#/definitions/Record<string,string>"
@@ -470,6 +480,7 @@
         },
         "PageNotice": {
             "additionalProperties": false,
+            "description": "页面中可能影响测试判断的提示、成功或错误消息。",
             "properties": {
                 "level": {
                     "enum": [
@@ -629,6 +640,7 @@
         },
         "ResolvedTarget": {
             "additionalProperties": false,
+            "description": "将规划器的语义目标转换为浏览器可以实际操作的定位结果。",
             "properties": {
                 "actionable": {
                     "type": "boolean"
@@ -677,6 +689,7 @@
         },
         "RunBudgets": {
             "additionalProperties": false,
+            "description": "限制单次运行可消耗的时间、动作和模型调用，防止失控循环。",
             "properties": {
                 "maxActions": {
                     "type": "number"
@@ -739,6 +752,7 @@
             "type": "object"
         },
         "RunEventType": {
+            "description": "本地编辑器可以订阅的标准运行事件类型。",
             "enum": [
                 "action.completed",
                 "action.failed",
@@ -763,6 +777,7 @@
             "type": "string"
         },
         "RunLifecycleState": {
+            "description": "一次测试运行从排队到结束所处的细粒度阶段。",
             "enum": [
                 "ACTING",
                 "BUILDING_INTENT",
@@ -784,6 +799,7 @@
         },
         "RunMetrics": {
             "additionalProperties": false,
+            "description": "汇总一次运行的耗时、动作和模型调用等基本指标。",
             "properties": {
                 "actionCount": {
                     "type": "number"
@@ -807,6 +823,7 @@
             "type": "object"
         },
         "RunMode": {
+            "description": "决定本次运行使用 AI 探索、自动选择还是结构化回放。",
             "enum": [
                 "ai-explore",
                 "auto",
@@ -921,6 +938,7 @@
         },
         "StartRunInput": {
             "additionalProperties": false,
+            "description": "启动执行引擎时所需的完整输入。",
             "properties": {
                 "budgets": {
                     "$ref": "#/definitions/RunBudgets"
@@ -949,6 +967,7 @@
         },
         "SuccessCriterion": {
             "additionalProperties": false,
+            "description": "描述测试通过时必须或建议满足的单项条件。",
             "properties": {
                 "description": {
                     "type": "string"
@@ -976,6 +995,7 @@
         },
         "TabSummary": {
             "additionalProperties": false,
+            "description": "浏览器中一个标签页的最小状态摘要。",
             "properties": {
                 "active": {
                     "type": "boolean"
@@ -996,6 +1016,7 @@
         },
         "TargetDescription": {
             "additionalProperties": false,
+            "description": "规划器对目标元素的语义描述，以及可选的候选元素提示。",
             "properties": {
                 "candidateId": {
                     "type": "string"
@@ -1114,6 +1135,7 @@
             "type": "object"
         },
         "TestResult": {
+            "description": "测试业务结论；它与运行是否正常结束是两个独立维度。",
             "enum": [
                 "FAIL",
                 "PASS",
@@ -1227,7 +1249,8 @@
                     ],
                     "type": "object"
                 }
-            ]
+            ],
+            "description": "动作参数的数据来源，敏感值可以只保存引用而不进入用例文件。"
         }
     },
     "description": "JSON Schema 生成入口。这里只聚合跨进程或持久化边界上的根对象。",

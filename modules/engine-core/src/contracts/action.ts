@@ -2,6 +2,7 @@ import type {
     JsonValue,
 } from './common';
 
+/** 执行引擎允许规划器选择的有限动作集合。 */
 export type ActionType =
     | 'BACK'
     | 'CHECK'
@@ -16,6 +17,7 @@ export type ActionType =
     | 'UNCERTAIN'
     | 'WAIT';
 
+/** 动作参数的数据来源，敏感值可以只保存引用而不进入用例文件。 */
 export type ValueReference =
     | {
         key: string,
@@ -30,6 +32,7 @@ export type ValueReference =
         value: JsonValue
     };
 
+/** 规划器对目标元素的语义描述，以及可选的候选元素提示。 */
 export interface TargetDescription {
     candidateId?: string;
     description: string;

@@ -10,7 +10,7 @@ const errors = {} as any as Record<keyof typeof ErrorTypes, ErrorBuilder>;
 
 type ErrorTypeKeys = keyof typeof ErrorTypes;
 
-// 注册错误生成工厂方法
+// 按错误类型动态创建统一工厂，业务代码无需直接构造 NsError。
 _.forEach(Object.keys(ErrorTypes) as ErrorTypeKeys[], (errorType: ErrorTypeKeys) => {
     errors[errorType] = (...args) => new NsError(ErrorTypes[errorType], ...args) as Error;
 });

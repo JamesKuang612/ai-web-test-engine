@@ -8,7 +8,7 @@ import { Consts } from '../../../constants';
 
 export const requestTransports: Transport[] = [];
 
-// 自定义日志格式化方法
+/** 将访问日志统一输出为带时间戳的单行文本。 */
 const formatter = format.printf((info) =>
     `${ info.timestamp } - [ACCESS] ${ info.message }`);
 
@@ -48,4 +48,3 @@ if (fileLogConf?.enabled) {
         )
     }));
 }
-

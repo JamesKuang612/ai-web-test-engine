@@ -3,6 +3,7 @@ import type {
     JsonValue,
 } from './common';
 
+/** 本地编辑器可以订阅的标准运行事件类型。 */
 export type RunEventType =
     | 'action.completed'
     | 'action.failed'
