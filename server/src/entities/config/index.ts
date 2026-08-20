@@ -3,7 +3,13 @@ import { AbstractEntity } from 'nstarter-entity';
 import { IServerConf } from './server.config';
 import { IStorageConf } from './storage.config';
 import { ISystemConf } from './system.config';
-import { IComponentsConf } from './components.config';
+import {
+    IComponentsConf,
+    ILlmComponentConf,
+    LlmApiProtocol,
+    LlmProvider,
+    LlmReasoningEffort,
+} from './components.config';
 
 /**
  * 聚合服务启动所需的系统、HTTP、存储和组件配置。
@@ -24,5 +30,9 @@ export {
     IServerConf,
     IStorageConf,
     ISystemConf,
-    IComponentsConf
+    IComponentsConf,
+    ILlmComponentConf,
+    LlmApiProtocol,
+    LlmProvider,
+    LlmReasoningEffort
 };

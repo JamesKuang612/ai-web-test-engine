@@ -22,6 +22,28 @@
   node ./server/dist/app.js --enable-source-maps
   ```
 
+### 模型 Provider
+
+开发环境默认使用本机 Codex 订阅调用 `gpt-5.6-sol`，不需要在项目中填写 API Key。首次使用前需要安装 Codex CLI 并完成登录：
+
+```bash
+codex login
+codex --version
+```
+
+默认配置位于 `conf.d/config.yml`：
+
+```yaml
+components:
+  llm:
+    provider: codex_app_server
+    model: gpt-5.6-sol
+    reasoning_effort: high
+    codex_command: codex
+```
+
+每次模型调用都会创建一个不持久化的临时线程，并禁用工具、网络和环境访问。需要回退到 FineOneAPI 时，将 `provider` 改为 `fine_one`；API Key 只写入本机的 `~/.ai-web-test-engine/config.yml`，不要提交到 Git。
+
 * 更新 JSON Schema
 
   当工程内的实体对象结构定义 (`src/entities`) 发生修改后，需要手动更新 json-schema 结构描述文文件。

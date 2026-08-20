@@ -10,3 +10,12 @@ Content-Type: application/json
 X-Request-ID: 1be6157f-481c-4b22-9d3d-f455bc333742
 
 {}
+
+###
+# 只调用真实模型生成 TestIntent，不启动浏览器。
+POST http://localhost:3000/api/debug/intent-preview
+Content-Type: application/json
+
+{
+  "action": "帮我登录"
+}

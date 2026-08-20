@@ -31,7 +31,13 @@ system:
     port: 3100
   trusted_proxy: []
 components:
-  grpc: {}
+  llm:
+    provider: codex_app_server
+    base_url: https://it-ai.fineres.com/v1
+    api_key: ''
+    model: gpt-5.6-sol
+    protocol: responses
+    reasoning_effort: high
+    codex_command: codex
 includes:
   - ./conf.d/config.includes.yml
-

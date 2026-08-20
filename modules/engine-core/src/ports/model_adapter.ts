@@ -30,6 +30,7 @@ export interface ModelAdapter {
     /** 请求模型生成符合指定运行时 Schema 的结构化结果。 */
     generateStructured: <T>(
         request: ModelRequest,
-        schema: RuntimeSchema<T>
+        schema: RuntimeSchema<T>,
+        signal: AbortSignal
     ) => Promise<ModelResult<T>>;
 }

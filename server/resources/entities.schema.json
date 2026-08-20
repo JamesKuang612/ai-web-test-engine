@@ -3,7 +3,7 @@
     "definitions": {
         "Config": {
             "additionalProperties": false,
-            "description": "配置对象实体",
+            "description": "聚合服务启动所需的系统、HTTP、存储和组件配置。",
             "properties": {
                 "components": {
                     "$ref": "#/definitions/IComponentsConf"
@@ -46,6 +46,15 @@
         },
         "IComponentsConf": {
             "additionalProperties": false,
+            "description": "当前服务需要的可选组件配置集合。",
+            "properties": {
+                "llm": {
+                    "$ref": "#/definitions/ILlmComponentConf"
+                }
+            },
+            "required": [
+                "llm"
+            ],
             "type": "object"
         },
         "IConsoleLogConf": {
@@ -86,9 +95,11 @@
                     "type": "string"
                 },
                 "rotate_days": {
+                    "description": "历史日志文件的保留天数。",
                     "type": "number"
                 },
                 "zip": {
+                    "description": "是否压缩历史日志文件。",
                     "type": "boolean"
                 }
             },
@@ -98,8 +109,46 @@
             ],
             "type": "object"
         },
+        "ILlmComponentConf": {
+            "additionalProperties": false,
+            "description": "模型 Provider 配置；FineOne API Key 只允许由本机私有配置覆盖。",
+            "properties": {
+                "api_key": {
+                    "type": "string"
+                },
+                "base_url": {
+                    "type": "string"
+                },
+                "codex_command": {
+                    "type": "string"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "protocol": {
+                    "$ref": "#/definitions/LlmApiProtocol"
+                },
+                "provider": {
+                    "$ref": "#/definitions/LlmProvider"
+                },
+                "reasoning_effort": {
+                    "$ref": "#/definitions/LlmReasoningEffort"
+                }
+            },
+            "required": [
+                "api_key",
+                "base_url",
+                "codex_command",
+                "model",
+                "protocol",
+                "provider",
+                "reasoning_effort"
+            ],
+            "type": "object"
+        },
         "IServerConf": {
             "additionalProperties": false,
+            "description": "HTTP、Session 和 Cookie 相关的服务端配置。",
             "properties": {
                 "cookie": {
                     "additionalProperties": false,
@@ -178,10 +227,12 @@
         },
         "IStorageConf": {
             "additionalProperties": false,
+            "description": "预留给数据库或本地文件存储的配置集合。",
             "type": "object"
         },
         "ISystemConf": {
             "additionalProperties": false,
+            "description": "服务运行环境、日志及可信代理等全局配置。",
             "properties": {
                 "log": {
                     "additionalProperties": false,
@@ -224,6 +275,34 @@
                 "trusted_proxy"
             ],
             "type": "object"
+        },
+        "LlmApiProtocol": {
+            "description": "FineOneAPI 当前支持的两种 OpenAI 兼容请求协议。",
+            "enum": [
+                "chat_completions",
+                "responses"
+            ],
+            "type": "string"
+        },
+        "LlmProvider": {
+            "description": "当前可选的本地订阅或 HTTP 模型 Provider。",
+            "enum": [
+                "codex_app_server",
+                "fine_one"
+            ],
+            "type": "string"
+        },
+        "LlmReasoningEffort": {
+            "description": "Codex 模型支持的推理强度。",
+            "enum": [
+                "high",
+                "low",
+                "max",
+                "medium",
+                "ultra",
+                "xhigh"
+            ],
+            "type": "string"
         }
     }
 }

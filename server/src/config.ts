@@ -13,8 +13,8 @@ const runEnv = RunEnv[process.env.NODE_ENV as keyof typeof RunEnv] || RunEnv.dev
 // 配置加载顺序体现优先级：本机私有配置优先于仓库内的默认配置。
 const loader = new ConfigLoader(Config, {
     files: [
-        // 加载本地可选配置文件 (最高优先级)
-        path.join(os.homedir(), '.ns-app/config'),
+        // 使用项目专属目录加载本机私有配置，避免和其他 NStarter 应用串配置。
+        path.join(os.homedir(), '.ai-web-test-engine/config'),
         // 加载配置文件
         './conf.d/config',
         '../conf.d/config'

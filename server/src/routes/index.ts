@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { ErrorHandler } from './middlewares/error.handler';
 import {
     demoController,
+    intentPreviewController,
 } from '../controllers';
 
 export { securityMiddlewares } from './middlewares/security.handler';
@@ -10,6 +11,10 @@ export { securityMiddlewares } from './middlewares/security.handler';
 export const requestRouter = Router();
 
 requestRouter.post('/ping', demoController.doPing);
+requestRouter.post(
+    '/api/debug/intent-preview',
+    intentPreviewController.preview
+);
 requestRouter.use(ErrorHandler.requestErrorHandler);
 
 /** 承载服务端页面路由，并使用页面错误处理器收尾。 */

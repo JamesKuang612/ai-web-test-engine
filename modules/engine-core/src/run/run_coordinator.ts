@@ -1,12 +1,17 @@
 import { randomUUID } from 'node:crypto';
 
 import type {
+    JsonValue,
     RunEvent,
     RunLifecycleState,
     RunResult,
     RunSnapshot,
     StartRunInput,
+    TestIntent,
 } from '../contracts';
+import type {
+    IntentBuilder,
+} from '../intent';
 import type {
     ArtifactStore,
     RunEventPublisher,
@@ -23,10 +28,11 @@ import {
  * 具体的模型推理和浏览器执行会在后续阶段接入这里。
  */
 export class RunCoordinator implements ExecutionEngine {
-    /** 注入运行产物存储和事件发布能力，使核心流程不依赖具体基础设施。 */
+    /** 注入运行产物存储、事件发布和意图构建能力。 */
     constructor(
         private readonly artifactStore: ArtifactStore,
-        private readonly eventPublisher: RunEventPublisher
+        private readonly eventPublisher: RunEventPublisher,
+        private readonly intentBuilder: IntentBuilder
     ) {}
 
     /** 接收完整的运行输入，创建一次新的 Run 并启动它的执行流程。 */
@@ -37,6 +43,7 @@ export class RunCoordinator implements ExecutionEngine {
         const runId = randomUUID();
         const lifecycle = new RunLifecycle();
         const now = new Date().toISOString();
+        let eventSequence = 0;
 
         let snapshot: RunSnapshot = {
             schemaVersion: 1,
@@ -54,7 +61,7 @@ export class RunCoordinator implements ExecutionEngine {
 
         await this.artifactStore.createRun(snapshot);
 
-        await this.publishEvent(runId, 1, 'run.created', {
+        await this.publishEvent(runId, ++eventSequence, 'run.created', {
             testId: input.test.id,
         });
 
@@ -65,11 +72,49 @@ export class RunCoordinator implements ExecutionEngine {
             snapshot,
             lifecycle,
             'STARTING',
-            '正在启动测试'
+            '正在启动测试',
+            ++eventSequence
         );
 
-        // 下一步从这里进入 BUILDING_INTENT，
-        // 再逐渐调用模型和浏览器。
+        signal.throwIfAborted();
+
+        snapshot = await this.changeState(
+            snapshot,
+            lifecycle,
+            'BUILDING_INTENT',
+            '正在构建测试意图',
+            ++eventSequence
+        );
+
+        const intent = await this.intentBuilder.build(
+            {
+                test: input.test,
+                environment: input.environment,
+                projectContext: input.projectContext
+            },
+            signal
+        );
+
+        signal.throwIfAborted();
+
+        const intentReference = await this.artifactStore.saveJson(
+            runId,
+            'intent',
+            toTestIntentJson(intent)
+        );
+
+        snapshot = {
+            ...snapshot,
+            updatedAt: new Date().toISOString(),
+            summary: '测试意图构建完成',
+            metadata: {
+                ...snapshot.metadata,
+                intentRef: intentReference.ref
+            }
+        };
+        await this.artifactStore.updateRun(snapshot);
+
+        // 下一步从这里进入浏览器启动和页面观察流程。
         throw new Error('核心执行流程尚未实现');
     }
 
@@ -78,7 +123,8 @@ export class RunCoordinator implements ExecutionEngine {
         snapshot: RunSnapshot,
         lifecycle: RunLifecycle,
         next: RunLifecycleState,
-        summary: string
+        summary: string,
+        eventSequence: number
     ): Promise<RunSnapshot> {
         lifecycle.transition(next);
 
@@ -91,10 +137,14 @@ export class RunCoordinator implements ExecutionEngine {
 
         await this.artifactStore.updateRun(updatedSnapshot);
 
-        await this.publishEvent(snapshot.runId, 2, 'run.status.changed', {
+        await this.publishEvent(
+            snapshot.runId,
+            eventSequence,
+            'run.status.changed', {
             lifecycle: updatedSnapshot.lifecycle,
             summary,
-        });
+            }
+        );
 
         return updatedSnapshot;
     }
@@ -116,4 +166,30 @@ export class RunCoordinator implements ExecutionEngine {
             payload,
         });
     }
+}
+
+/** 将 TestIntent 显式转换为可以安全持久化的 JSON 数据。 */
+function toTestIntentJson(intent: TestIntent): JsonValue {
+    return {
+        schemaVersion: intent.schemaVersion,
+        objective: intent.objective,
+        preconditions: [...intent.preconditions],
+        successCriteria: intent.successCriteria.map((criterion) => ({
+            id: criterion.id,
+            description: criterion.description,
+            preferredEvidence: [...criterion.preferredEvidence],
+            required: criterion.required
+        })),
+        failureCriteria: intent.failureCriteria.map((criterion) => ({
+            id: criterion.id,
+            description: criterion.description
+        })),
+        constraints: [...intent.constraints],
+        allowedHosts: [...intent.allowedHosts],
+        dataPolicy: {
+            generatedValues: {
+                ...intent.dataPolicy.generatedValues
+            }
+        }
+    };
 }
