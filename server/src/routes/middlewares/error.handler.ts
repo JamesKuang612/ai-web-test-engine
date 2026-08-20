@@ -2,20 +2,8 @@ import type { ErrorRequestHandler } from 'express';
 import httpStatus from 'http-status';
 import { Logger } from 'nstarter-core';
 
-/** 将页面、接口和全局异常转换为各自约定的 HTTP 响应。 */
+/** 将接口和全局异常转换为约定的 HTTP 响应。 */
 export class ErrorHandler {
-    /** 处理页面路由异常，业务错误渲染错误页，未知错误只返回状态码。 */
-    public static viewErrorHandler: ErrorRequestHandler = ((err, req, res, next) => {
-        if (err && !err.isNsError) {
-            Logger.error(err);
-            return res.status(httpStatus.BAD_REQUEST).end();
-        }
-        return res.status(httpStatus.BAD_REQUEST).render('error', {
-            title: err.message,
-            error: err
-        });
-    });
-
     /** 处理接口路由异常，并以 JSON 格式返回可公开的错误信息。 */
     public static requestErrorHandler: ErrorRequestHandler = ((err, req, res, next) => {
         if (err && !err.isNsError) {

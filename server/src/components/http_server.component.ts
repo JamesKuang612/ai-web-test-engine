@@ -31,13 +31,6 @@ export class HttpServerComponent extends BaseComponent {
         const app = express();
         app.set('trust proxy', this.trustedProxy);
 
-        // view engine setup
-        app.set('views', './web/views');
-        app.set('view engine', 'pug');
-        app.enable('view cache');
-        // static file path
-        app.use(express.static('./web/public'));
-
         // session store
         app.use(session({
             secret: config.server.session.secret,

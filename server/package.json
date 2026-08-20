@@ -2,6 +2,9 @@
   "name": "ns-app-server",
   "description": "",
   "private": true,
+  "dependencies": {
+    "@ai-web-test-engine/core": "0.1.0"
+  },
   "scripts": {
     "build": "rimraf dist && tsc --build tsconfig.build.json",
     "build:watch": "tsc --build tsconfig.build.json --watch",

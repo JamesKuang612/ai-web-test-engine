@@ -1,15 +1,10 @@
-import i18next from 'i18next';
+export {};
 
 declare global {
     namespace Express {
+        /** NStarter 请求 ID 中间件写入的追踪字段。 */
         interface Request {
-            _locale: string,
-            i18n: {
-                t: i18next.TFunction
-            },
             requestId: string;
-            getLocale(): string,
-            setLocale(locale: string): void
         }
     }
 }
