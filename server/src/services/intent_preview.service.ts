@@ -3,7 +3,6 @@ import {
     testIntentSchema,
 } from '@ai-web-test-engine/core';
 import type {
-    BuildIntentInput,
     IntentBuilder,
     TestIntent,
 } from '@ai-web-test-engine/core';
@@ -13,6 +12,7 @@ import {
     FineOneModelAdapter,
 } from '../adapters/model';
 import { config } from '../config';
+import { createLoginPocBuildInput } from './login_poc';
 
 /** 表示意图预览接口收到的自然语言内容不合法。 */
 export class IntentPreviewInputError extends Error {
@@ -24,7 +24,7 @@ export class IntentPreviewInputError extends Error {
 }
 
 /** 按 NStarter 配置选择 Codex 订阅或 FineOne HTTP 模型适配器。 */
-function createConfiguredIntentBuilder(): IntentBuilder {
+export function createConfiguredIntentBuilder(): IntentBuilder {
     const llmConfig = config.components.llm;
     const adapter = llmConfig.provider === 'codex_app_server'
         ? new CodexAppServerModelAdapter({
@@ -44,7 +44,7 @@ function createConfiguredIntentBuilder(): IntentBuilder {
         testIntentSchema,
         {
             maxOutputTokens: 4_000,
-            timeoutMs: 120_000
+            timeoutMs: 300_000
         }
     );
 }
@@ -76,54 +76,8 @@ export class IntentPreviewService {
         }
 
         return await this.intentBuilder.build(
-            this.createBuildInput(normalizedAction),
+            createLoginPocBuildInput(normalizedAction),
             signal
         );
-    }
-
-    /** 为阶段性验证补齐简道云登录 POC 的非敏感上下文。 */
-    private createBuildInput(action: string): BuildIntentInput {
-        return {
-            test: {
-                schemaVersion: 1,
-                id: 'debug-login-intent-preview',
-                name: '登录意图预览',
-                environmentId: 'jiandaoyun-test',
-                startUrl: 'https://test.jdydevelop.com/portal/signin',
-                action
-            },
-            environment: {
-                schemaVersion: 1,
-                id: 'jiandaoyun-test',
-                name: '简道云测试环境',
-                baseUrl: 'https://test.jdydevelop.com',
-                allowedHosts: [
-                    'test.jdydevelop.com'
-                ],
-                variables: {
-                    username: {
-                        source: 'local',
-                        key: 'JIANDAOYUN_USERNAME',
-                        sensitive: false
-                    },
-                    password: {
-                        source: 'local',
-                        key: 'JIANDAOYUN_PASSWORD',
-                        sensitive: true
-                    }
-                }
-            },
-            projectContext: {
-                projectId: 'ai-web-test-engine',
-                rules: [
-                    '如果当前已经登录，不要退出或重复登录。',
-                    '不得访问 allowedHosts 以外的页面。',
-                    '不得在测试意图中写入账号、密码或令牌。'
-                ],
-                terms: {
-                    workspace: '简道云登录后展示的工作台页面'
-                }
-            }
-        };
     }
 }

@@ -10,7 +10,8 @@ server:
       httpOnly: true
       signed: true
       secure: false
-storage: {}
+storage:
+  artifact_root: ./test-results
 system:
   timezone: UTC
   log:
@@ -31,6 +32,11 @@ system:
     port: 3100
   trusted_proxy: []
 components:
+  browser:
+    headless: true
+    viewport:
+      width: 1280
+      height: 720
   llm:
     provider: codex_app_server
     base_url: https://it-ai.fineres.com/v1

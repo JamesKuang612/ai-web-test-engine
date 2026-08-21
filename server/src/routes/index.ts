@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { ErrorHandler } from './middlewares/error.handler';
 import {
     intentPreviewController,
+    runDebugController,
 } from '../controllers';
 
 export { securityMiddlewares } from './middlewares/security.handler';
@@ -12,6 +13,10 @@ export const requestRouter = Router();
 requestRouter.post(
     '/api/debug/intent-preview',
     intentPreviewController.preview
+);
+requestRouter.post(
+    '/api/debug/run',
+    runDebugController.run
 );
 requestRouter.use(ErrorHandler.requestErrorHandler);
 

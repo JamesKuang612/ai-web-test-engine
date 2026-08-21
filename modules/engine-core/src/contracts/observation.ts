@@ -64,7 +64,8 @@ export interface PageObservation {
     interactiveElements: ObservedElement[];
     notices: PageNotice[];
     tabs: TabSummary[];
-    screenshotRef: string;
+    /** 截图持久化完成后写入的证据引用。 */
+    screenshotRef?: string;
     stateFingerprint: string;
     truncated: boolean;
 }

@@ -566,6 +566,7 @@
                     "type": "number"
                 },
                 "screenshotRef": {
+                    "description": "截图持久化完成后写入的证据引用。",
                     "type": "string"
                 },
                 "stateFingerprint": {
@@ -594,7 +595,6 @@
                 "observationId",
                 "page",
                 "schemaVersion",
-                "screenshotRef",
                 "stateFingerprint",
                 "tabs",
                 "truncated",

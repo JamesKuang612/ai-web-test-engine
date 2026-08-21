@@ -8,6 +8,7 @@
 
   ```bash
   npm install
+  npx playwright install chromium
   ```
 
 * 编译
@@ -21,6 +22,66 @@
   ```bash
   node ./server/dist/app.js --enable-source-maps
   ```
+
+* 完整检查
+
+  ```bash
+  npm run build
+  npm run eslint
+  npm test
+  ```
+
+### 地基调试接口
+
+当前已经跑通第一条最小纵向链路：
+
+```text
+自然语言 action
+  → ModelIntentBuilder
+  → RunCoordinator
+  → Playwright 启动与起始页导航
+  → 页面 observe
+  → 本地 Run、Observation、Trace、Result
+```
+
+服务启动后，可以在 PowerShell 中执行：
+
+```powershell
+$body = @{
+  action = '打开简道云登录页'
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri 'http://127.0.0.1:3000/api/debug/run' `
+  -ContentType 'application/json' `
+  -Body $body
+```
+
+成功打开并观察起始页面时，接口会返回生命周期为 `COMPLETED`、业务结果为 `UNCERTAIN` 的 `RunResult`。`UNCERTAIN` 表示基础链路已经跑通，但当前版本尚未执行登录交互和业务断言，不能误报为测试通过。
+
+每次运行的产物默认保存在：
+
+```text
+test-results/<runId>/
+├── run.json
+├── result.json
+├── trace.jsonl
+└── json/
+    ├── intent.json
+    ├── observation-before-navigation.json
+    └── observation-after-navigation.json
+```
+
+浏览器是否显示以及视口大小由 `components.browser` 控制。本机调试时可以在 `~/.ai-web-test-engine/config.yml` 中将 `headless` 覆盖为 `false`，不要修改并提交团队默认配置。
+
+建议新人优先在以下位置打断点理解链路：
+
+1. `server/src/controllers/run_debug.controller.ts`
+2. `server/src/services/run_debug.service.ts`
+3. `modules/engine-core/src/run/run_coordinator.ts`
+4. `server/src/adapters/browser/playwright_browser_adapter.ts`
+5. `server/src/adapters/storage/local_artifact_store.ts`
 
 ### 模型 Provider
 

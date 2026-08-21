@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict';
 import type {
+    ActionCommand,
+    ActionResult,
     ArtifactInput,
     ArtifactStore,
+    BrowserAdapter,
+    BrowserSession,
     BuildIntentInput,
     EvidenceRef,
     IntentBuilder,
     JsonValue,
+    PageObservation,
     RunEvent,
     RunEventPublisher,
     RunResult,
@@ -84,22 +89,28 @@ const testIntent: TestIntent = {
 };
 
 describe('RunCoordinator', () => {
-    it('进入意图构建阶段并保存生成的 TestIntent', async () => {
+    it('串联意图、浏览器导航、页面观察和本地产物', async () => {
         const artifactStore = new FakeArtifactStore();
         const eventPublisher = new FakeRunEventPublisher();
         const intentBuilder = new FakeIntentBuilder(testIntent);
+        const browserAdapter = new FakeBrowserAdapter();
         const coordinator = new RunCoordinator(
             artifactStore,
             eventPublisher,
-            intentBuilder
+            intentBuilder,
+            browserAdapter
         );
         const controller = new AbortController();
 
-        await assert.rejects(
-            coordinator.start(startInput, controller.signal),
-            /核心执行流程尚未实现/u
+        const result = await coordinator.start(
+            startInput,
+            controller.signal
         );
 
+        assert.equal(result.lifecycle, 'COMPLETED');
+        assert.equal(result.result, 'UNCERTAIN');
+        assert.equal(result.metrics.actionCount, 1);
+        assert.equal(result.metrics.modelCallCount, 1);
         assert.equal(intentBuilder.callCount, 1);
         assert.equal(intentBuilder.lastSignal, controller.signal);
         assert.deepEqual(intentBuilder.lastInput, {
@@ -107,60 +118,94 @@ describe('RunCoordinator', () => {
             environment: startInput.environment,
             projectContext: startInput.projectContext
         });
-        assert.deepEqual(artifactStore.savedJson, {
-            runId: artifactStore.createdSnapshots[0].runId,
-            name: 'intent',
-            value: testIntent
-        });
         assert.deepEqual(
-            artifactStore.updatedSnapshots.map(
-                (snapshot) => snapshot.lifecycle
-            ),
+            artifactStore.savedJson.map(({ name }) => name),
             [
-                'STARTING',
-                'BUILDING_INTENT',
-                'BUILDING_INTENT'
+                'intent',
+                'observation-before-navigation',
+                'observation-after-navigation'
             ]
         );
         assert.equal(
-            artifactStore.updatedSnapshots.at(-1)?.metadata.intentRef,
-            `${ artifactStore.createdSnapshots[0].runId }/json/intent.json`
+            artifactStore.updatedSnapshots.at(-1)?.lifecycle,
+            'COMPLETED'
         );
+        assert.equal(browserAdapter.startCount, 1);
+        assert.equal(browserAdapter.executeCount, 1);
+        assert.equal(browserAdapter.observeCount, 2);
+        assert.equal(browserAdapter.closeCount, 1);
+        assert.equal(artifactStore.traces.length, 1);
+        assert.equal(artifactStore.results[0], result);
         assert.deepEqual(
             eventPublisher.events.map((event) => event.sequence),
-            [
-                1,
-                2,
-                3
-            ]
+            eventPublisher.events.map((_event, index) => index + 1)
+        );
+        assert.equal(
+            eventPublisher.events.at(-1)?.type,
+            'run.completed'
         );
     });
+});
 
-    it('运行提前取消时不调用 IntentBuilder', async () => {
+describe('RunCoordinator 终止路径', () => {
+    it('运行提前取消时保存取消结果且不调用外部能力', async () => {
         const artifactStore = new FakeArtifactStore();
         const eventPublisher = new FakeRunEventPublisher();
         const intentBuilder = new FakeIntentBuilder(testIntent);
+        const browserAdapter = new FakeBrowserAdapter();
         const coordinator = new RunCoordinator(
             artifactStore,
             eventPublisher,
-            intentBuilder
+            intentBuilder,
+            browserAdapter
         );
         const controller = new AbortController();
         controller.abort();
 
-        await assert.rejects(
-            coordinator.start(startInput, controller.signal),
-            hasErrorName('AbortError')
+        const result = await coordinator.start(
+            startInput,
+            controller.signal
         );
 
+        assert.equal(result.lifecycle, 'CANCELLED');
         assert.equal(intentBuilder.callCount, 0);
-        assert.equal(artifactStore.savedJson, undefined);
+        assert.equal(browserAdapter.startCount, 0);
+        assert.deepEqual(artifactStore.savedJson, []);
+        assert.equal(artifactStore.results[0], result);
         assert.deepEqual(
-            eventPublisher.events.map((event) => event.sequence),
+            eventPublisher.events.map((event) => event.type),
             [
-                1
+                'run.created',
+                'run.status.changed',
+                'run.cancelled'
             ]
         );
+    });
+
+    it('模型异常时保留实际失败阶段和稳定分类', async () => {
+        const artifactStore = new FakeArtifactStore();
+        const eventPublisher = new FakeRunEventPublisher();
+        const browserAdapter = new FakeBrowserAdapter();
+        const coordinator = new RunCoordinator(
+            artifactStore,
+            eventPublisher,
+            {
+                build: () => Promise.reject(
+                    new Error('模型暂时不可用')
+                )
+            },
+            browserAdapter
+        );
+
+        const result = await coordinator.start(
+            startInput,
+            new AbortController().signal
+        );
+
+        assert.equal(result.lifecycle, 'CRASHED');
+        assert.equal(result.failure?.phase, 'BUILDING_INTENT');
+        assert.equal(result.failure?.category, 'MODEL_UNAVAILABLE');
+        assert.equal(browserAdapter.startCount, 0);
     });
 });
 
@@ -168,11 +213,13 @@ describe('RunCoordinator', () => {
 class FakeArtifactStore implements ArtifactStore {
     public readonly createdSnapshots: RunSnapshot[] = [];
     public readonly updatedSnapshots: RunSnapshot[] = [];
-    public savedJson?: {
+    public readonly traces: TraceEvent[] = [];
+    public readonly results: RunResult[] = [];
+    public readonly savedJson: Array<{
         runId: string,
         name: string,
         value: JsonValue
-    };
+    }> = [];
 
     /** 记录初始运行快照。 */
     public createRun = (snapshot: RunSnapshot): Promise<void> => {
@@ -186,11 +233,14 @@ class FakeArtifactStore implements ArtifactStore {
         return Promise.resolve();
     };
 
-    /** 当前测试不需要持久化动作轨迹。 */
+    /** 记录协调器追加的动作轨迹。 */
     public appendTrace = (
         _runId: string,
-        _event: TraceEvent
-    ): Promise<void> => Promise.resolve();
+        event: TraceEvent
+    ): Promise<void> => {
+        this.traces.push(event);
+        return Promise.resolve();
+    };
 
     /** 返回一个稳定的模拟证据引用。 */
     public saveArtifact = (
@@ -208,11 +258,11 @@ class FakeArtifactStore implements ArtifactStore {
         name: string,
         value: JsonValue
     ): Promise<EvidenceRef> => {
-        this.savedJson = {
+        this.savedJson.push({
             runId,
             name,
             value
-        };
+        });
         return Promise.resolve({
             kind: 'json',
             mediaType: 'application/json',
@@ -220,10 +270,13 @@ class FakeArtifactStore implements ArtifactStore {
         });
     };
 
-    /** 当前测试尚未执行到最终结果保存阶段。 */
+    /** 记录协调器生成的最终运行结果。 */
     public saveResult = (
-        _result: RunResult
-    ): Promise<void> => Promise.resolve();
+        result: RunResult
+    ): Promise<void> => {
+        this.results.push(result);
+        return Promise.resolve();
+    };
 }
 
 /** 使用内存数组记录协调器发布的运行事件。 */
@@ -258,8 +311,89 @@ class FakeIntentBuilder implements IntentBuilder {
     };
 }
 
-/** 为 assert.rejects 匹配指定名称的 Error。 */
-function hasErrorName(name: string) {
-    return (error: unknown) => error instanceof Error &&
-        error.name === name;
+/** 用固定页面状态模拟核心层依赖的浏览器端口。 */
+class FakeBrowserAdapter implements BrowserAdapter {
+    public startCount = 0;
+    public observeCount = 0;
+    public executeCount = 0;
+    public closeCount = 0;
+
+    /** 返回一段固定的浏览器会话。 */
+    public start = (): Promise<BrowserSession> => {
+        this.startCount += 1;
+        return Promise.resolve({
+            sessionId: 'browser-session-001'
+        });
+    };
+
+    /** 第一次返回空白页，第二次返回登录页。 */
+    public observe = (): Promise<PageObservation> => {
+        this.observeCount += 1;
+        return Promise.resolve(createObservation(
+            this.observeCount === 1
+                ? 'about:blank'
+                : startInput.test.startUrl ?? ''
+        ));
+    };
+
+    /** 模拟一次成功的起始页导航。 */
+    public execute = (
+        _session: BrowserSession,
+        _command: ActionCommand
+    ): Promise<ActionResult> => {
+        this.executeCount += 1;
+        return Promise.resolve({
+            status: 'executed',
+            startedAt: '2026-08-21T00:00:00.000Z',
+            finishedAt: '2026-08-21T00:00:01.000Z',
+            browserSignals: {
+                dialogOpened: false,
+                downloadStarted: false,
+                newTabOpened: false,
+                urlChanged: true
+            }
+        });
+    };
+
+    /** 当前地基测试不需要重置浏览器。 */
+    public reset = (_session: BrowserSession): Promise<void> =>
+        Promise.resolve();
+
+    /** 记录浏览器会话已经释放。 */
+    public close = (_session: BrowserSession): Promise<void> => {
+        this.closeCount += 1;
+        return Promise.resolve();
+    };
+}
+
+/** 创建供协调器持久化的最小页面观察。 */
+function createObservation(url: string): PageObservation {
+    return {
+        schemaVersion: 1,
+        observationId: `observation-${ url }`,
+        capturedAt: '2026-08-21T00:00:00.000Z',
+        page: {
+            loading: false,
+            title: url === 'about:blank'
+                ? ''
+                : '简道云登录',
+            url,
+            viewport: {
+                width: 1280,
+                height: 720
+            }
+        },
+        visibleText: url === 'about:blank'
+            ? []
+            : ['登录'],
+        interactiveElements: [],
+        notices: [],
+        tabs: [{
+            active: true,
+            title: '',
+            url
+        }],
+        stateFingerprint: `fingerprint-${ url }`,
+        truncated: false
+    };
 }

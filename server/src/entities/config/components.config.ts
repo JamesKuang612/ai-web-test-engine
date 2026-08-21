@@ -24,7 +24,17 @@ export interface ILlmComponentConf {
     readonly codex_command: string;
 }
 
+/** Playwright 浏览器会话的本地启动参数。 */
+export interface IBrowserComponentConf {
+    readonly headless: boolean;
+    readonly viewport: {
+        readonly height: number,
+        readonly width: number
+    };
+}
+
 /** 当前服务需要的可选组件配置集合。 */
 export interface IComponentsConf {
+    readonly browser: IBrowserComponentConf;
     readonly llm: ILlmComponentConf;
 }

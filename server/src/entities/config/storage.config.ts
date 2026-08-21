@@ -1,3 +1,4 @@
-/** 预留给数据库或本地文件存储的配置集合。 */
+/** 当前地基闭环写入 Run、Trace 和页面观察的本地目录配置。 */
 export interface IStorageConf {
+    readonly artifact_root: string;
 }

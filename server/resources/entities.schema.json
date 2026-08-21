@@ -44,15 +44,49 @@
             ],
             "type": "object"
         },
+        "IBrowserComponentConf": {
+            "additionalProperties": false,
+            "description": "Playwright 浏览器会话的本地启动参数。",
+            "properties": {
+                "headless": {
+                    "type": "boolean"
+                },
+                "viewport": {
+                    "additionalProperties": false,
+                    "properties": {
+                        "height": {
+                            "type": "number"
+                        },
+                        "width": {
+                            "type": "number"
+                        }
+                    },
+                    "required": [
+                        "height",
+                        "width"
+                    ],
+                    "type": "object"
+                }
+            },
+            "required": [
+                "headless",
+                "viewport"
+            ],
+            "type": "object"
+        },
         "IComponentsConf": {
             "additionalProperties": false,
             "description": "当前服务需要的可选组件配置集合。",
             "properties": {
+                "browser": {
+                    "$ref": "#/definitions/IBrowserComponentConf"
+                },
                 "llm": {
                     "$ref": "#/definitions/ILlmComponentConf"
                 }
             },
             "required": [
+                "browser",
                 "llm"
             ],
             "type": "object"
@@ -227,7 +261,15 @@
         },
         "IStorageConf": {
             "additionalProperties": false,
-            "description": "预留给数据库或本地文件存储的配置集合。",
+            "description": "当前地基闭环写入 Run、Trace 和页面观察的本地目录配置。",
+            "properties": {
+                "artifact_root": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "artifact_root"
+            ],
             "type": "object"
         },
         "ISystemConf": {

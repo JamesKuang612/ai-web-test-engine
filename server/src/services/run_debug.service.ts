@@ -1,0 +1,74 @@
+import type {
+    ExecutionEngine,
+    RunResult,
+} from '@ai-web-test-engine/core';
+import { RunCoordinator } from '@ai-web-test-engine/core';
+import { service } from 'nstarter-core';
+import { PlaywrightBrowserAdapter } from '../adapters/browser';
+import { LoggingRunEventPublisher } from '../adapters/events';
+import { LocalArtifactStore } from '../adapters/storage/local_artifact_store';
+import { config } from '../config';
+import { createConfiguredIntentBuilder } from './intent_preview.service';
+import { createLoginPocStartInput } from './login_poc';
+
+/** 表示完整调试接口收到的自然语言内容不合法。 */
+export class RunDebugInputError extends Error {
+    /** 创建一条可以安全返回给接口调用方的输入错误。 */
+    constructor(message: string) {
+        super(message);
+        this.name = 'RunDebugInputError';
+    }
+}
+
+/** 根据本机配置组装真实模型、Playwright 和本地存储。 */
+function createConfiguredExecutionEngine(): ExecutionEngine {
+    const browserConfig = config.components.browser;
+    return new RunCoordinator(
+        new LocalArtifactStore(config.storage.artifact_root),
+        new LoggingRunEventPublisher(),
+        createConfiguredIntentBuilder(),
+        new PlaywrightBrowserAdapter(),
+        {
+            browserStartOptions: {
+                headless: browserConfig.headless,
+                viewport: {
+                    width: browserConfig.viewport.width,
+                    height: browserConfig.viewport.height
+                }
+            }
+        }
+    );
+}
+
+/** 执行登录 POC 的完整地基链路，并返回本地保存后的 RunResult。 */
+@service()
+export class RunDebugService {
+    /** 默认装配真实执行引擎，测试可以注入不访问模型和浏览器的替身。 */
+    constructor(
+        private readonly executionEngine: ExecutionEngine =
+            createConfiguredExecutionEngine()
+    ) {}
+
+    /** 校验自然语言输入并启动一次阶段性完整运行。 */
+    public async run(
+        action: string,
+        signal: AbortSignal
+    ): Promise<RunResult> {
+        const normalizedAction = action.trim();
+        if (!normalizedAction) {
+            throw new RunDebugInputError(
+                'action 必须是非空字符串。'
+            );
+        }
+        if (normalizedAction.length > 10_000) {
+            throw new RunDebugInputError(
+                'action 长度不能超过 10000 个字符。'
+            );
+        }
+
+        return await this.executionEngine.start(
+            createLoginPocStartInput(normalizedAction),
+            signal
+        );
+    }
+}

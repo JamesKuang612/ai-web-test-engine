@@ -3,7 +3,8 @@
   "description": "",
   "private": true,
   "dependencies": {
-    "@ai-web-test-engine/core": "0.1.0"
+    "@ai-web-test-engine/core": "0.1.0",
+    "playwright": "1.62.1"
   },
   "scripts": {
     "build": "rimraf dist && tsc --build tsconfig.build.json",

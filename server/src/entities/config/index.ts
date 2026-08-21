@@ -5,6 +5,7 @@ import { IStorageConf } from './storage.config';
 import { ISystemConf } from './system.config';
 import {
     IComponentsConf,
+    IBrowserComponentConf,
     ILlmComponentConf,
     LlmApiProtocol,
     LlmProvider,
@@ -31,6 +32,7 @@ export {
     IStorageConf,
     ISystemConf,
     IComponentsConf,
+    IBrowserComponentConf,
     ILlmComponentConf,
     LlmApiProtocol,
     LlmProvider,
