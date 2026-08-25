@@ -161,6 +161,28 @@ function getAbortReason(signal: AbortSignal): unknown {
     return new DOMException('操作已取消。', 'AbortError');
 }
 
+/** Windows 子进程短暂占用 cwd 时，避免清理错误覆盖成功模型结果。 */
+function isTransientCleanupError(error: unknown): boolean {
+    return isRecord(error) &&
+        (error.code === 'EBUSY' || error.code === 'EPERM');
+}
+
+/** 尽力删除隔离目录；仅忽略 Windows 已知的短暂占用错误。 */
+async function removeIsolatedDirectory(directory: string): Promise<void> {
+    try {
+        await rm(directory, {
+            recursive: true,
+            force: true,
+            maxRetries: 5,
+            retryDelay: 100
+        });
+    } catch (error) {
+        if (!isTransientCleanupError(error)) {
+            throw error;
+        }
+    }
+}
+
 /** 管理单个 Codex App Server 子进程上的行分隔 JSON-RPC 会话。 */
 class StdioProtocolConnection {
     private nextRequestId = 1;
@@ -489,7 +511,7 @@ export class StdioCodexAppServerClient implements CodexAppServerClient {
         try {
             const child = this.processSpawner(this.command, [
                 '-c',
-                'mcp_servers={}',
+                'mcp_servers.momentic.enabled=false',
                 'app-server',
                 '--stdio'
             ]);
@@ -504,12 +526,7 @@ export class StdioCodexAppServerClient implements CodexAppServerClient {
             await connection?.close();
             // 只删除本次由 mkdtemp 创建、且仍位于预期前缀下的临时目录。
             if (isolatedDirectory.startsWith(isolatedDirectoryPrefix)) {
-                await rm(isolatedDirectory, {
-                    recursive: true,
-                    force: true,
-                    maxRetries: 5,
-                    retryDelay: 100
-                });
+                await removeIsolatedDirectory(isolatedDirectory);
             }
         }
     };
