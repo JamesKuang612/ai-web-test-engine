@@ -61,9 +61,9 @@ export function createLoginPocStartInput(
         ...createLoginPocBuildInput(action),
         mode: 'ai-explore',
         budgets: {
-            maxActions: 1,
+            maxActions: 2,
             maxDurationMs: 180_000,
-            maxModelCalls: 1,
+            maxModelCalls: 2,
             maxRepeatedStateActions: 0
         }
     };

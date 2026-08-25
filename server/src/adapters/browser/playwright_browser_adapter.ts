@@ -113,7 +113,7 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
     /**
      * 采集当前页面的地址、标题、视口、可见文本和标签页摘要。
      *
-     * 可交互元素、页面提示和截图证据将在后续阶段补充。
+     * 截图由独立方法采集，页面提示将在后续阶段补充。
      */
     public observe = async (
         session: BrowserSession

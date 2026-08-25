@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import type {
     ActionCommand,
+    ActionPlanner,
     ActionResult,
     ArtifactInput,
     ArtifactStore,
@@ -8,9 +9,12 @@ import type {
     BrowserSession,
     BuildIntentInput,
     EvidenceRef,
+    EnvironmentValueResolver,
+    EnvironmentVariable,
     IntentBuilder,
     JsonValue,
     PageObservation,
+    PlanActionInput,
     RunEvent,
     RunEventPublisher,
     RunResult,
@@ -40,7 +44,12 @@ const startInput: StartRunInput = {
         allowedHosts: [
             'test.jdydevelop.com'
         ],
-        variables: {}
+        variables: {
+            username: {
+                source: 'literal',
+                value: 'tester@example.com'
+            }
+        }
     },
     mode: 'ai-explore',
     projectContext: {
@@ -88,17 +97,36 @@ const testIntent: TestIntent = {
     }
 };
 
+const plannedTypeCommand: ActionCommand = {
+    type: 'TYPE',
+    target: {
+        candidateId: 'e1',
+        description: '账号输入框'
+    },
+    value: {
+        source: 'environment',
+        key: 'username'
+    },
+    expectedEffect: '账号输入框变为已填写',
+    reasonSummary: '先填写登录账号',
+    risk: 'reversible'
+};
+
 describe('RunCoordinator', () => {
     it('串联意图、浏览器导航、页面观察和本地产物', async () => {
         const artifactStore = new FakeArtifactStore();
         const eventPublisher = new FakeRunEventPublisher();
         const intentBuilder = new FakeIntentBuilder(testIntent);
         const browserAdapter = new FakeBrowserAdapter();
+        const actionPlanner = new FakeActionPlanner(plannedTypeCommand);
+        const valueResolver = new FakeEnvironmentValueResolver();
         const coordinator = new RunCoordinator(
             artifactStore,
             eventPublisher,
             intentBuilder,
-            browserAdapter
+            browserAdapter,
+            actionPlanner,
+            valueResolver
         );
         const controller = new AbortController();
 
@@ -107,45 +135,128 @@ describe('RunCoordinator', () => {
             controller.signal
         );
 
+        assertCompletedAiRun({
+            result,
+            artifactStore,
+            eventPublisher,
+            intentBuilder,
+            browserAdapter,
+            actionPlanner,
+            valueResolver,
+            signal: controller.signal
+        });
+    });
+
+    it('Planner 未返回 TYPE 时保守结束且不执行额外浏览器动作', async () => {
+        const artifactStore = new FakeArtifactStore();
+        const browserAdapter = new FakeBrowserAdapter();
+        const coordinator = new RunCoordinator(
+            artifactStore,
+            new FakeRunEventPublisher(),
+            new FakeIntentBuilder(testIntent),
+            browserAdapter,
+            new FakeActionPlanner({
+                type: 'UNCERTAIN',
+                reasonSummary: '当前页面无法确定下一步',
+                risk: 'read-only'
+            }),
+            new FakeEnvironmentValueResolver()
+        );
+
+        const result = await coordinator.start(
+            startInput,
+            new AbortController().signal
+        );
+
         assert.equal(result.lifecycle, 'COMPLETED');
         assert.equal(result.result, 'UNCERTAIN');
         assert.equal(result.metrics.actionCount, 1);
-        assert.equal(result.metrics.modelCallCount, 1);
-        assert.equal(intentBuilder.callCount, 1);
-        assert.equal(intentBuilder.lastSignal, controller.signal);
-        assert.deepEqual(intentBuilder.lastInput, {
-            test: startInput.test,
-            environment: startInput.environment,
-            projectContext: startInput.projectContext
-        });
-        assert.deepEqual(
-            artifactStore.savedJson.map(({ name }) => name),
-            [
-                'intent',
-                'observation-before-navigation',
-                'observation-after-navigation'
-            ]
-        );
-        assert.equal(
-            artifactStore.updatedSnapshots.at(-1)?.lifecycle,
-            'COMPLETED'
-        );
-        assert.equal(browserAdapter.startCount, 1);
+        assert.equal(result.metrics.modelCallCount, 2);
         assert.equal(browserAdapter.executeCount, 1);
-        assert.equal(browserAdapter.observeCount, 2);
-        assert.equal(browserAdapter.closeCount, 1);
         assert.equal(artifactStore.traces.length, 1);
-        assert.equal(artifactStore.results[0], result);
-        assert.deepEqual(
-            eventPublisher.events.map((event) => event.sequence),
-            eventPublisher.events.map((_event, index) => index + 1)
-        );
-        assert.equal(
-            eventPublisher.events.at(-1)?.type,
-            'run.completed'
-        );
+        assert.match(result.summary, /Planner 返回 UNCERTAIN/u);
     });
 });
+
+interface CompletedRunState {
+    actionPlanner: FakeActionPlanner;
+    artifactStore: FakeArtifactStore;
+    browserAdapter: FakeBrowserAdapter;
+    eventPublisher: FakeRunEventPublisher;
+    intentBuilder: FakeIntentBuilder;
+    result: RunResult;
+    signal: AbortSignal;
+    valueResolver: FakeEnvironmentValueResolver;
+}
+
+/** 校验最小 AI 输入闭环的调用次数、证据和敏感值边界。 */
+function assertCompletedAiRun(state: CompletedRunState): void {
+    const {
+        actionPlanner,
+        artifactStore,
+        browserAdapter,
+        eventPublisher,
+        intentBuilder,
+        result,
+        signal,
+        valueResolver,
+    } = state;
+    assert.equal(result.lifecycle, 'COMPLETED');
+    assert.equal(result.result, 'UNCERTAIN');
+    assert.equal(result.metrics.actionCount, 2);
+    assert.equal(result.metrics.modelCallCount, 2);
+    assert.equal(intentBuilder.callCount, 1);
+    assert.equal(intentBuilder.lastSignal, signal);
+    assert.deepEqual(intentBuilder.lastInput, {
+        test: startInput.test,
+        environment: startInput.environment,
+        projectContext: startInput.projectContext
+    });
+    assert.deepEqual(
+        artifactStore.savedJson.map(({ name }) => name),
+        [
+            'intent',
+            'observation-before-navigation',
+            'observation-after-navigation',
+            'observation-after-planned-action'
+        ]
+    );
+    assert.equal(
+        artifactStore.updatedSnapshots.at(-1)?.lifecycle,
+        'COMPLETED'
+    );
+    assert.equal(browserAdapter.startCount, 1);
+    assert.equal(browserAdapter.executeCount, 2);
+    assert.equal(browserAdapter.observeCount, 3);
+    assert.equal(browserAdapter.captureScreenshotCount, 2);
+    assert.equal(browserAdapter.closeCount, 1);
+    assert.equal(artifactStore.traces.length, 2);
+    assert.equal(artifactStore.savedArtifacts.length, 2);
+    assert.equal(actionPlanner.callCount, 1);
+    assert.deepEqual(
+        actionPlanner.lastInput?.availableEnvironmentVariables,
+        ['username']
+    );
+    assert.equal(
+        actionPlanner.lastInput?.remainingBudgets.maxActions,
+        19
+    );
+    assert.deepEqual(artifactStore.traces[1]?.command.value, {
+        source: 'environment',
+        key: 'username'
+    });
+    assert.deepEqual(browserAdapter.commands[1]?.value, {
+        source: 'literal',
+        value: 'tester@example.com'
+    });
+    assert.deepEqual(valueResolver.resolvedNames, ['username']);
+    assert.equal(artifactStore.results[0], result);
+    assert.deepEqual(
+        eventPublisher.events.map((event) => event.sequence),
+        eventPublisher.events.map((_event, index) => index + 1)
+    );
+    assert.equal(eventPublisher.events.at(-1)?.type, 'run.completed');
+}
 
 describe('RunCoordinator 终止路径', () => {
     it('运行提前取消时保存取消结果且不调用外部能力', async () => {
@@ -157,7 +268,9 @@ describe('RunCoordinator 终止路径', () => {
             artifactStore,
             eventPublisher,
             intentBuilder,
-            browserAdapter
+            browserAdapter,
+            new FakeActionPlanner(plannedTypeCommand),
+            new FakeEnvironmentValueResolver()
         );
         const controller = new AbortController();
         controller.abort();
@@ -194,7 +307,9 @@ describe('RunCoordinator 终止路径', () => {
                     new Error('模型暂时不可用')
                 )
             },
-            browserAdapter
+            browserAdapter,
+            new FakeActionPlanner(plannedTypeCommand),
+            new FakeEnvironmentValueResolver()
         );
 
         const result = await coordinator.start(
@@ -215,6 +330,7 @@ class FakeArtifactStore implements ArtifactStore {
     public readonly updatedSnapshots: RunSnapshot[] = [];
     public readonly traces: TraceEvent[] = [];
     public readonly results: RunResult[] = [];
+    public readonly savedArtifacts: ArtifactInput[] = [];
     public readonly savedJson: Array<{
         runId: string,
         name: string,
@@ -246,11 +362,14 @@ class FakeArtifactStore implements ArtifactStore {
     public saveArtifact = (
         runId: string,
         artifact: ArtifactInput
-    ): Promise<EvidenceRef> => Promise.resolve({
-        kind: artifact.kind,
-        mediaType: artifact.mediaType,
-        ref: `${ runId }/artifacts/${ artifact.name }`
-    });
+    ): Promise<EvidenceRef> => {
+        this.savedArtifacts.push(artifact);
+        return Promise.resolve({
+            kind: artifact.kind,
+            mediaType: artifact.mediaType,
+            ref: `${ runId }/artifacts/${ artifact.name }`
+        });
+    };
 
     /** 记录测试意图并返回它的本地引用。 */
     public saveJson = (
@@ -311,12 +430,50 @@ class FakeIntentBuilder implements IntentBuilder {
     };
 }
 
+/** 返回预设单步动作并记录 Planner 输入。 */
+class FakeActionPlanner implements ActionPlanner {
+    public callCount = 0;
+    public lastInput?: PlanActionInput;
+
+    constructor(private readonly command: ActionCommand) {}
+
+    /** 模拟一次受控的单步规划。 */
+    public plan = (
+        input: PlanActionInput,
+        signal: AbortSignal
+    ): Promise<ActionCommand> => {
+        signal.throwIfAborted();
+        this.callCount += 1;
+        this.lastInput = input;
+        return Promise.resolve(this.command);
+    };
+}
+
+/** 从测试环境定义中解析字面量并记录逻辑名称。 */
+class FakeEnvironmentValueResolver implements EnvironmentValueResolver {
+    public readonly resolvedNames: string[] = [];
+
+    /** 测试环境只提供安全字面量。 */
+    public resolve = (
+        logicalName: string,
+        variable: EnvironmentVariable
+    ): Promise<JsonValue> => {
+        this.resolvedNames.push(logicalName);
+        if (variable.source !== 'literal') {
+            return Promise.reject(new Error('测试变量必须是字面量。'));
+        }
+        return Promise.resolve(variable.value);
+    };
+}
+
 /** 用固定页面状态模拟核心层依赖的浏览器端口。 */
 class FakeBrowserAdapter implements BrowserAdapter {
     public startCount = 0;
     public observeCount = 0;
     public executeCount = 0;
     public closeCount = 0;
+    public captureScreenshotCount = 0;
+    public readonly commands: ActionCommand[] = [];
 
     /** 返回一段固定的浏览器会话。 */
     public start = (): Promise<BrowserSession> => {
@@ -326,22 +483,24 @@ class FakeBrowserAdapter implements BrowserAdapter {
         });
     };
 
-    /** 第一次返回空白页，第二次返回登录页。 */
+    /** 第一次返回空白页，后续返回登录页及输入状态。 */
     public observe = (): Promise<PageObservation> => {
         this.observeCount += 1;
         return Promise.resolve(createObservation(
             this.observeCount === 1
                 ? 'about:blank'
-                : startInput.test.startUrl ?? ''
+                : startInput.test.startUrl ?? '',
+            this.executeCount > 1
         ));
     };
 
     /** 模拟一次成功的起始页导航。 */
     public execute = (
         _session: BrowserSession,
-        _command: ActionCommand
+        command: ActionCommand
     ): Promise<ActionResult> => {
         this.executeCount += 1;
+        this.commands.push(command);
         return Promise.resolve({
             status: 'executed',
             startedAt: '2026-08-21T00:00:00.000Z',
@@ -350,7 +509,7 @@ class FakeBrowserAdapter implements BrowserAdapter {
                 dialogOpened: false,
                 downloadStarted: false,
                 newTabOpened: false,
-                urlChanged: true
+                urlChanged: command.type === 'NAVIGATE'
             }
         });
     };
@@ -359,15 +518,18 @@ class FakeBrowserAdapter implements BrowserAdapter {
     public captureScreenshot = (): Promise<{
         content: Uint8Array,
         mediaType: 'image/png'
-    }> => Promise.resolve({
-        content: new Uint8Array([
-            137,
-            80,
-            78,
-            71
-        ]),
-        mediaType: 'image/png'
-    });
+    }> => {
+        this.captureScreenshotCount += 1;
+        return Promise.resolve({
+            content: new Uint8Array([
+                137,
+                80,
+                78,
+                71
+            ]),
+            mediaType: 'image/png'
+        });
+    };
 
     /** 当前地基测试不需要重置浏览器。 */
     public reset = (_session: BrowserSession): Promise<void> =>
@@ -381,7 +543,10 @@ class FakeBrowserAdapter implements BrowserAdapter {
 }
 
 /** 创建供协调器持久化的最小页面观察。 */
-function createObservation(url: string): PageObservation {
+function createObservation(
+    url: string,
+    usernameFilled = false
+): PageObservation {
     return {
         schemaVersion: 1,
         observationId: `observation-${ url }`,
@@ -400,7 +565,21 @@ function createObservation(url: string): PageObservation {
         visibleText: url === 'about:blank'
             ? []
             : ['登录'],
-        interactiveElements: [],
+        interactiveElements: url === 'about:blank'
+            ? []
+            : [{
+                candidateId: 'e1',
+                tag: 'input',
+                role: 'textbox',
+                name: '账号',
+                valueState: usernameFilled ? 'filled' : 'empty',
+                disabled: false,
+                visible: true,
+                inViewport: true,
+                attributes: {},
+                nearbyText: [],
+                locatorHints: []
+            }],
         notices: [],
         tabs: [{
             active: true,

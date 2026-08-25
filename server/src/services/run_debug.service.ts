@@ -2,13 +2,21 @@ import type {
     ExecutionEngine,
     RunResult,
 } from '@ai-web-test-engine/core';
-import { RunCoordinator } from '@ai-web-test-engine/core';
+import {
+    actionCommandSchema,
+    ModelActionPlanner,
+    RunCoordinator,
+} from '@ai-web-test-engine/core';
 import { service } from 'nstarter-core';
 import { PlaywrightBrowserAdapter } from '../adapters/browser';
+import { LocalEnvironmentValueResolver } from '../adapters/environment';
 import { LoggingRunEventPublisher } from '../adapters/events';
 import { LocalArtifactStore } from '../adapters/storage/local_artifact_store';
 import { config } from '../config';
-import { createConfiguredIntentBuilder } from './intent_preview.service';
+import {
+    createConfiguredIntentBuilder,
+    createConfiguredModelAdapter,
+} from './intent_preview.service';
 import { createLoginPocStartInput } from './login_poc';
 
 /** 表示完整调试接口收到的自然语言内容不合法。 */
@@ -23,11 +31,21 @@ export class RunDebugInputError extends Error {
 /** 根据本机配置组装真实模型、Playwright 和本地存储。 */
 function createConfiguredExecutionEngine(): ExecutionEngine {
     const browserConfig = config.components.browser;
+    const modelAdapter = createConfiguredModelAdapter();
     return new RunCoordinator(
         new LocalArtifactStore(config.storage.artifact_root),
         new LoggingRunEventPublisher(),
-        createConfiguredIntentBuilder(),
+        createConfiguredIntentBuilder(modelAdapter),
         new PlaywrightBrowserAdapter(),
+        new ModelActionPlanner(
+            modelAdapter,
+            actionCommandSchema,
+            {
+                maxOutputTokens: 1_200,
+                timeoutMs: 300_000
+            }
+        ),
+        new LocalEnvironmentValueResolver(),
         {
             browserStartOptions: {
                 headless: browserConfig.headless,

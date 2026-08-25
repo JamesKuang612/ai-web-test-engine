@@ -4,6 +4,7 @@ import {
 } from '@ai-web-test-engine/core';
 import type {
     IntentBuilder,
+    ModelAdapter,
     TestIntent,
 } from '@ai-web-test-engine/core';
 import { service } from 'nstarter-core';
@@ -24,9 +25,9 @@ export class IntentPreviewInputError extends Error {
 }
 
 /** 按 NStarter 配置选择 Codex 订阅或 FineOne HTTP 模型适配器。 */
-export function createConfiguredIntentBuilder(): IntentBuilder {
+export function createConfiguredModelAdapter(): ModelAdapter {
     const llmConfig = config.components.llm;
-    const adapter = llmConfig.provider === 'codex_app_server'
+    return llmConfig.provider === 'codex_app_server'
         ? new CodexAppServerModelAdapter({
             command: llmConfig.codex_command,
             model: llmConfig.model,
@@ -38,7 +39,12 @@ export function createConfiguredIntentBuilder(): IntentBuilder {
             model: llmConfig.model,
             protocol: llmConfig.protocol
         });
+}
 
+/** 使用指定模型边界创建测试意图构建器。 */
+export function createConfiguredIntentBuilder(
+    adapter: ModelAdapter = createConfiguredModelAdapter()
+): IntentBuilder {
     return new ModelIntentBuilder(
         adapter,
         testIntentSchema,

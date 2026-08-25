@@ -45,7 +45,8 @@ describe('RunDebugService', () => {
             engine.lastInput?.test.startUrl,
             'https://test.jdydevelop.com/portal/signin'
         );
-        assert.equal(engine.lastInput?.budgets.maxActions, 1);
+        assert.equal(engine.lastInput?.budgets.maxActions, 2);
+        assert.equal(engine.lastInput?.budgets.maxModelCalls, 2);
         assert.equal(engine.lastSignal, controller.signal);
     });
 
