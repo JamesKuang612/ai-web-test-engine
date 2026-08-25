@@ -510,8 +510,6 @@ export class StdioCodexAppServerClient implements CodexAppServerClient {
 
         try {
             const child = this.processSpawner(this.command, [
-                '-c',
-                'mcp_servers.momentic.enabled=false',
                 'app-server',
                 '--stdio'
             ]);

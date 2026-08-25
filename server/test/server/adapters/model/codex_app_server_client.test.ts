@@ -30,8 +30,6 @@ describe('StdioCodexAppServerClient', () => {
         }, (command, args) => {
             assert.equal(command, 'custom-codex');
             assert.deepEqual(args, [
-                '-c',
-                'mcp_servers.momentic.enabled=false',
                 'app-server',
                 '--stdio'
             ]);
