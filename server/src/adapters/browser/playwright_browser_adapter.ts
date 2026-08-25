@@ -61,6 +61,7 @@ interface CapturedPageState {
 const NAVIGATION_TIMEOUT_MS = 30_000;
 const MAX_VISIBLE_TEXT_LINES = 200;
 const MAX_VISIBLE_TEXT_LENGTH = 500;
+const PAGE_CONTENT_WAIT_MS = 10_000;
 const OBSERVATION_ATTEMPTS = 5;
 const OBSERVATION_RETRY_DELAY_MS = 250;
 
@@ -124,6 +125,7 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
             page,
         } = managedSession;
         const observationId = randomUUID();
+        await this.waitForRenderedContent(page);
         const capturedAt = new Date().toISOString();
         const viewport = page.viewportSize();
 
@@ -188,7 +190,7 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
     /**
      * 执行导航、点击、输入等受控浏览器动作。
      *
-     * 当前支持 NAVIGATE；其他动作会返回 UNSUPPORTED_ACTION。
+     * 当前支持 NAVIGATE 和 TYPE；其他动作会返回 UNSUPPORTED_ACTION。
      */
     public execute = async (
         session: BrowserSession,
@@ -436,6 +438,34 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
         };
     }
 
+    /** 为延迟渲染的 SPA 等待首批可见文本或交互元素。 */
+    private async waitForRenderedContent(page: Page): Promise<void> {
+        if (page.url() === 'about:blank') {
+            return;
+        }
+        try {
+            const bodyText = await page.locator('body').innerText({
+                timeout: 1_000
+            });
+            if (bodyText.trim()) {
+                return;
+            }
+        } catch {
+            // 页面切换期间继续等待交互元素，后续观察仍会处理实际异常。
+        }
+
+        try {
+            await page.locator(INTERACTIVE_SELECTOR).first().waitFor({
+                state: 'visible',
+                timeout: PAGE_CONTENT_WAIT_MS
+            });
+        } catch (error) {
+            if (!(error instanceof errors.TimeoutError)) {
+                throw error;
+            }
+            // 无交互页面仍需返回已有状态，由 observation 表达空内容。
+        }
+    }
 
     /**
      * 在同一页面上下文中采集基础状态；遇到页面重定向时有限重试。

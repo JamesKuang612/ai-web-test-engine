@@ -205,6 +205,41 @@ describe('PlaywrightBrowserAdapter', () => {
         }
     }).timeout(15_000);
 
+    it('等待 SPA 延迟渲染出首个交互元素', async () => {
+        const testServer = await startTestHttpServer([
+            '<!doctype html><title>延迟登录页</title><body>',
+            '<script>',
+            'setTimeout(() => {',
+            'document.body.innerHTML =',
+            "'<input aria-label=\"账号\"><button>下一步</button>';",
+            '}, 250);',
+            '</script></body>'
+        ].join(''));
+        const adapter = new PlaywrightBrowserAdapter();
+        let session: BrowserSession | undefined;
+
+        try {
+            session = await adapter.start(START_OPTIONS);
+            await adapter.execute(
+                session,
+                createNavigateCommand(testServer.url)
+            );
+
+            const observation = await adapter.observe(session);
+
+            assert.equal(observation.interactiveElements.length, 2);
+            assert.equal(
+                observation.interactiveElements[0]?.name,
+                '账号'
+            );
+        } finally {
+            if (session) {
+                await adapter.close(session);
+            }
+            await testServer.close();
+        }
+    }).timeout(15_000);
+
     it('采集当前页面 PNG 截图', async () => {
         const testServer = await startTestHttpServer();
         const adapter = new PlaywrightBrowserAdapter();
