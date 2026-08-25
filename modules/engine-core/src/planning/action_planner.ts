@@ -1,0 +1,38 @@
+import type {
+    ActionCommand,
+    ActionResult,
+    EffectVerification,
+    PageObservation,
+    RunBudgets,
+    TestIntent,
+} from '../contracts';
+
+/** Planner 可以看到的单步历史，不包含输入值明文或浏览器对象。 */
+export interface PlannerHistoryEntry {
+    command: ActionCommand;
+    actionResult: ActionResult;
+    effect?: EffectVerification;
+    beforeObservationRef: string;
+    afterObservationRef?: string;
+}
+
+/** 当前运行剩余的确定性预算。 */
+export interface RemainingRunBudgets extends RunBudgets {}
+
+/** 每轮规划所需的脱敏测试意图、页面状态和执行历史。 */
+export interface PlanActionInput {
+    testIntent: TestIntent;
+    observation: PageObservation;
+    history: PlannerHistoryEntry[];
+    availableEnvironmentVariables: string[];
+    remainingBudgets: RemainingRunBudgets;
+}
+
+/** 将当前运行状态转换为一个受控的下一步动作。 */
+export interface ActionPlanner {
+    /** 每次只返回一个 ActionCommand，不直接操作浏览器。 */
+    plan: (
+        input: PlanActionInput,
+        signal: AbortSignal
+    ) => Promise<ActionCommand>;
+}
