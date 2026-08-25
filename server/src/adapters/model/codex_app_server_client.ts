@@ -313,6 +313,14 @@ class StdioProtocolConnection {
 
         if (!this.exited) {
             this.child.kill();
+            const killTimeout = new Promise<void>((resolve) => {
+                const timeout = setTimeout(resolve, 2_000);
+                timeout.unref();
+            });
+            await Promise.race([
+                this.exitPromise,
+                killTimeout
+            ]);
         }
         this.reader.close();
         this.failAll(new CodexAppServerError(
@@ -496,7 +504,9 @@ export class StdioCodexAppServerClient implements CodexAppServerClient {
             if (isolatedDirectory.startsWith(isolatedDirectoryPrefix)) {
                 await rm(isolatedDirectory, {
                     recursive: true,
-                    force: true
+                    force: true,
+                    maxRetries: 5,
+                    retryDelay: 100
                 });
             }
         }
