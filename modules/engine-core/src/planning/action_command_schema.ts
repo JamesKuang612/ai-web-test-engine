@@ -36,35 +36,39 @@ const ACTION_COMMAND_FIELDS = [
 const ACTION_COMMAND_JSON_SCHEMA: Record<string, JsonValue> = {
     type: 'object',
     additionalProperties: false,
-    required: [
-        'type',
-        'reasonSummary',
-        'risk'
-    ],
+    required: ACTION_COMMAND_FIELDS,
     properties: {
         type: {
             type: 'string',
             enum: [...ACTION_TYPES]
         },
         target: {
-            type: 'object',
-            additionalProperties: false,
-            required: [
-                'description'
-            ],
-            properties: {
-                candidateId: {
-                    type: 'string',
-                    minLength: 1
+            anyOf: [
+                {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: [
+                        'candidateId',
+                        'description'
+                    ],
+                    properties: {
+                        candidateId: {
+                            type: 'string',
+                            minLength: 1
+                        },
+                        description: {
+                            type: 'string',
+                            minLength: 1
+                        }
+                    }
                 },
-                description: {
-                    type: 'string',
-                    minLength: 1
+                {
+                    type: 'null'
                 }
-            }
+            ]
         },
         value: {
-            oneOf: [
+            anyOf: [
                 {
                     type: 'object',
                     additionalProperties: false,
@@ -100,11 +104,17 @@ const ACTION_COMMAND_JSON_SCHEMA: Record<string, JsonValue> = {
                         },
                         value: {}
                     }
+                },
+                {
+                    type: 'null'
                 }
             ]
         },
         expectedEffect: {
-            type: 'string',
+            type: [
+                'string',
+                'null'
+            ],
             minLength: 1
         },
         reasonSummary: {
@@ -147,10 +157,10 @@ function parseActionCommand(value: unknown): ActionCommand {
     requireAllowedFields(object, ACTION_COMMAND_FIELDS, 'ActionCommand');
 
     const type = requireActionType(object.type);
-    const target = object.target === undefined
+    const target = object.target == null
         ? undefined
         : parseTarget(object.target);
-    const actionValue = object.value === undefined
+    const actionValue = object.value == null
         ? undefined
         : parseValueReference(object.value);
 
@@ -168,7 +178,7 @@ function parseActionCommand(value: unknown): ActionCommand {
                 value: actionValue
             }
             : {}),
-        ...(object.expectedEffect === undefined
+        ...(object.expectedEffect == null
             ? {}
             : {
                 expectedEffect: requireNonEmptyString(

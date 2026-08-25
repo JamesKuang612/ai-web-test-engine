@@ -48,4 +48,32 @@ describe('ActionCommand Schema', () => {
             risk: 'read-only'
         }), ActionCommandSchemaError);
     });
+
+    it('接受严格结构化输出用 null 表示可选字段缺省', () => {
+        const command = actionCommandSchema.parse({
+            type: 'UNCERTAIN',
+            target: null,
+            value: null,
+            expectedEffect: null,
+            reasonSummary: '当前页面不足以继续操作',
+            risk: 'read-only'
+        });
+
+        assert.deepEqual(command, {
+            type: 'UNCERTAIN',
+            reasonSummary: '当前页面不足以继续操作',
+            risk: 'read-only'
+        });
+        assert.deepEqual(
+            actionCommandSchema.jsonSchema.required,
+            [
+                'type',
+                'target',
+                'value',
+                'expectedEffect',
+                'reasonSummary',
+                'risk'
+            ]
+        );
+    });
 });
