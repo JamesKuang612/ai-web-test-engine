@@ -24,7 +24,8 @@ export function createLoginPocBuildInput(
             name: '简道云测试环境',
             baseUrl: LOGIN_URL,
             allowedHosts: [
-                'test.jdydevelop.com'
+                'test.jdydevelop.com',
+                'test.frjdy.com'
             ],
             variables: {
                 username: {

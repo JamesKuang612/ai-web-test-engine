@@ -49,6 +49,13 @@ describe('RunDebugService', () => {
             engine.lastInput?.environment.baseUrl,
             'https://test.jdydevelop.com/dashboard#/'
         );
+        assert.deepEqual(
+            engine.lastInput?.environment.allowedHosts,
+            [
+                'test.jdydevelop.com',
+                'test.frjdy.com'
+            ]
+        );
         assert.equal(engine.lastInput?.budgets.maxActions, 2);
         assert.equal(engine.lastInput?.budgets.maxModelCalls, 2);
         assert.equal(engine.lastSignal, controller.signal);
