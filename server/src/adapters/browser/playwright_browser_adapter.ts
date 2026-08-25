@@ -6,6 +6,7 @@ import {
 import type {
     Browser,
     BrowserContext,
+    Locator,
     Page,
 } from 'playwright';
 import {
@@ -17,16 +18,31 @@ import type {
     ActionCommand,
     ActionResult,
     BrowserAdapter,
+    BrowserScreenshot,
     BrowserSession,
     BrowserStartOptions,
+    ObservedElement,
     PageObservation,
     ResolvedTarget,
 } from '@ai-web-test-engine/core';
+
+import {
+    INTERACTIVE_ELEMENT_SCRIPT,
+    INTERACTIVE_SELECTOR,
+    MAX_INTERACTIVE_ELEMENTS,
+} from './interactive_element_script';
+import type {
+    CapturedInteractiveElement,
+} from './interactive_element_script';
 
 /** 保存 Playwright 运行时对象，不把这些对象暴露给核心引擎。 */
 interface ManagedBrowserSession {
     browser: Browser;
     context: BrowserContext;
+    elementIndex?: {
+        observationId: string,
+        locators: Map<string, Locator>
+    };
     page: Page;
 }
 
@@ -127,12 +143,26 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
             visibleText,
             truncated,
         } = this.normalizeVisibleText(bodyText);
+        const interactiveElements = await this.captureInteractiveElements(
+            managedSession,
+            observationId
+        );
         const url = page.url();
         const stateFingerprint = createHash('sha256')
             .update(JSON.stringify({
                 title,
                 url,
-                visibleText
+                visibleText,
+                interactiveElements: interactiveElements.elements.map(
+                    (element) => ({
+                        candidateId: element.candidateId,
+                        role: element.role,
+                        name: element.name,
+                        valueState: element.valueState,
+                        disabled: element.disabled,
+                        visible: element.visible
+                    })
+                )
             }))
             .digest('hex');
 
@@ -147,11 +177,11 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
                 viewport
             },
             visibleText,
-            interactiveElements: [],
+            interactiveElements: interactiveElements.elements,
             notices: [],
             tabs,
             stateFingerprint,
-            truncated
+            truncated: truncated || interactiveElements.truncated
         };
     };
 
@@ -167,6 +197,14 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
     ): Promise<ActionResult> => {
         const managedSession = this.requireSession(session);
         const startedAt = new Date().toISOString();
+
+        if (command.type === 'TYPE') {
+            return await this.executeType(
+                managedSession,
+                command,
+                startedAt
+            );
+        }
 
         if (command.type !== 'NAVIGATE') {
             return this.createActionResult(
@@ -194,6 +232,7 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
         }
 
         const previousUrl = managedSession.page.url();
+        managedSession.elementIndex = undefined;
 
         try {
             await managedSession.page.goto(navigationUrl, {
@@ -226,6 +265,20 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
                 }
             );
         }
+    };
+
+    /** 截取当前页面并返回 PNG 字节，不在浏览器层决定保存路径。 */
+    public captureScreenshot = async (
+        session: BrowserSession
+    ): Promise<BrowserScreenshot> => {
+        const managedSession = this.requireSession(session);
+        return {
+            content: await managedSession.page.screenshot({
+                fullPage: false,
+                type: 'png'
+            }),
+            mediaType: 'image/png'
+        };
     };
 
     /**
@@ -275,6 +328,114 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
 
         return managedSession;
     }
+
+    /** 执行一次候选元素输入，并将字面量限制在浏览器调用边界内。 */
+    private async executeType(
+        session: ManagedBrowserSession,
+        command: ActionCommand,
+        startedAt: string
+    ): Promise<ActionResult> {
+        const candidateId = command.target?.candidateId;
+        const value = command.value?.source === 'literal'
+            ? command.value.value
+            : undefined;
+        if (!candidateId || typeof value !== 'string') {
+            return this.createActionResult(
+                startedAt,
+                'rejected',
+                false,
+                {
+                    code: 'INVALID_TYPE_COMMAND',
+                    message: 'TYPE 必须提供 candidateId 和字符串字面量。'
+                }
+            );
+        }
+
+        const locator = session.elementIndex?.locators.get(candidateId);
+        if (!locator) {
+            return this.createActionResult(
+                startedAt,
+                'rejected',
+                false,
+                {
+                    code: 'TARGET_NOT_FOUND',
+                    message: `当前页面观察中不存在候选元素：${ candidateId }`
+                }
+            );
+        }
+
+        const previousUrl = session.page.url();
+        try {
+            if (await locator.count() !== 1 || !await locator.isVisible()) {
+                return this.createActionResult(
+                    startedAt,
+                    'rejected',
+                    false,
+                    {
+                        code: 'TARGET_NOT_ACTIONABLE',
+                        message: `候选元素当前不可唯一操作：${ candidateId }`
+                    }
+                );
+            }
+            await locator.fill(value);
+            return this.createActionResult(
+                startedAt,
+                'executed',
+                session.page.url() !== previousUrl
+            );
+        } catch (error) {
+            const timedOut = error instanceof errors.TimeoutError;
+            return this.createActionResult(
+                startedAt,
+                timedOut
+                    ? 'timed-out'
+                    : 'failed',
+                session.page.url() !== previousUrl,
+                {
+                    code: timedOut
+                        ? 'TYPE_TIMEOUT'
+                        : 'TYPE_FAILED',
+                    message: timedOut
+                        ? '输入动作执行超时。'
+                        : 'Playwright 无法完成输入动作。'
+                }
+            );
+        }
+    }
+
+    /** 采集可见交互元素，并建立当前 observation 的 Locator 索引。 */
+    private async captureInteractiveElements(
+        session: ManagedBrowserSession,
+        observationId: string
+    ): Promise<{
+        elements: ObservedElement[],
+        truncated: boolean
+    }> {
+        const baseLocator = session.page.locator(INTERACTIVE_SELECTOR);
+        const captured = await session.page.evaluate<
+            CapturedInteractiveElement[]
+        >(INTERACTIVE_ELEMENT_SCRIPT);
+        const locators = new Map<string, Locator>();
+        const observed = captured.map(({ sourceIndex, ...element }) => {
+            locators.set(
+                element.candidateId,
+                baseLocator.nth(sourceIndex)
+            );
+            return element;
+        });
+        const totalCount = await baseLocator.count();
+        const truncated = totalCount > MAX_INTERACTIVE_ELEMENTS;
+
+        session.elementIndex = {
+            observationId,
+            locators
+        };
+        return {
+            elements: observed,
+            truncated
+        };
+    }
+
 
     /**
      * 在同一页面上下文中采集基础状态；遇到页面重定向时有限重试。

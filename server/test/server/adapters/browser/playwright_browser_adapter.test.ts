@@ -116,9 +116,26 @@ describe('PlaywrightBrowserAdapter', () => {
             assert.equal(first.page.loading, false);
             assert.deepEqual(first.visibleText, [
                 '登录简道云',
-                '请输入账号和密码'
+                '请输入账号和密码',
+                '登录'
             ]);
-            assert.deepEqual(first.interactiveElements, []);
+            assert.equal(first.interactiveElements.length, 3);
+            assert.equal(
+                first.interactiveElements[0]?.name,
+                '手机号或邮箱'
+            );
+            assert.equal(
+                first.interactiveElements[0]?.valueState,
+                'empty'
+            );
+            assert.equal(
+                first.interactiveElements[1]?.valueState,
+                'empty'
+            );
+            assert.equal(
+                first.interactiveElements[2]?.role,
+                'button'
+            );
             assert.deepEqual(first.notices, []);
             assert.deepEqual(first.tabs, [{
                 active: true,
@@ -132,6 +149,86 @@ describe('PlaywrightBrowserAdapter', () => {
             );
             assert.equal(first.truncated, false);
             assert.equal(first.screenshotRef, undefined);
+        } finally {
+            if (session) {
+                await adapter.close(session);
+            }
+            await testServer.close();
+        }
+    }).timeout(15_000);
+
+    it('根据最新页面观察的 candidateId 执行 TYPE', async () => {
+        const testServer = await startTestHttpServer();
+        const adapter = new PlaywrightBrowserAdapter();
+        let session: BrowserSession | undefined;
+
+        try {
+            session = await adapter.start(START_OPTIONS);
+            await adapter.execute(
+                session,
+                createNavigateCommand(`${ testServer.url }/login`)
+            );
+            const before = await adapter.observe(session);
+            const username = before.interactiveElements.find(
+                (element) => element.name === '手机号或邮箱'
+            );
+            assert.ok(username);
+
+            const result = await adapter.execute(session, {
+                type: 'TYPE',
+                target: {
+                    candidateId: username.candidateId,
+                    description: '手机号或邮箱输入框'
+                },
+                value: {
+                    source: 'literal',
+                    value: 'tester@example.com'
+                },
+                expectedEffect: '账号输入框变为已填写',
+                reasonSummary: '填写登录账号',
+                risk: 'reversible'
+            });
+            const after = await adapter.observe(session);
+
+            assert.equal(result.status, 'executed');
+            assert.equal(
+                after.interactiveElements.find(
+                    (element) => element.name === '手机号或邮箱'
+                )?.valueState,
+                'filled'
+            );
+        } finally {
+            if (session) {
+                await adapter.close(session);
+            }
+            await testServer.close();
+        }
+    }).timeout(15_000);
+
+    it('采集当前页面 PNG 截图', async () => {
+        const testServer = await startTestHttpServer();
+        const adapter = new PlaywrightBrowserAdapter();
+        let session: BrowserSession | undefined;
+
+        try {
+            session = await adapter.start(START_OPTIONS);
+            await adapter.execute(
+                session,
+                createNavigateCommand(testServer.url)
+            );
+
+            const screenshot = await adapter.captureScreenshot(session);
+
+            assert.equal(screenshot.mediaType, 'image/png');
+            assert.deepEqual(
+                [...screenshot.content.slice(0, 4)],
+                [
+                    137,
+                    80,
+                    78,
+                    71
+                ]
+            );
         } finally {
             if (session) {
                 await adapter.close(session);
@@ -227,6 +324,9 @@ async function startTestHttpServer(
         '<!doctype html><title>登录测试页</title><body>',
         '<h1>登录简道云</h1>',
         '<p>请输入账号和密码</p>',
+        '<input aria-label="手机号或邮箱" placeholder="手机号 / 邮箱">',
+        '<input aria-label="密码" placeholder="密码" type="password">',
+        '<button type="button">登录</button>',
         '</body>'
     ].join('')
 ): Promise<{

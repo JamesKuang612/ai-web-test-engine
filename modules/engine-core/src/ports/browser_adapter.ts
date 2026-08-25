@@ -19,6 +19,12 @@ export interface BrowserStartOptions {
     };
 }
 
+/** 浏览器在当前页面采集的 PNG 截图。 */
+export interface BrowserScreenshot {
+    content: Uint8Array;
+    mediaType: 'image/png';
+}
+
 /** 隔离 Playwright、CDP 和具体 Chromium 生命周期。 */
 export interface BrowserAdapter {
     /** 根据启动参数创建一段独立的浏览器会话。 */
@@ -31,6 +37,10 @@ export interface BrowserAdapter {
         command: ActionCommand,
         target?: ResolvedTarget
     ) => Promise<ActionResult>;
+    /** 截取当前页面，供执行引擎保存为运行证据。 */
+    captureScreenshot: (
+        session: BrowserSession
+    ) => Promise<BrowserScreenshot>;
     /** 将浏览器会话恢复到本次测试约定的初始状态。 */
     reset: (session: BrowserSession) => Promise<void>;
     /** 关闭浏览器会话并释放对应资源。 */

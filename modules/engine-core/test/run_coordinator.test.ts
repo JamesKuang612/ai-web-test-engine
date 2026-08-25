@@ -355,6 +355,20 @@ class FakeBrowserAdapter implements BrowserAdapter {
         });
     };
 
+    /** 返回固定 PNG 头部，供协调器截图能力测试使用。 */
+    public captureScreenshot = (): Promise<{
+        content: Uint8Array,
+        mediaType: 'image/png'
+    }> => Promise.resolve({
+        content: new Uint8Array([
+            137,
+            80,
+            78,
+            71
+        ]),
+        mediaType: 'image/png'
+    });
+
     /** 当前地基测试不需要重置浏览器。 */
     public reset = (_session: BrowserSession): Promise<void> =>
         Promise.resolve();
