@@ -21,6 +21,10 @@ interface CapturedRequest {
 
 describe('StdioCodexAppServerClient', () => {
     it('按协议完成初始化、模型校验、临时线程和结构化回合', async () => {
+        const fakeMcpListProcess = new FakeCodexMcpListProcess([
+            'momentic',
+            'team.docs'
+        ]);
         const fakeProcess = new FakeCodexProcess([
             'gpt-5.6-sol'
         ]);
@@ -29,7 +33,20 @@ describe('StdioCodexAppServerClient', () => {
             clientVersion: 'test-version'
         }, (command, args) => {
             assert.equal(command, 'custom-codex');
+            if (args[0] === 'mcp') {
+                assert.deepEqual(args, [
+                    'mcp',
+                    'list',
+                    '--json'
+                ]);
+                return fakeMcpListProcess as unknown as
+                    ChildProcessWithoutNullStreams;
+            }
             assert.deepEqual(args, [
+                '-c',
+                'mcp_servers."momentic".enabled=false',
+                '-c',
+                'mcp_servers."team.docs".enabled=false',
                 'app-server',
                 '--stdio'
             ]);
@@ -77,12 +94,16 @@ describe('StdioCodexAppServerClient', () => {
     });
 
     it('当前登录不提供目标模型时提前失败', async () => {
+        const fakeMcpListProcess = new FakeCodexMcpListProcess([]);
         const fakeProcess = new FakeCodexProcess([
             'gpt-5.6-luna'
         ]);
-        const client = new StdioCodexAppServerClient({}, () =>
-            fakeProcess as unknown as ChildProcessWithoutNullStreams
-        );
+        const client = new StdioCodexAppServerClient({}, (
+            _command,
+            args
+        ) => args[0] === 'mcp'
+            ? fakeMcpListProcess as unknown as ChildProcessWithoutNullStreams
+            : fakeProcess as unknown as ChildProcessWithoutNullStreams);
 
         await assert.rejects(
             client.runStructuredTurn({
@@ -107,6 +128,30 @@ describe('StdioCodexAppServerClient', () => {
         assert.equal(fakeProcess.closedByEof, true);
     });
 });
+
+/** 模拟 `codex mcp list --json`，且不实际启动任何 MCP 服务。 */
+class FakeCodexMcpListProcess extends EventEmitter {
+    public readonly stdin = new PassThrough();
+    public readonly stdout = new PassThrough();
+    public readonly stderr = new PassThrough();
+
+    constructor(serverNames: string[]) {
+        super();
+        this.stdin.once('finish', () => {
+            this.stdout.write(JSON.stringify(serverNames.map((name) => ({
+                name,
+                enabled: true
+            }))));
+            this.emit('exit', 0, null);
+        });
+    }
+
+    /** 模拟取消配置读取进程。 */
+    public kill(): boolean {
+        this.emit('exit', null, null);
+        return true;
+    }
+}
 
 /** 模拟行分隔 App Server 协议，并记录客户端发出的所有请求。 */
 class FakeCodexProcess extends EventEmitter {

@@ -92,6 +92,11 @@ type CodexProcessSpawner = (
     args: string[]
 ) => ChildProcessWithoutNullStreams;
 
+interface ConfiguredMcpServer {
+    name: string;
+    enabled: boolean;
+}
+
 interface ProtocolMessage {
     id?: number | string;
     method?: string;
@@ -159,6 +164,148 @@ function getAbortReason(signal: AbortSignal): unknown {
         return error;
     }
     return new DOMException('操作已取消。', 'AbortError');
+}
+
+/** 校验 `codex mcp list --json` 输出并提取当前启用的服务名。 */
+function readEnabledMcpServerNames(value: unknown): string[] {
+    if (!Array.isArray(value)) {
+        throw new CodexAppServerError(
+            'PROTOCOL_ERROR',
+            'Codex MCP 配置列表格式无效。'
+        );
+    }
+
+    const servers = value.map((item): ConfiguredMcpServer => {
+        if (
+            !isRecord(item) ||
+            typeof item.name !== 'string' ||
+            typeof item.enabled !== 'boolean'
+        ) {
+            throw new CodexAppServerError(
+                'PROTOCOL_ERROR',
+                'Codex MCP 配置项格式无效。'
+            );
+        }
+        return {
+            name: item.name,
+            enabled: item.enabled
+        };
+    });
+
+    return [
+        ...new Set(
+            servers
+                .filter((server) => server.enabled)
+                .map((server) => server.name)
+        )
+    ];
+}
+
+/** 读取 Codex 的有效 MCP 配置；该命令只解析配置，不启动 MCP 服务。 */
+function listEnabledMcpServerNames(
+    command: string,
+    processSpawner: CodexProcessSpawner,
+    signal: AbortSignal
+): Promise<string[]> {
+    signal.throwIfAborted();
+    const child = processSpawner(command, [
+        'mcp',
+        'list',
+        '--json'
+    ]);
+
+    return new Promise((resolve, reject) => {
+        let stdout = '';
+        let stderr = '';
+        let settled = false;
+
+        const cleanup = () => {
+            signal.removeEventListener('abort', abortProcess);
+            child.removeListener('error', handleProcessError);
+            child.removeListener('exit', handleProcessExit);
+        };
+        const finish = (
+            callback: () => void
+        ) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            cleanup();
+            callback();
+        };
+        const abortProcess = () => {
+            finish(() => reject(getAbortReason(signal)));
+            child.kill();
+        };
+        const handleProcessError = (
+            error: Error & { code?: string }
+        ) => {
+            const codexError = error.code === 'ENOENT'
+                ? new CodexAppServerError(
+                    'CLI_NOT_FOUND',
+                    '没有找到 Codex CLI，请先安装 Codex 并完成登录。'
+                )
+                : new CodexAppServerError(
+                    'PROCESS_EXITED',
+                    `Codex MCP 配置读取进程无法启动：${ error.message }`
+                );
+            finish(() => reject(codexError));
+        };
+        const handleProcessExit = (code: number | null) => {
+            if (code !== 0) {
+                const suffix = stderr.trim()
+                    ? `：${ stderr.trim().slice(0, 500) }`
+                    : '';
+                finish(() => reject(new CodexAppServerError(
+                    'PROCESS_EXITED',
+                    `Codex MCP 配置读取失败（code=${
+                        code ?? 'null'
+                    }）${ suffix }`
+                )));
+                return;
+            }
+
+            finish(() => {
+                try {
+                    resolve(readEnabledMcpServerNames(
+                        JSON.parse(stdout) as unknown
+                    ));
+                } catch (error) {
+                    reject(error instanceof CodexAppServerError
+                        ? error
+                        : new CodexAppServerError(
+                            'PROTOCOL_ERROR',
+                            'Codex MCP 配置列表不是合法 JSON。'
+                        ));
+                }
+            });
+        };
+
+        child.stdout.on('data', (chunk: Buffer) => {
+            stdout = `${ stdout }${ chunk.toString('utf8') }`;
+        });
+        child.stderr.on('data', (chunk: Buffer) => {
+            stderr = `${ stderr }${ chunk.toString('utf8') }`.slice(-1_000);
+        });
+        child.stdin.on('error', () => {
+            // 读取配置的子命令不消费 stdin，提前退出时忽略管道关闭错误。
+        });
+        child.once('error', handleProcessError);
+        child.once('exit', handleProcessExit);
+        signal.addEventListener('abort', abortProcess, {
+            once: true
+        });
+        child.stdin.end();
+    });
+}
+
+/** 为每个 MCP 名称生成独立配置覆盖，避免用户配置合并后重新启用。 */
+function createMcpDisableArguments(serverNames: string[]): string[] {
+    return serverNames.flatMap((serverName) => [
+        '-c',
+        `mcp_servers.${ JSON.stringify(serverName) }.enabled=false`
+    ]);
 }
 
 /** Windows 子进程短暂占用 cwd 时，避免清理错误覆盖成功模型结果。 */
@@ -501,6 +648,11 @@ export class StdioCodexAppServerClient implements CodexAppServerClient {
         signal: AbortSignal
     ): Promise<CodexStructuredTurnOutput> => {
         signal.throwIfAborted();
+        const enabledMcpServerNames = await listEnabledMcpServerNames(
+            this.command,
+            this.processSpawner,
+            signal
+        );
         const isolatedDirectoryPrefix = join(
             tmpdir(),
             'ai-web-test-engine-codex-'
@@ -510,6 +662,7 @@ export class StdioCodexAppServerClient implements CodexAppServerClient {
 
         try {
             const child = this.processSpawner(this.command, [
+                ...createMcpDisableArguments(enabledMcpServerNames),
                 'app-server',
                 '--stdio'
             ]);
