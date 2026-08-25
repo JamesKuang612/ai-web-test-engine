@@ -56,6 +56,7 @@ describe('StdioCodexAppServerClient', () => {
         const result = await client.runStructuredTurn({
             model: 'gpt-5.6-sol',
             reasoningEffort: 'high',
+            serviceTier: 'priority',
             systemPrompt: '提取测试意图。',
             userPrompt: '帮我登录',
             maxOutputTokens: 100,
@@ -75,6 +76,7 @@ describe('StdioCodexAppServerClient', () => {
             (item) => item.method === 'thread/start'
         );
         assert.equal(threadRequest?.params?.model, 'gpt-5.6-sol');
+        assert.equal(threadRequest?.params?.serviceTier, 'priority');
         assert.equal(threadRequest?.params?.approvalPolicy, 'never');
         assert.equal(threadRequest?.params?.sandbox, 'read-only');
         assert.deepEqual(threadRequest?.params?.dynamicTools, []);
@@ -83,6 +85,7 @@ describe('StdioCodexAppServerClient', () => {
             (item) => item.method === 'turn/start'
         );
         assert.equal(turnRequest?.params?.effort, 'high');
+        assert.equal(turnRequest?.params?.serviceTier, 'priority');
         assert.deepEqual(turnRequest?.params?.outputSchema, {
             type: 'object'
         });

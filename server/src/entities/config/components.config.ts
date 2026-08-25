@@ -13,6 +13,9 @@ export type LlmReasoningEffort =
     | 'max'
     | 'ultra';
 
+/** Codex 可选的加速服务档位；未配置时使用账户默认档位。 */
+export type LlmServiceTier = 'priority';
+
 /** 模型 Provider 配置；FineOne API Key 只允许由本机私有配置覆盖。 */
 export interface ILlmComponentConf {
     readonly provider: LlmProvider;
@@ -21,6 +24,7 @@ export interface ILlmComponentConf {
     readonly model: string;
     readonly protocol: LlmApiProtocol;
     readonly reasoning_effort: LlmReasoningEffort;
+    readonly service_tier?: LlmServiceTier;
     readonly codex_command: string;
 }
 

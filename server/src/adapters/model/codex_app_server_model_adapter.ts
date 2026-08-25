@@ -16,6 +16,7 @@ import type {
 export interface CodexAppServerModelAdapterOptions {
     model: string;
     reasoningEffort?: CodexReasoningEffort;
+    serviceTier?: string;
     command?: string;
 }
 
@@ -23,6 +24,7 @@ export interface CodexAppServerModelAdapterOptions {
 export class CodexAppServerModelAdapter implements ModelAdapter {
     private readonly model: string;
     private readonly reasoningEffort: CodexReasoningEffort;
+    private readonly serviceTier?: string;
     private readonly client: CodexAppServerClient;
 
     /** 校验模型配置，并允许单元测试注入假的 App Server 客户端。 */
@@ -32,6 +34,7 @@ export class CodexAppServerModelAdapter implements ModelAdapter {
     ) {
         this.model = options.model.trim();
         this.reasoningEffort = options.reasoningEffort ?? 'high';
+        this.serviceTier = options.serviceTier?.trim() || undefined;
         this.client = client ?? new StdioCodexAppServerClient({
             command: options.command
         });
@@ -65,6 +68,7 @@ export class CodexAppServerModelAdapter implements ModelAdapter {
             const output = await this.client.runStructuredTurn({
                 model: this.model,
                 reasoningEffort: this.reasoningEffort,
+                serviceTier: this.serviceTier,
                 systemPrompt: request.systemPrompt,
                 userPrompt: request.userPrompt,
                 maxOutputTokens: request.maxOutputTokens,

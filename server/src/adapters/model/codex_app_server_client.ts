@@ -59,6 +59,7 @@ export class CodexAppServerError extends Error {
 export interface CodexStructuredTurnInput {
     model: string;
     reasoningEffort: CodexReasoningEffort;
+    serviceTier?: string;
     systemPrompt: string;
     userPrompt: string;
     maxOutputTokens: number;
@@ -714,6 +715,7 @@ export class StdioCodexAppServerClient implements CodexAppServerClient {
     ): Promise<string> {
         const thread = await connection.request('thread/start', {
             model: input.model,
+            serviceTier: input.serviceTier,
             allowProviderModelFallback: false,
             cwd: isolatedDirectory,
             approvalPolicy: 'never',
@@ -780,6 +782,7 @@ export class StdioCodexAppServerClient implements CodexAppServerClient {
                 ],
                 model: input.model,
                 effort: input.reasoningEffort,
+                serviceTier: input.serviceTier,
                 approvalPolicy: 'never',
                 sandboxPolicy: {
                     type: 'readOnly',

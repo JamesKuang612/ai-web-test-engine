@@ -31,7 +31,8 @@ export function createConfiguredModelAdapter(): ModelAdapter {
         ? new CodexAppServerModelAdapter({
             command: llmConfig.codex_command,
             model: llmConfig.model,
-            reasoningEffort: llmConfig.reasoning_effort
+            reasoningEffort: llmConfig.reasoning_effort,
+            serviceTier: llmConfig.service_tier
         })
         : new FineOneModelAdapter({
             baseUrl: llmConfig.base_url,

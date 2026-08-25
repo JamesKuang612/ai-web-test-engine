@@ -167,6 +167,11 @@
                 },
                 "reasoning_effort": {
                     "$ref": "#/definitions/LlmReasoningEffort"
+                },
+                "service_tier": {
+                    "const": "priority",
+                    "description": "Codex 可选的加速服务档位；未配置时使用账户默认档位。",
+                    "type": "string"
                 }
             },
             "required": [
@@ -344,6 +349,11 @@
                 "ultra",
                 "xhigh"
             ],
+            "type": "string"
+        },
+        "LlmServiceTier": {
+            "const": "priority",
+            "description": "Codex 可选的加速服务档位；未配置时使用账户默认档位。",
             "type": "string"
         }
     }

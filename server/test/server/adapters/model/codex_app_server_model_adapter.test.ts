@@ -78,6 +78,7 @@ describe('CodexAppServerModelAdapter', () => {
             }
         });
         assert.equal(client.lastInput?.reasoningEffort, 'high');
+        assert.equal(client.lastInput?.serviceTier, 'priority');
         assert.equal(client.lastInput?.systemPrompt, request.systemPrompt);
         assert.equal(client.lastInput?.userPrompt, request.userPrompt);
         assert.deepEqual(
@@ -166,6 +167,7 @@ function createAdapter(
     return new CodexAppServerModelAdapter({
         model: 'gpt-5.6-sol',
         reasoningEffort: 'high',
+        serviceTier: 'priority',
         command: 'codex'
     }, client);
 }
