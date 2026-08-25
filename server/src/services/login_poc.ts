@@ -3,7 +3,7 @@ import type {
     StartRunInput,
 } from '@ai-web-test-engine/core';
 
-const LOGIN_URL = 'https://test.jdydevelop.com/portal/signin';
+const LOGIN_URL = 'https://test.jdydevelop.com/dashboard#/';
 
 /** 创建意图预览和完整调试运行共同使用的登录 POC 上下文。 */
 export function createLoginPocBuildInput(
@@ -22,7 +22,7 @@ export function createLoginPocBuildInput(
             schemaVersion: 1,
             id: 'jiandaoyun-test',
             name: '简道云测试环境',
-            baseUrl: 'https://test.jdydevelop.com',
+            baseUrl: LOGIN_URL,
             allowedHosts: [
                 'test.jdydevelop.com'
             ],
