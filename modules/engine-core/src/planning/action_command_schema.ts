@@ -102,7 +102,14 @@ const ACTION_COMMAND_JSON_SCHEMA: Record<string, JsonValue> = {
                             type: 'string',
                             const: 'literal'
                         },
-                        value: {}
+                        value: {
+                            type: [
+                                'string',
+                                'number',
+                                'boolean',
+                                'null'
+                            ]
+                        }
                     }
                 },
                 {

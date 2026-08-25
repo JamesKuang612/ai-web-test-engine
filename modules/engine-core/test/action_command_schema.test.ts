@@ -76,4 +76,13 @@ describe('ActionCommand Schema', () => {
             ]
         );
     });
+
+    it('为字面量值声明严格结构化输出要求的显式类型', () => {
+        assert.equal(
+            JSON.stringify(actionCommandSchema.jsonSchema).includes(
+                '"value":{"type":["string","number","boolean","null"]}'
+            ),
+            true
+        );
+    });
 });
