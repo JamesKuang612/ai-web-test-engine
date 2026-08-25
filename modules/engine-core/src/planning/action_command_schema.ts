@@ -157,10 +157,10 @@ function parseActionCommand(value: unknown): ActionCommand {
     requireAllowedFields(object, ACTION_COMMAND_FIELDS, 'ActionCommand');
 
     const type = requireActionType(object.type);
-    const target = object.target == null
+    const target = object.target === undefined || object.target === null
         ? undefined
         : parseTarget(object.target);
-    const actionValue = object.value == null
+    const actionValue = object.value === undefined || object.value === null
         ? undefined
         : parseValueReference(object.value);
 
@@ -178,7 +178,9 @@ function parseActionCommand(value: unknown): ActionCommand {
                 value: actionValue
             }
             : {}),
-        ...(object.expectedEffect == null
+        ...(
+            object.expectedEffect === undefined ||
+            object.expectedEffect === null
             ? {}
             : {
                 expectedEffect: requireNonEmptyString(
