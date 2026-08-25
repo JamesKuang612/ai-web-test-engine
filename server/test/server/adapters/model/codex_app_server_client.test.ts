@@ -186,15 +186,12 @@ class FakeCodexProcess extends EventEmitter {
                 }
             });
             this.notify('item/completed', {
-                threadId: 'thread-001',
-                turnId: 'turn-001',
                 item: {
                     type: 'agentMessage',
                     text: '{"status":"ok"}'
                 }
             });
             this.notify('turn/completed', {
-                threadId: 'thread-001',
                 turn: {
                     id: 'turn-001',
                     status: 'completed',

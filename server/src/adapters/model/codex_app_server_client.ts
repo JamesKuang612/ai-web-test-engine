@@ -564,8 +564,7 @@ export class StdioCodexAppServerClient implements CodexAppServerClient {
             (method, params) => {
                 const item = this.readCompletedAgentMessage(
                     method,
-                    params,
-                    threadId
+                    params
                 );
                 if (item !== undefined) {
                     finalText = item;
@@ -575,7 +574,7 @@ export class StdioCodexAppServerClient implements CodexAppServerClient {
         const completionController = new AbortController();
         const completionPromise = connection.waitForNotification(
             'turn/completed',
-            (params) => this.isThreadNotification(params, threadId),
+            (params) => this.isTurnCompletion(params),
             AbortSignal.any([
                 signal,
                 completionController.signal
@@ -614,7 +613,6 @@ export class StdioCodexAppServerClient implements CodexAppServerClient {
             completionConsumed = true;
             const completedTurn = this.readTurnCompletion(
                 completion,
-                threadId,
                 turnId
             );
             finalText ??= completedTurn.finalText;
@@ -736,21 +734,19 @@ export class StdioCodexAppServerClient implements CodexAppServerClient {
         return value.turn.id;
     }
 
-    /** 判断通知是否属于当前临时线程。 */
-    private isThreadNotification(params: unknown, threadId: string): boolean {
-        return isRecord(params) && params.threadId === threadId;
+    /** 当前连接只运行一个回合，接受包含 turn 的标准完成通知。 */
+    private isTurnCompletion(params: unknown): boolean {
+        return isRecord(params) && isRecord(params.turn);
     }
 
     /** 从 item/completed 通知中收集最终的 agentMessage。 */
     private readCompletedAgentMessage(
         method: string,
-        params: unknown,
-        threadId: string
+        params: unknown
     ): string | undefined {
         if (
             method !== 'item/completed' ||
             !isRecord(params) ||
-            params.threadId !== threadId ||
             !isRecord(params.item) ||
             params.item.type !== 'agentMessage' ||
             typeof params.item.text !== 'string'
@@ -763,14 +759,12 @@ export class StdioCodexAppServerClient implements CodexAppServerClient {
     /** 校验 turn/completed 状态，并从完整回合中兜底提取最终文本。 */
     private readTurnCompletion(
         value: unknown,
-        threadId: string,
         turnId: string
     ): {
         finalText?: string
     } {
         if (
             !isRecord(value) ||
-            value.threadId !== threadId ||
             !isRecord(value.turn) ||
             value.turn.id !== turnId
         ) {
