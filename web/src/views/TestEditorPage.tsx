@@ -10,11 +10,17 @@ import {
     useParams,
 } from 'react-router-dom';
 import type {
+    DebugRunEvent,
     DebugRunMode,
     DebugRunResult,
+    DebugRunSession,
+    DebugRunSessionUpdate,
 } from '../api/run-debug';
 import {
-    requestDebugRun,
+    cancelDebugRunSession,
+    getDebugScreenshotUrl,
+    startDebugRun,
+    subscribeDebugRunSession,
 } from '../api/run-debug';
 import {
     createTestDefinition,
@@ -23,12 +29,13 @@ import {
 } from '../api/test-definitions';
 import { Icon } from '../components/Icon';
 
-type InspectorTab = 'context' | 'console' | 'network' | 'html';
+type InspectorTab = 'timeline' | 'context' | 'console' | 'network' | 'html';
 type LoadState = 'error' | 'loading' | 'ready';
-type RunState = 'failed' | 'idle' | 'passed' | 'running';
+type RunState = 'cancelled' | 'failed' | 'idle' | 'passed' | 'running';
 type SaveState = 'dirty' | 'saved' | 'saving';
 
 const inspectorTabs: Array<{ id: InspectorTab; label: string }> = [
+    { id: 'timeline', label: '时间线' },
     { id: 'context', label: '上下文' },
     { id: 'console', label: '控制台' },
     { id: 'network', label: '网络' },
@@ -52,13 +59,21 @@ export function TestEditorPage() {
     const [planRef, setPlanRef] = useState('');
     const [result, setResult] = useState<DebugRunResult>();
     const [runError, setRunError] = useState('');
+    const [runEvents, setRunEvents] = useState<DebugRunEvent[]>([]);
+    const [runSessionId, setRunSessionId] = useState('');
     const [runState, setRunState] = useState<RunState>('idle');
+    const [selectedScreenshotRef, setSelectedScreenshotRef] = useState('');
     const [saveError, setSaveError] = useState('');
     const [saveState, setSaveState] = useState<SaveState>('dirty');
     const [testName, setTestName] = useState('');
     const [url, setUrl] = useState(DEFAULT_START_URL);
     const abortControllerRef = useRef<AbortController | undefined>(undefined);
+    const finalizedSessionRef = useRef('');
+    const runSubscriptionCleanupRef = useRef<(() => void) | undefined>(
+        undefined
+    );
     const runStartedAtRef = useRef(0);
+    const [stopRequested, setStopRequested] = useState(false);
 
     const fileName = isNewTest
         ? '未命名测试.test.yaml'
@@ -72,9 +87,16 @@ export function TestEditorPage() {
         const controller = new AbortController();
         abortControllerRef.current?.abort();
         abortControllerRef.current = undefined;
+        runSubscriptionCleanupRef.current?.();
+        runSubscriptionCleanupRef.current = undefined;
+        finalizedSessionRef.current = '';
         setRunState('idle');
         setResult(undefined);
         setRunError('');
+        setRunEvents([]);
+        setRunSessionId('');
+        setSelectedScreenshotRef('');
+        setStopRequested(false);
         setElapsedSeconds(0);
         setMode('ai-explore');
         setPlanRef(readStoredPlanRef(activeTestId));
@@ -133,7 +155,10 @@ export function TestEditorPage() {
         return () => window.clearInterval(timer);
     }, [runState]);
 
-    useEffect(() => () => abortControllerRef.current?.abort(), []);
+    useEffect(() => () => {
+        abortControllerRef.current?.abort();
+        runSubscriptionCleanupRef.current?.();
+    }, []);
 
     const markDefinitionEdited = () => {
         setSaveState('dirty');
@@ -174,6 +199,92 @@ export function TestEditorPage() {
         }
     };
 
+    const receiveRunEvents = (events: DebugRunEvent[]) => {
+        setRunEvents((current) => mergeRunEvents(current, events));
+        const screenshotRef = findLatestScreenshotRef(events);
+        if (screenshotRef) {
+            setSelectedScreenshotRef(screenshotRef);
+        }
+    };
+
+    const persistCompiledPlan = (
+        nextResult: DebugRunResult,
+        normalizedAction: string
+    ) => {
+        if (!nextResult.compiledPlanRef) {
+            return;
+        }
+        setPlanRef(nextResult.compiledPlanRef);
+        window.localStorage.setItem(
+            planStorageKey(activeTestId),
+            nextResult.compiledPlanRef
+        );
+        updateTestDefinition(activeTestId, {
+            action: normalizedAction,
+            name: testName.trim(),
+            planRef: nextResult.compiledPlanRef,
+            startUrl: url.trim()
+        }).then((record) => {
+            setTestName(record.definition.name);
+            setSaveState('saved');
+        }).catch((error) => {
+            setSaveState('dirty');
+            setSaveError(
+                error instanceof Error
+                    ? `计划已生成，但保存到用例失败：${ error.message }`
+                    : '计划已生成，但保存到用例失败。'
+            );
+        });
+    };
+
+    const finalizeRunSession = (
+        session: DebugRunSession,
+        normalizedAction: string
+    ) => {
+        if (
+            !isTerminalSession(session)
+            || finalizedSessionRef.current === session.sessionId
+        ) {
+            return;
+        }
+        finalizedSessionRef.current = session.sessionId;
+        runSubscriptionCleanupRef.current?.();
+        runSubscriptionCleanupRef.current = undefined;
+        setStopRequested(false);
+        const nextResult = session.result;
+        setResult(nextResult);
+        if (nextResult) {
+            setElapsedSeconds(Math.round(
+                nextResult.metrics.durationMs / 1_000
+            ));
+        }
+        if (session.status === 'CANCELLED') {
+            setRunError(session.error ?? nextResult?.summary ?? '运行已终止。');
+            setRunState('cancelled');
+            return;
+        }
+        setRunState(
+            nextResult?.lifecycle === 'COMPLETED'
+            && nextResult.result === 'PASS'
+                ? 'passed'
+                : 'failed'
+        );
+        if (!nextResult) {
+            setRunError(session.error ?? '运行异常结束，服务端未返回结果。');
+            return;
+        }
+        persistCompiledPlan(nextResult, normalizedAction);
+    };
+
+    const receiveRunSession = (
+        session: DebugRunSession,
+        normalizedAction: string
+    ) => {
+        setRunSessionId(session.sessionId);
+        receiveRunEvents(session.events);
+        finalizeRunSession(session, normalizedAction);
+    };
+
     const runTest = async () => {
         const normalizedAction = action.trim();
         const normalizedPlanRef = planRef.trim();
@@ -200,14 +311,21 @@ export function TestEditorPage() {
 
         const controller = new AbortController();
         abortControllerRef.current = controller;
+        runSubscriptionCleanupRef.current?.();
+        runSubscriptionCleanupRef.current = undefined;
+        finalizedSessionRef.current = '';
         runStartedAtRef.current = Date.now();
         setElapsedSeconds(0);
         setResult(undefined);
         setRunError('');
-        setActiveTab('console');
+        setRunEvents([]);
+        setRunSessionId('');
+        setSelectedScreenshotRef('');
+        setStopRequested(false);
+        setActiveTab('timeline');
         setRunState('running');
         try {
-            const nextResult = await requestDebugRun({
+            const session = await startDebugRun({
                 action: normalizedAction,
                 mode,
                 startUrl: url.trim(),
@@ -220,38 +338,27 @@ export function TestEditorPage() {
             if (controller.signal.aborted) {
                 return;
             }
-            setResult(nextResult);
-            setElapsedSeconds(Math.round(nextResult.metrics.durationMs / 1_000));
-            setRunState(
-                nextResult.lifecycle === 'COMPLETED'
-                && nextResult.result === 'PASS'
-                    ? 'passed'
-                    : 'failed'
-            );
-            if (nextResult.compiledPlanRef) {
-                setPlanRef(nextResult.compiledPlanRef);
-                window.localStorage.setItem(
-                    planStorageKey(activeTestId),
-                    nextResult.compiledPlanRef
-                );
-                try {
-                    const record = await updateTestDefinition(activeTestId, {
-                        action: normalizedAction,
-                        name: testName.trim(),
-                        planRef: nextResult.compiledPlanRef,
-                        startUrl: url.trim()
-                    });
-                    setTestName(record.definition.name);
-                    setSaveState('saved');
-                } catch (error) {
-                    setSaveState('dirty');
-                    setSaveError(
-                        error instanceof Error
-                            ? `计划已生成，但保存到用例失败：${ error.message }`
-                            : '计划已生成，但保存到用例失败。'
-                    );
-                }
+            receiveRunSession(session, normalizedAction);
+            if (isTerminalSession(session)) {
+                return;
             }
+            runSubscriptionCleanupRef.current = subscribeDebugRunSession(
+                session.sessionId,
+                {
+                    onError: (error) => {
+                        setRunError(error.message);
+                        setRunState('failed');
+                        setActiveTab('console');
+                    },
+                    onUpdate: (update: DebugRunSessionUpdate) => {
+                        if (update.kind === 'run-event') {
+                            receiveRunEvents([update.event]);
+                            return;
+                        }
+                        receiveRunSession(update.session, normalizedAction);
+                    }
+                }
+            );
         } catch (error) {
             if (controller.signal.aborted) {
                 return;
@@ -260,10 +367,34 @@ export function TestEditorPage() {
                 error instanceof Error ? error.message : '运行请求失败。'
             );
             setRunState('failed');
+            setActiveTab('console');
         } finally {
             if (abortControllerRef.current === controller) {
                 abortControllerRef.current = undefined;
             }
+        }
+    };
+
+    const stopRun = async () => {
+        if (runState !== 'running' || stopRequested) {
+            return;
+        }
+        setStopRequested(true);
+        if (!runSessionId) {
+            abortControllerRef.current?.abort();
+            setRunError('运行已在建立会话前终止。');
+            setRunState('cancelled');
+            setStopRequested(false);
+            return;
+        }
+        try {
+            const session = await cancelDebugRunSession(runSessionId);
+            receiveRunSession(session, action.trim());
+        } catch (error) {
+            setRunError(
+                error instanceof Error ? error.message : '终止运行失败。'
+            );
+            setStopRequested(false);
         }
     };
 
@@ -277,9 +408,16 @@ export function TestEditorPage() {
     const resetTest = () => {
         abortControllerRef.current?.abort();
         abortControllerRef.current = undefined;
+        runSubscriptionCleanupRef.current?.();
+        runSubscriptionCleanupRef.current = undefined;
+        finalizedSessionRef.current = '';
         setRunState('idle');
         setResult(undefined);
         setRunError('');
+        setRunEvents([]);
+        setRunSessionId('');
+        setSelectedScreenshotRef('');
+        setStopRequested(false);
         setElapsedSeconds(0);
     };
 
@@ -360,22 +498,36 @@ export function TestEditorPage() {
                     </button>
                 </div>
 
-                <button
-                    className={`run-button ${runState}`}
-                    disabled={editorDisabled || definitionState !== 'ready'}
-                    onClick={() => void runTest()}
-                    type="button"
-                >
-                    {runState === 'passed' ? (
-                        <Icon name="check" size={18} />
-                    ) : (
-                        <Icon name="play" size={18} />
+                <div className="run-controls">
+                    <button
+                        className={`run-button ${runState}`}
+                        disabled={editorDisabled || definitionState !== 'ready'}
+                        onClick={() => void runTest()}
+                        type="button"
+                    >
+                        {runState === 'passed' ? (
+                            <Icon name="check" size={18} />
+                        ) : (
+                            <Icon name="play" size={18} />
+                        )}
+                        {runState === 'running' && '运行中'}
+                        {runState === 'passed' && '已通过'}
+                        {runState === 'failed' && '重新运行'}
+                        {runState === 'cancelled' && '重新运行'}
+                        {runState === 'idle' && '运行'}
+                    </button>
+                    {runState === 'running' && (
+                        <button
+                            className="stop-run-button"
+                            disabled={stopRequested}
+                            onClick={() => void stopRun()}
+                            type="button"
+                        >
+                            <span aria-hidden="true" />
+                            {stopRequested ? '终止中' : '终止'}
+                        </button>
                     )}
-                    {runState === 'running' && '运行中'}
-                    {runState === 'passed' && '已通过'}
-                    {runState === 'failed' && '重新运行'}
-                    {runState === 'idle' && '运行'}
-                </button>
+                </div>
             </section>
 
             <div className="workbench-body">
@@ -532,6 +684,7 @@ export function TestEditorPage() {
                         </button>
                         <button
                             className="reset-button"
+                            disabled={runState === 'running'}
                             onClick={resetTest}
                             type="button"
                         >
@@ -541,7 +694,21 @@ export function TestEditorPage() {
                     </div>
 
                     <div className="browser-viewport">
-                        <div className="mock-login-page">
+                        {selectedScreenshotRef ? (
+                            <figure className="live-run-screenshot">
+                                <img
+                                    alt="当前运行截图"
+                                    src={getDebugScreenshotUrl(
+                                        selectedScreenshotRef
+                                    )}
+                                />
+                                <figcaption>
+                                    真实运行截图
+                                    <code>{selectedScreenshotRef}</code>
+                                </figcaption>
+                            </figure>
+                        ) : (
+                            <div className="mock-login-page">
                             <div className="mock-brand">
                                 <span className="brand-symbol">F</span>
                                 <strong>帆软</strong>
@@ -594,16 +761,23 @@ export function TestEditorPage() {
                                     <span>F</span><span>微</span><span>钉</span><span>企</span>
                                 </div>
                             </form>
-                        </div>
+                            </div>
+                        )}
                         {runState === 'running' && (
-                            <div className="running-overlay">
+                            <div className={`running-overlay ${
+                                selectedScreenshotRef ? 'compact' : ''
+                            }`}>
                                 <span className="running-spinner" />
                                 <strong>
                                     {mode === 'ai-explore'
                                         ? 'AI 正在探索并执行测试'
                                         : '正在执行结构化回放'}
                                 </strong>
-                                <p>已等待 {elapsedSeconds} 秒，请保持服务端运行…</p>
+                                <p>
+                                    {stopRequested
+                                        ? '正在等待浏览器安全退出…'
+                                        : `已等待 ${ elapsedSeconds } 秒`}
+                                </p>
                             </div>
                         )}
                         {runState === 'passed' && (
@@ -626,6 +800,15 @@ export function TestEditorPage() {
                                 </div>
                             </div>
                         )}
+                        {runState === 'cancelled' && (
+                            <div className="run-result-toast cancelled">
+                                <Icon name="code" size={18} />
+                                <div>
+                                    <strong>运行已终止</strong>
+                                    <span>已保留终止前的事件与截图</span>
+                                </div>
+                            </div>
+                        )}
                     </div>
 
                     <section className="inspector-panel">
@@ -645,6 +828,19 @@ export function TestEditorPage() {
                         </div>
 
                         <div className="inspector-content">
+                            {activeTab === 'timeline' && (
+                                <RunTimeline
+                                    events={runEvents}
+                                    onSelectScreenshot={
+                                        setSelectedScreenshotRef
+                                    }
+                                    runSessionId={runSessionId}
+                                    runState={runState}
+                                    selectedScreenshotRef={
+                                        selectedScreenshotRef
+                                    }
+                                />
+                            )}
                             {activeTab === 'context' && (
                                 <>
                                     <p>
@@ -693,6 +889,87 @@ export function TestEditorPage() {
     );
 }
 
+interface RunTimelineProps {
+    events: DebugRunEvent[];
+    onSelectScreenshot: (ref: string) => void;
+    runSessionId: string;
+    runState: RunState;
+    selectedScreenshotRef: string;
+}
+
+/** 按核心事件序号实时展示执行进度，并允许回看任意一张页面截图。 */
+function RunTimeline({
+    events,
+    onSelectScreenshot,
+    runSessionId,
+    runState,
+    selectedScreenshotRef,
+}: RunTimelineProps) {
+    if (events.length === 0) {
+        return (
+            <div className="inspector-empty">
+                {runState === 'running' && (
+                    <span className="running-spinner dark" />
+                )}
+                <span>
+                    {runState === 'running'
+                        ? '会话已建立，正在等待第一条运行事件…'
+                        : '运行测试后，实时事件会显示在这里。'}
+                </span>
+            </div>
+        );
+    }
+    return (
+        <div className="run-timeline">
+            <header>
+                <strong>实时运行时间线</strong>
+                <span>
+                    {events.length} 条事件
+                    {runSessionId ? ` · 会话 ${ runSessionId }` : ''}
+                </span>
+            </header>
+            <ol>
+                {events.map((event) => {
+                    const screenshotRef = getScreenshotRef(event);
+                    return (
+                        <li
+                            className={
+                                screenshotRef === selectedScreenshotRef
+                                    ? 'selected'
+                                    : ''
+                            }
+                            key={event.eventId}
+                        >
+                            <span className={`timeline-dot ${
+                                getEventTone(event.type)
+                            }`} />
+                            <div>
+                                <p>
+                                    <strong>{getEventLabel(event.type)}</strong>
+                                    <time>{formatEventTime(event.timestamp)}</time>
+                                </p>
+                                <span>{getEventSummary(event)}</span>
+                            </div>
+                            {screenshotRef && (
+                                <button
+                                    onClick={() => onSelectScreenshot(
+                                        screenshotRef
+                                    )}
+                                    type="button"
+                                >
+                                    {screenshotRef === selectedScreenshotRef
+                                        ? '正在查看'
+                                        : '查看截图'}
+                                </button>
+                            )}
+                        </li>
+                    );
+                })}
+            </ol>
+        </div>
+    );
+}
+
 interface RunConsoleProps {
     elapsedSeconds: number;
     error: string;
@@ -723,7 +1000,9 @@ function RunConsole({
     if (error) {
         return (
             <div className="run-console-error" role="alert">
-                <strong>请求失败</strong>
+                <strong>
+                    {runState === 'cancelled' ? '运行已终止' : '请求失败'}
+                </strong>
                 <p>{error}</p>
             </div>
         );
@@ -798,6 +1077,105 @@ function formatDuration(durationMs: number): string {
     return durationMs < 1_000
         ? `${ durationMs } ms`
         : `${ (durationMs / 1_000).toFixed(1) } 秒`;
+}
+
+function mergeRunEvents(
+    current: DebugRunEvent[],
+    incoming: DebugRunEvent[]
+): DebugRunEvent[] {
+    const events = new Map(current.map((event) => [event.eventId, event]));
+    for (const event of incoming) {
+        events.set(event.eventId, event);
+    }
+    return [...events.values()].sort((left, right) => (
+        left.sequence - right.sequence
+    ));
+}
+
+function findLatestScreenshotRef(events: DebugRunEvent[]): string {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+        const screenshotRef = getScreenshotRef(events[index]);
+        if (screenshotRef) {
+            return screenshotRef;
+        }
+    }
+    return '';
+}
+
+function getScreenshotRef(event: DebugRunEvent): string {
+    return typeof event.payload.screenshotRef === 'string'
+        ? event.payload.screenshotRef
+        : '';
+}
+
+const eventLabels: Record<string, string> = {
+    'action.completed': '动作完成',
+    'action.failed': '动作失败',
+    'action.planned': '动作已规划',
+    'action.started': '开始执行动作',
+    'browser.frame.updated': '浏览器画面更新',
+    'browser.started': '浏览器已启动',
+    'effect.verified': '页面效果已验证',
+    'observation.created': '页面状态已采集',
+    'plan.compilation.completed': '回放计划已生成',
+    'plan.compilation.started': '正在生成回放计划',
+    'replay.validation.completed': '回放验证完成',
+    'run.cancelled': '运行已终止',
+    'run.completed': '运行已完成',
+    'run.crashed': '运行异常',
+    'run.created': '运行已创建',
+    'run.status.changed': '阶段变化',
+    'target.resolved': '页面目标已定位',
+    'trace.appended': '执行轨迹已保存',
+    'verdict.completed': '测试结论已生成'
+};
+
+function getEventLabel(type: string): string {
+    return eventLabels[type] ?? type;
+}
+
+function getEventSummary(event: DebugRunEvent): string {
+    const fields = [
+        'summary',
+        'reasonSummary',
+        'lifecycle',
+        'actionType',
+        'status',
+        'url'
+    ];
+    for (const field of fields) {
+        const value = event.payload[field];
+        if (typeof value === 'string' && value) {
+            return value;
+        }
+    }
+    return `事件序号 ${ event.sequence }`;
+}
+
+function getEventTone(type: string): string {
+    if (type.includes('failed') || type.includes('crashed')) {
+        return 'danger';
+    }
+    if (
+        type.includes('completed')
+        || type === 'effect.verified'
+    ) {
+        return 'success';
+    }
+    return 'active';
+}
+
+function formatEventTime(timestamp: string): string {
+    const date = new Date(timestamp);
+    return Number.isNaN(date.getTime())
+        ? timestamp
+        : date.toLocaleTimeString('zh-CN', { hour12: false });
+}
+
+function isTerminalSession(session: DebugRunSession): boolean {
+    return session.status === 'CANCELLED'
+        || session.status === 'COMPLETED'
+        || session.status === 'CRASHED';
 }
 
 function planStorageKey(testId: string): string {

@@ -143,11 +143,7 @@ describe('App routes', () => {
 describe('Run debug workbench', () => {
     it('sends generic context and stores a per-test replay plan', async () => {
         const user = userEvent.setup();
-        const api = installApiMock({
-            runBody: {
-                result: createDebugRunResult()
-            }
-        });
+        const api = installApiMock();
         renderApp('/tests/login-and-open-workbench');
         await screen.findByDisplayValue(LOGIN_ACTION);
 
@@ -155,7 +151,7 @@ describe('Run debug workbench', () => {
 
         expect(await screen.findByText('测试通过')).toBeInTheDocument();
         const runCall = api.mock.calls.find(([input]) => (
-            String(input) === '/api/debug/run'
+            String(input) === '/api/debug/runs'
         ));
         const request = JSON.parse(
             String(runCall?.[1]?.body)
@@ -176,7 +172,14 @@ describe('Run debug workbench', () => {
             && String(init.body).includes('compiled-plan.json')
         ));
         expect(planSaveCall).toBeDefined();
+        expect(screen.getByText('页面状态已采集')).toBeInTheDocument();
+        expect(screen.getByRole('img', { name: '当前运行截图' }))
+            .toHaveAttribute(
+                'src',
+                '/api/debug/artifact?ref=run-debug-001%2Fartifacts%2Fscreen.png'
+            );
 
+        await user.click(screen.getByRole('tab', { name: '控制台' }));
         await user.click(screen.getByRole('button', {
             name: '使用此计划回放'
         }));
@@ -187,10 +190,10 @@ describe('Run debug workbench', () => {
     it('shows backend validation errors in the console', async () => {
         const user = userEvent.setup();
         installApiMock({
-            runBody: {
+            startBody: {
                 error: 'startUrl 只允许测试环境 Host。'
             },
-            runStatus: 400
+            startStatus: 400
         });
         renderApp('/tests/login-and-open-workbench');
         await screen.findByDisplayValue(LOGIN_ACTION);
@@ -201,12 +204,35 @@ describe('Run debug workbench', () => {
             'startUrl 只允许测试环境 Host。'
         );
     });
+
+    it('actively cancels the same running session', async () => {
+        const user = userEvent.setup();
+        const api = installApiMock({
+            currentSession: createRunSession('RUNNING'),
+            cancelSession: createRunSession('CANCELLED')
+        });
+        renderApp('/tests/login-and-open-workbench');
+        await screen.findByDisplayValue(LOGIN_ACTION);
+
+        await user.click(screen.getByRole('button', { name: '运行' }));
+        await user.click(await screen.findByRole('button', { name: '终止' }));
+
+        expect(await screen.findByText('运行已终止')).toBeInTheDocument();
+        expect(api.mock.calls.some(([input, init]) => (
+            String(input) === `/api/debug/runs/${ RUN_SESSION_ID }`
+            && init?.method === 'DELETE'
+        ))).toBe(true);
+    });
 });
 
 interface ApiMockOptions {
-    runBody?: unknown;
-    runStatus?: number;
+    cancelSession?: ReturnType<typeof createRunSession>;
+    currentSession?: ReturnType<typeof createRunSession>;
+    startBody?: unknown;
+    startStatus?: number;
 }
+
+const RUN_SESSION_ID = '8d482633-14a6-4a13-a52f-bfb0617b14dc';
 
 function installApiMock(options: ApiMockOptions = {}) {
     const definitions = new Map<string, TestDefinitionDto>([
@@ -270,14 +296,29 @@ function installApiMock(options: ApiMockOptions = {}) {
             }
             return jsonResponse({ test: definition });
         }
-        if (url === '/api/debug/run') {
+        if (url === '/api/debug/runs' && method === 'POST') {
             return jsonResponse(
-                options.runBody ?? { result: createDebugRunResult() },
-                options.runStatus ?? 200
+                options.startBody ?? {
+                    session: createRunSession('RUNNING')
+                },
+                options.startStatus ?? 202
             );
+        }
+        if (url === `/api/debug/runs/${ RUN_SESSION_ID }`) {
+            if (method === 'DELETE') {
+                return jsonResponse({
+                    session: options.cancelSession
+                        ?? createRunSession('CANCELLED')
+                }, 202);
+            }
+            return jsonResponse({
+                session: options.currentSession
+                    ?? createRunSession('COMPLETED')
+            });
         }
         return jsonResponse({ error: 'Not found.' }, 404);
     });
+    vi.stubGlobal('EventSource', undefined);
     vi.stubGlobal('fetch', fetchMock);
     return fetchMock;
 }
@@ -350,6 +391,40 @@ function createDebugRunResult() {
             durationMs: 30_000,
             modelCallCount: 7,
             repeatedStateActionCount: 0
+        }
+    };
+}
+
+function createRunSession(
+    status: 'CANCELLED' | 'COMPLETED' | 'RUNNING'
+) {
+    return {
+        schemaVersion: 1,
+        sessionId: RUN_SESSION_ID,
+        status,
+        createdAt: '2026-08-26T08:00:00.000Z',
+        updatedAt: '2026-08-26T08:00:03.000Z',
+        events: status === 'COMPLETED' ? [createObservationEvent()] : [],
+        ...status === 'COMPLETED'
+            ? { result: createDebugRunResult(), runId: 'run-debug-001' }
+            : {},
+        ...status === 'CANCELLED'
+            ? { error: '运行已由用户终止。' }
+            : {}
+    };
+}
+
+function createObservationEvent() {
+    return {
+        schemaVersion: 1,
+        eventId: 'event-observation-001',
+        runId: 'run-debug-001',
+        type: 'observation.created',
+        sequence: 8,
+        timestamp: '2026-08-26T08:00:03.000Z',
+        payload: {
+            screenshotRef: 'run-debug-001/artifacts/screen.png',
+            url: DEFAULT_START_URL
         }
     };
 }

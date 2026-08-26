@@ -659,9 +659,16 @@ code {
     transform: scaleX(-1);
 }
 
-.run-button {
+.run-controls {
     position: absolute;
     left: 50%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transform: translateX(-50%);
+}
+
+.run-button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -669,7 +676,6 @@ code {
     min-width: 92px;
     height: 38px;
     padding: 0 16px;
-    transform: translateX(-50%);
     border: 0;
     border-radius: 9px;
     color: #ffffff;
@@ -695,6 +701,37 @@ code {
 
 .run-button.failed {
     background: #b9383e;
+}
+
+.run-button.cancelled {
+    background: #6d7178;
+}
+
+.stop-run-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 38px;
+    padding: 0 13px;
+    border: 1px solid #e2b6b9;
+    border-radius: 9px;
+    color: #a83238;
+    background: #fff7f7;
+    font-size: 12px;
+    font-weight: 650;
+}
+
+.stop-run-button span {
+    width: 9px;
+    height: 9px;
+    border-radius: 2px;
+    background: currentColor;
+}
+
+.stop-run-button:disabled {
+    opacity: 0.58;
+    cursor: wait;
 }
 
 .workbench-body {
@@ -992,6 +1029,49 @@ code {
     overflow: hidden;
     padding: 14px;
     background: #eff1f3;
+}
+
+.live-run-screenshot {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 100%;
+    height: 100%;
+    min-height: 290px;
+    margin: 0;
+    overflow: hidden;
+    border: 1px solid #d9dee3;
+    background: #e3e7eb;
+}
+
+.live-run-screenshot img {
+    display: block;
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    box-shadow: 0 2px 12px rgb(26 31 38 / 13%);
+}
+
+.live-run-screenshot figcaption {
+    position: absolute;
+    right: 10px;
+    bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    max-width: calc(100% - 20px);
+    padding: 6px 8px;
+    border-radius: 6px;
+    color: #e7ebef;
+    background: rgb(24 27 31 / 78%);
+    font-size: 9px;
+}
+
+.live-run-screenshot figcaption code {
+    overflow: hidden;
+    color: #bfc8d2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .mock-login-page {
@@ -1294,6 +1374,34 @@ code {
     backdrop-filter: blur(2px);
 }
 
+.running-overlay.compact {
+    inset: 22px auto auto 50%;
+    flex-direction: row;
+    gap: 8px;
+    padding: 8px 12px;
+    transform: translateX(-50%);
+    border-radius: 8px;
+    background: rgb(20 24 29 / 82%);
+    backdrop-filter: blur(5px);
+    box-shadow: 0 4px 16px rgb(0 0 0 / 18%);
+}
+
+.running-overlay.compact .running-spinner {
+    width: 17px;
+    height: 17px;
+    margin: 0;
+    border-width: 2px;
+}
+
+.running-overlay.compact strong {
+    font-size: 10px;
+}
+
+.running-overlay.compact p {
+    margin: 0;
+    font-size: 9px;
+}
+
 .running-spinner {
     width: 28px;
     height: 28px;
@@ -1357,6 +1465,20 @@ code {
 
 .run-result-toast.failed span {
     color: #987477;
+}
+
+.run-result-toast.cancelled {
+    border-color: #d7d9dc;
+    color: #5e636a;
+    background: #fafafa;
+}
+
+.run-result-toast.cancelled strong {
+    color: #4d5157;
+}
+
+.run-result-toast.cancelled span {
+    color: #85898e;
 }
 
 .inspector-panel {
@@ -1477,6 +1599,115 @@ code {
     height: 100%;
     color: #96999f;
     font-size: 11px;
+}
+
+.run-timeline {
+    display: grid;
+    gap: 9px;
+    font-size: 10px;
+}
+
+.run-timeline > header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.run-timeline > header strong {
+    color: #30343a;
+    font-size: 11px;
+}
+
+.run-timeline > header span {
+    overflow: hidden;
+    color: #969aa0;
+    font-size: 9px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.run-timeline ol {
+    display: grid;
+    gap: 5px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.run-timeline li {
+    display: grid;
+    align-items: center;
+    grid-template-columns: 10px minmax(0, 1fr) auto;
+    gap: 9px;
+    min-height: 39px;
+    padding: 6px 8px;
+    border: 1px solid #eceef1;
+    border-radius: 7px;
+    background: #ffffff;
+}
+
+.run-timeline li.selected {
+    border-color: #bfc5f0;
+    background: #f8f8ff;
+}
+
+.timeline-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #6874dc;
+    box-shadow: 0 0 0 3px #eef0ff;
+}
+
+.timeline-dot.success {
+    background: #1a9b64;
+    box-shadow: 0 0 0 3px #e9f8f0;
+}
+
+.timeline-dot.danger {
+    background: #c13c43;
+    box-shadow: 0 0 0 3px #fff0f1;
+}
+
+.run-timeline li > div {
+    min-width: 0;
+}
+
+.run-timeline li p {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin: 0 0 2px;
+}
+
+.run-timeline li strong {
+    color: #40444b;
+    font-size: 10px;
+}
+
+.run-timeline li time,
+.run-timeline li > div > span {
+    color: #8c9198;
+    font-size: 9px;
+}
+
+.run-timeline li > div > span {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.run-timeline li button {
+    height: 25px;
+    padding: 0 8px;
+    border: 1px solid #cfd3df;
+    border-radius: 6px;
+    color: #4650a8;
+    background: #ffffff;
+    font-size: 9px;
 }
 
 .run-console-status {
