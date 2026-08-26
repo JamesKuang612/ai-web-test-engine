@@ -71,6 +71,40 @@ describe('RunDebugService', () => {
             RunDebugInputError
         );
     });
+
+    it('为 structured-replay 设置计划引用和单次模型预算', async () => {
+        const engine = new FakeExecutionEngine();
+        const service = new RunDebugService(engine);
+
+        await service.run(
+            '执行登录计划',
+            new AbortController().signal,
+            {
+                mode: 'structured-replay',
+                planRef: 'source-run/json/compiled-plan.json'
+            }
+        );
+
+        assert.equal(engine.lastInput?.mode, 'structured-replay');
+        assert.equal(
+            engine.lastInput?.test.execution?.planRef,
+            'source-run/json/compiled-plan.json'
+        );
+        assert.equal(engine.lastInput?.budgets.maxModelCalls, 1);
+    });
+
+    it('拒绝缺少安全 planRef 的 structured-replay 请求', async () => {
+        const service = new RunDebugService(new FakeExecutionEngine());
+
+        await assert.rejects(() => service.run(
+            '执行登录计划',
+            new AbortController().signal,
+            {
+                mode: 'structured-replay',
+                planRef: '../compiled-plan.json'
+            }
+        ), RunDebugInputError);
+    });
 });
 
 /** 记录 RunDebugService 交给核心执行引擎的参数。 */

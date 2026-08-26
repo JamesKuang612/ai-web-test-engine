@@ -5,6 +5,9 @@ import type { RunResult } from '@ai-web-test-engine/core';
 import {
     RunDebugController,
 } from '../../../src/controllers/run_debug.controller';
+import type {
+    RunDebugOptions,
+} from '../../../src/services/run_debug.service';
 
 const runResult: RunResult = {
     schemaVersion: 1,
@@ -73,3 +76,60 @@ describe('RunDebugController', () => {
         }
     });
 });
+
+describe('RunDebugController structured-replay', () => {
+    it('把 mode 和 planRef 原样交给服务层校验', async () => {
+        let receivedOptions: RunDebugOptions | undefined;
+        const controller = new RunDebugController({
+            run: async (_action, _signal, options) => {
+                receivedOptions = options;
+                return runResult;
+            }
+        });
+        const app = express();
+        app.use(express.json());
+        app.post('/api/debug/run', controller.run);
+        const server = app.listen(0);
+
+        try {
+            await new Promise<void>((resolve) => {
+                server.once('listening', resolve);
+            });
+            const address = server.address() as AddressInfo;
+            const response = await fetch(
+                `http://127.0.0.1:${ address.port }/api/debug/run`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        action: '执行登录计划',
+                        mode: 'structured-replay',
+                        planRef: 'source-run/json/compiled-plan.json'
+                    })
+                }
+            );
+
+            assert.equal(response.status, 200);
+            assert.deepEqual(receivedOptions, {
+                mode: 'structured-replay',
+                planRef: 'source-run/json/compiled-plan.json'
+            });
+        } finally {
+            await closeServer(server);
+        }
+    });
+});
+
+function closeServer(server: ReturnType<typeof express.application.listen>) {
+    return new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+            if (error) {
+                reject(error);
+                return;
+            }
+            resolve();
+        });
+    });
+}

@@ -1,5 +1,6 @@
 import type {
     ExecutionEngine,
+    RunMode,
     RunResult,
 } from '@ai-web-test-engine/core';
 import {
@@ -29,6 +30,19 @@ export class RunDebugInputError extends Error {
         this.name = 'RunDebugInputError';
     }
 }
+
+/** 调试入口允许调用方选择探索或指定已有计划回放。 */
+export interface RunDebugOptions {
+    mode?: unknown;
+    planRef?: unknown;
+}
+
+const SUPPORTED_RUN_MODES = new Set<RunMode>([
+    'ai-explore',
+    'structured-replay'
+]);
+const PLAN_REF_PATTERN =
+    /^[a-zA-Z0-9_-]+\/json\/[a-zA-Z0-9][a-zA-Z0-9._-]*\.json$/u;
 
 /** 根据本机配置组装真实模型、Playwright 和本地存储。 */
 function createConfiguredExecutionEngine(): ExecutionEngine {
@@ -82,7 +96,8 @@ export class RunDebugService {
     /** 校验自然语言输入并启动一次完整登录运行。 */
     public async run(
         action: string,
-        signal: AbortSignal
+        signal: AbortSignal,
+        options: RunDebugOptions = {}
     ): Promise<RunResult> {
         const normalizedAction = action.trim();
         if (!normalizedAction) {
@@ -96,9 +111,52 @@ export class RunDebugService {
             );
         }
 
+        const mode = this.normalizeMode(options.mode);
+        const planRef = this.normalizePlanRef(mode, options.planRef);
+
         return await this.executionEngine.start(
-            createLoginPocStartInput(normalizedAction),
+            createLoginPocStartInput(normalizedAction, mode, planRef),
             signal
         );
+    }
+
+    /** 当前调试入口只开放已实际接入的两种运行模式。 */
+    private normalizeMode(value: unknown): RunMode {
+        if (value === undefined) {
+            return 'ai-explore';
+        }
+        if (
+            typeof value !== 'string'
+            || !SUPPORTED_RUN_MODES.has(value as RunMode)
+        ) {
+            throw new RunDebugInputError(
+                'mode 只支持 ai-explore 或 structured-replay。'
+            );
+        }
+        return value as RunMode;
+    }
+
+    /** 回放模式必须使用存储层生成的受控 JSON 引用。 */
+    private normalizePlanRef(
+        mode: RunMode,
+        value: unknown
+    ): string | undefined {
+        if (mode !== 'structured-replay') {
+            if (value !== undefined) {
+                throw new RunDebugInputError(
+                    'planRef 只能用于 structured-replay 模式。'
+                );
+            }
+            return undefined;
+        }
+        if (
+            typeof value !== 'string'
+            || !PLAN_REF_PATTERN.test(value)
+        ) {
+            throw new RunDebugInputError(
+                'structured-replay 必须提供合法的 planRef。'
+            );
+        }
+        return value;
     }
 }

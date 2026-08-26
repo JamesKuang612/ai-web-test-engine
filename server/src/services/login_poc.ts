@@ -1,5 +1,6 @@
 import type {
     BuildIntentInput,
+    RunMode,
     StartRunInput,
 } from '@ai-web-test-engine/core';
 
@@ -56,15 +57,29 @@ export function createLoginPocBuildInput(
 
 /** 为登录调试接口补充执行模式和多轮运行预算。 */
 export function createLoginPocStartInput(
-    action: string
+    action: string,
+    mode: RunMode = 'ai-explore',
+    planRef?: string
 ): StartRunInput {
+    const buildInput = createLoginPocBuildInput(action);
     return {
-        ...createLoginPocBuildInput(action),
-        mode: 'ai-explore',
+        ...buildInput,
+        test: {
+            ...buildInput.test,
+            ...mode === 'structured-replay' && planRef
+                ? {
+                    execution: {
+                        planRef,
+                        preferredMode: mode
+                    }
+                }
+                : {}
+        },
+        mode,
         budgets: {
             maxActions: 10,
             maxDurationMs: 300_000,
-            maxModelCalls: 7,
+            maxModelCalls: mode === 'structured-replay' ? 1 : 7,
             maxRepeatedStateActions: 1
         }
     };

@@ -1,0 +1,9 @@
+### 使用一次成功探索生成的 compiledPlanRef 发起确定性回放
+POST http://localhost:3000/api/debug/run
+Content-Type: application/json
+
+{
+    "action": "执行登录计划",
+    "mode": "structured-replay",
+    "planRef": "{{planRef}}"
+}

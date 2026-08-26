@@ -35,7 +35,11 @@ export class RunDebugController {
         try {
             const result = await this.service.run(
                 action,
-                abortController.signal
+                abortController.signal,
+                {
+                    mode: req.body?.mode,
+                    planRef: req.body?.planRef
+                }
             );
             res.json({
                 result
