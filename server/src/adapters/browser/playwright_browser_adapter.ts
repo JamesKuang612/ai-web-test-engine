@@ -190,7 +190,7 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
     /**
      * 执行导航、点击、输入等受控浏览器动作。
      *
-     * 当前支持 NAVIGATE 和 TYPE；其他动作会返回 UNSUPPORTED_ACTION。
+     * 当前支持 NAVIGATE、TYPE 和 CLICK；其他动作会返回 UNSUPPORTED_ACTION。
      */
     public execute = async (
         session: BrowserSession,
@@ -202,6 +202,14 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
 
         if (command.type === 'TYPE') {
             return await this.executeType(
+                managedSession,
+                command,
+                startedAt
+            );
+        }
+
+        if (command.type === 'CLICK') {
+            return await this.executeClick(
                 managedSession,
                 command,
                 startedAt
@@ -402,6 +410,84 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
                         : 'Playwright 无法完成输入动作。'
                 }
             );
+        }
+    }
+
+    /** 点击当前页面观察中的唯一候选元素。 */
+    private async executeClick(
+        session: ManagedBrowserSession,
+        command: ActionCommand,
+        startedAt: string
+    ): Promise<ActionResult> {
+        const candidateId = command.target?.candidateId;
+        if (!candidateId) {
+            return this.createActionResult(
+                startedAt,
+                'rejected',
+                false,
+                {
+                    code: 'INVALID_CLICK_COMMAND',
+                    message: 'CLICK 必须提供 candidateId。'
+                }
+            );
+        }
+
+        const locator = session.elementIndex?.locators.get(candidateId);
+        if (!locator) {
+            return this.createActionResult(
+                startedAt,
+                'rejected',
+                false,
+                {
+                    code: 'TARGET_NOT_FOUND',
+                    message: `当前页面观察中不存在候选元素：${ candidateId }`
+                }
+            );
+        }
+
+        const previousUrl = session.page.url();
+        try {
+            if (
+                await locator.count() !== 1 ||
+                !await locator.isVisible() ||
+                !await locator.isEnabled()
+            ) {
+                return this.createActionResult(
+                    startedAt,
+                    'rejected',
+                    false,
+                    {
+                        code: 'TARGET_NOT_ACTIONABLE',
+                        message: `候选元素当前不可唯一操作：${ candidateId }`
+                    }
+                );
+            }
+            await locator.click();
+            return this.createActionResult(
+                startedAt,
+                'executed',
+                session.page.url() !== previousUrl
+            );
+        } catch (error) {
+            const timedOut = error instanceof errors.TimeoutError;
+            return this.createActionResult(
+                startedAt,
+                timedOut
+                    ? 'timed-out'
+                    : 'failed',
+                session.page.url() !== previousUrl,
+                {
+                    code: timedOut
+                        ? 'CLICK_TIMEOUT'
+                        : 'CLICK_FAILED',
+                    message: timedOut
+                        ? '点击动作执行超时。'
+                        : 'Playwright 无法完成点击动作。'
+                }
+            );
+        } finally {
+            // 点击可能触发 DOM 更新或页面跳转，旧候选元素不能继续复用。
+            session.elementIndex = undefined;
         }
     }
 
