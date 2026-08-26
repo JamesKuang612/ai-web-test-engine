@@ -117,6 +117,9 @@ describe('ModelIntentBuilder', () => {
         assert.deepEqual(intent.allowedHosts, [
             'test.jdydevelop.com'
         ]);
+        assert.deepEqual(intent.constraints, [
+            '已经登录时不要重复登录'
+        ]);
         assert.equal(intent.objective, modelIntent.objective);
         assert.equal(adapter.callCount, 1);
         assert.equal(adapter.lastSignal, controller.signal);
@@ -140,6 +143,10 @@ describe('ModelIntentBuilder', () => {
         assert.match(prompt, /"name": "password"/u);
         assert.doesNotMatch(prompt, /JIANDAOYUN_PASSWORD/u);
         assert.doesNotMatch(prompt, /JIANDAOYUN_USERNAME/u);
+        assert.match(
+            adapter.lastRequest?.systemPrompt ?? '',
+            /项目规则.+属于 constraints/u
+        );
     });
 
     it('运行在调用模型之前被取消时不再发起模型请求', async () => {

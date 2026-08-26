@@ -251,6 +251,50 @@ describe('PlaywrightBrowserAdapter', () => {
         }
     }).timeout(15_000);
 
+    it('点击预期跳转的按钮时等待异步导航完成', async () => {
+        const testServer = await startTestHttpServer([
+            '<!doctype html><title>异步登录页</title><body>',
+            '<button type="button" onclick="setTimeout(() => { location.href = \'/dashboard\'; }, 300)">登录</button>',
+            '</body>'
+        ].join(''));
+        const adapter = new PlaywrightBrowserAdapter();
+        let session: BrowserSession | undefined;
+
+        try {
+            session = await adapter.start(START_OPTIONS);
+            await adapter.execute(
+                session,
+                createNavigateCommand(testServer.url)
+            );
+            const before = await adapter.observe(session);
+            const loginButton = before.interactiveElements.find(
+                (element) => element.name === '登录'
+            );
+            assert.ok(loginButton);
+
+            const result = await adapter.execute(session, {
+                type: 'CLICK',
+                target: {
+                    candidateId: loginButton.candidateId,
+                    description: '登录按钮'
+                },
+                expectedEffect: '跳转至工作台页面',
+                reasonSummary: '提交登录表单',
+                risk: 'side-effect'
+            });
+            const after = await adapter.observe(session);
+
+            assert.equal(result.status, 'executed');
+            assert.equal(result.browserSignals.urlChanged, true);
+            assert.equal(after.page.url, `${ testServer.url }/dashboard`);
+        } finally {
+            if (session) {
+                await adapter.close(session);
+            }
+            await testServer.close();
+        }
+    }).timeout(15_000);
+
     it('等待 SPA 延迟渲染出首个交互元素', async () => {
         const testServer = await startTestHttpServer([
             '<!doctype html><title>延迟登录页</title><body>',

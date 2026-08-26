@@ -191,7 +191,10 @@ function toSafeCommand(command: ActionCommand): JsonValue {
             ? command.value.source === 'literal'
                 ? {
                     source: 'literal',
-                    value: '[REDACTED]'
+                    value: command.type === 'NAVIGATE' &&
+                        typeof command.value.value === 'string'
+                        ? command.value.value
+                        : '[REDACTED]'
                 }
                 : {
                     source: command.value.source,

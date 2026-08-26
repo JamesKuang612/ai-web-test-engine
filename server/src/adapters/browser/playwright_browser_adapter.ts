@@ -64,6 +64,8 @@ const MAX_VISIBLE_TEXT_LENGTH = 500;
 const PAGE_CONTENT_WAIT_MS = 10_000;
 const OBSERVATION_ATTEMPTS = 5;
 const OBSERVATION_RETRY_DELAY_MS = 250;
+const CLICK_NAVIGATION_WAIT_MS = 15_000;
+const CLICK_SETTLE_DELAY_MS = 250;
 
 /**
  * 使用 Playwright Chromium 实现浏览器端口。
@@ -446,6 +448,7 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
         }
 
         const previousUrl = session.page.url();
+        const navigationExpected = this.isNavigationExpected(command);
         try {
             if (
                 await locator.count() !== 1 ||
@@ -463,6 +466,11 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
                 );
             }
             await locator.click();
+            await this.waitForClickSettlement(
+                session.page,
+                previousUrl,
+                navigationExpected
+            );
             return this.createActionResult(
                 startedAt,
                 'executed',
@@ -489,6 +497,40 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
             // 点击可能触发 DOM 更新或页面跳转，旧候选元素不能继续复用。
             session.elementIndex = undefined;
         }
+    }
+
+    /** 为可能触发异步跳转的点击保留观察窗口，避免过早重复操作。 */
+    private async waitForClickSettlement(
+        page: Page,
+        previousUrl: string,
+        navigationExpected: boolean
+    ): Promise<void> {
+        if (!navigationExpected) {
+            await page.waitForTimeout(CLICK_SETTLE_DELAY_MS);
+            return;
+        }
+        try {
+            await page.waitForURL(
+                (url) => url.toString() !== previousUrl,
+                {
+                    timeout: CLICK_NAVIGATION_WAIT_MS,
+                    waitUntil: 'domcontentloaded'
+                }
+            );
+        } catch (error) {
+            if (!(error instanceof errors.TimeoutError)) {
+                throw error;
+            }
+            // 点击本身已经成功；未跳转交由后续 observation 和 Planner 判断。
+        }
+    }
+
+    /** 根据 Planner 描述判断点击是否预期进入另一个页面。 */
+    private isNavigationExpected(command: ActionCommand): boolean {
+        return /跳转|进入.+页面|导航|打开.+页面|URL|地址/iu.test([
+            command.expectedEffect ?? '',
+            command.reasonSummary
+        ].join(' '));
     }
 
     /** 采集可见交互元素，并建立当前 observation 的 Locator 索引。 */

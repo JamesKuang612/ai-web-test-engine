@@ -58,6 +58,13 @@ export class ModelIntentBuilder implements IntentBuilder {
             schemaVersion: 1,
             allowedHosts: [
                 ...new Set(input.environment.allowedHosts)
+            ],
+            // 项目规则属于执行约束，不参与模型推导业务成功或失败条件。
+            constraints: [
+                ...new Set([
+                    ...result.value.constraints,
+                    ...input.projectContext.rules
+                ])
             ]
         };
     }
@@ -68,6 +75,8 @@ export class ModelIntentBuilder implements IntentBuilder {
             '你是 AI Web 测试执行引擎的测试意图提取器。',
             '你的任务是把自然语言用例整理为结构化 TestIntent。',
             '只提取目标、前置条件、成功条件、失败条件和执行约束。',
+            '成功条件和失败条件只描述用户 action 明确要求验证的业务结果。',
+            '项目规则、允许域名、敏感数据保护和避免重复操作属于 constraints，不得转写为成功条件或失败条件，除非用户 action 明确要求测试这些规则本身。',
             '不要生成浏览器动作、CSS 选择器或 JavaScript 脚本。',
             '不要猜测或输出账号、密码、令牌等敏感信息。',
             '环境变量只能按给出的逻辑名称进行引用。',
@@ -102,7 +111,10 @@ export class ModelIntentBuilder implements IntentBuilder {
                         : false
                 }))
             },
-            projectContext: input.projectContext
+            projectContext: {
+                projectId: input.projectContext.projectId,
+                terms: input.projectContext.terms
+            }
         };
 
         return [

@@ -60,7 +60,30 @@ const input: EvaluateVerdictInput = {
         stateFingerprint: 'final-fingerprint',
         truncated: false
     },
-    history: [],
+    history: [{
+        command: {
+            type: 'NAVIGATE',
+            value: {
+                source: 'literal',
+                value: 'https://test.jdydevelop.com/dashboard#/'
+            },
+            reasonSummary: '进入测试起始页面',
+            risk: 'read-only'
+        },
+        actionResult: {
+            status: 'executed',
+            startedAt: '2026-08-26T00:00:00.000Z',
+            finishedAt: '2026-08-26T00:00:01.000Z',
+            browserSignals: {
+                dialogOpened: false,
+                downloadStarted: false,
+                newTabOpened: false,
+                urlChanged: true
+            }
+        },
+        beforeObservationRef: 'observation-before-navigation.json',
+        afterObservationRef: 'observation-after-navigation.json'
+    }],
     stopCommand: {
         type: 'FINISH',
         reasonSummary: '页面已经进入工作台',
@@ -105,6 +128,10 @@ describe('ModelVerdictEvaluator', () => {
         assert.match(
             adapter.lastRequest?.userPrompt ?? '',
             /简道云工作台/u
+        );
+        assert.match(
+            adapter.lastRequest?.userPrompt ?? '',
+            /https:\/\/test\.jdydevelop\.com\/dashboard/u
         );
     });
 

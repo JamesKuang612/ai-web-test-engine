@@ -123,6 +123,36 @@
             ],
             "type": "string"
         },
+        "CriterionAssessment": {
+            "additionalProperties": false,
+            "description": "Verdict 对单条 TestIntent 条件给出的证据化判断。",
+            "properties": {
+                "criterionId": {
+                    "type": "string"
+                },
+                "status": {
+                    "$ref": "#/definitions/CriterionMatchStatus"
+                },
+                "summary": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "criterionId",
+                "status",
+                "summary"
+            ],
+            "type": "object"
+        },
+        "CriterionMatchStatus": {
+            "description": "一条成功或失败条件在最终页面证据中的匹配状态。",
+            "enum": [
+                "MATCHED",
+                "NOT_MATCHED",
+                "UNKNOWN"
+            ],
+            "type": "string"
+        },
         "DataPolicy": {
             "additionalProperties": false,
             "description": "记录测试执行期间需要动态生成的数据规则。",
@@ -1251,6 +1281,37 @@
                 }
             ],
             "description": "动作参数的数据来源，敏感值可以只保存引用而不进入用例文件。"
+        },
+        "VerdictDecision": {
+            "additionalProperties": false,
+            "description": "独立于动作 Planner 的最终业务判定。",
+            "properties": {
+                "failureCriteria": {
+                    "items": {
+                        "$ref": "#/definitions/CriterionAssessment"
+                    },
+                    "type": "array"
+                },
+                "result": {
+                    "$ref": "#/definitions/TestResult"
+                },
+                "successCriteria": {
+                    "items": {
+                        "$ref": "#/definitions/CriterionAssessment"
+                    },
+                    "type": "array"
+                },
+                "summary": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "failureCriteria",
+                "result",
+                "successCriteria",
+                "summary"
+            ],
+            "type": "object"
         }
     },
     "description": "JSON Schema 生成入口。这里只聚合跨进程或持久化边界上的根对象。",
@@ -1284,6 +1345,9 @@
         },
         "traceEvent": {
             "$ref": "#/definitions/TraceEvent"
+        },
+        "verdictDecision": {
+            "$ref": "#/definitions/VerdictDecision"
         }
     },
     "required": [
@@ -1296,7 +1360,8 @@
         "startRunInput",
         "testDefinition",
         "testIntent",
-        "traceEvent"
+        "traceEvent",
+        "verdictDecision"
     ],
     "type": "object"
 }
