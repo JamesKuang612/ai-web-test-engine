@@ -3,6 +3,7 @@ import { ErrorHandler } from './middlewares/error.handler';
 import {
     intentPreviewController,
     runDebugController,
+    runDebugSessionController,
     testDefinitionController,
 } from '../controllers';
 
@@ -18,6 +19,26 @@ requestRouter.post(
 requestRouter.post(
     '/api/debug/run',
     runDebugController.run
+);
+requestRouter.post(
+    '/api/debug/runs',
+    runDebugSessionController.start
+);
+requestRouter.get(
+    '/api/debug/runs/:sessionId/events',
+    runDebugSessionController.events
+);
+requestRouter.get(
+    '/api/debug/runs/:sessionId',
+    runDebugSessionController.status
+);
+requestRouter.delete(
+    '/api/debug/runs/:sessionId',
+    runDebugSessionController.cancel
+);
+requestRouter.get(
+    '/api/debug/artifact',
+    runDebugSessionController.screenshot
 );
 requestRouter.get(
     '/api/tests',

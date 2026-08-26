@@ -322,10 +322,7 @@ function assertCompletedAiRun(state: CompletedRunState): void {
             'compiled-plan'
         ]
     );
-    assert.equal(
-        artifactStore.updatedSnapshots.at(-1)?.lifecycle,
-        'COMPLETED'
-    );
+    assert.equal(artifactStore.updatedSnapshots.at(-1)?.lifecycle, 'COMPLETED');
     assert.equal(browserAdapter.startCount, 2);
     assert.equal(browserAdapter.executeCount, 8);
     assert.equal(browserAdapter.observeCount, 13);
@@ -333,6 +330,7 @@ function assertCompletedAiRun(state: CompletedRunState): void {
     assert.equal(browserAdapter.closeCount, 2);
     assert.equal(artifactStore.traces.length, 4);
     assert.equal(artifactStore.savedArtifacts.length, 8);
+    assertObservationEventsIncludeScreenshot(eventPublisher.events);
     assert.equal(actionPlanner.callCount, 4);
     assert.deepEqual(
         actionPlanner.lastInput?.availableEnvironmentVariables,
@@ -373,6 +371,14 @@ function assertCompletedAiRun(state: CompletedRunState): void {
         eventPublisher.events.map((_event, index) => index + 1)
     );
     assert.equal(eventPublisher.events.at(-1)?.type, 'run.completed');
+}
+
+function assertObservationEventsIncludeScreenshot(events: RunEvent[]): void {
+    assert.equal(events.some((event) => (
+        event.type === 'observation.created'
+        && typeof event.payload.screenshotRef === 'string'
+        && event.payload.screenshotRef.endsWith('.png')
+    )), true);
 }
 
 /** 校验候选计划既已保存，又不泄露运行时定位或密码值。 */

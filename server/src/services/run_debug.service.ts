@@ -1,5 +1,6 @@
 import type {
     ExecutionEngine,
+    RunEventPublisher,
     RunMode,
     RunResult,
 } from '@ai-web-test-engine/core';
@@ -52,12 +53,14 @@ const PLAN_REF_PATTERN =
     /^[a-zA-Z0-9_-]+\/json\/[a-zA-Z0-9][a-zA-Z0-9._-]*\.json$/u;
 
 /** 根据本机配置组装真实模型、Playwright 和本地存储。 */
-function createConfiguredExecutionEngine(): ExecutionEngine {
+function createConfiguredExecutionEngine(
+    eventPublisher: RunEventPublisher
+): ExecutionEngine {
     const browserConfig = config.components.browser;
     const modelAdapter = createConfiguredModelAdapter();
     return new RunCoordinator(
         new LocalArtifactStore(config.storage.artifact_root),
-        new LoggingRunEventPublisher(),
+        eventPublisher,
         createConfiguredIntentBuilder(modelAdapter),
         new PlaywrightBrowserAdapter(),
         {
@@ -96,15 +99,16 @@ function createConfiguredExecutionEngine(): ExecutionEngine {
 export class RunDebugService {
     /** 默认装配真实执行引擎，测试可以注入不访问模型和浏览器的替身。 */
     constructor(
-        private readonly executionEngine: ExecutionEngine =
-            createConfiguredExecutionEngine()
+        private readonly executionEngine: ExecutionEngine | undefined =
+            undefined
     ) {}
 
     /** 校验自然语言输入并启动一次完整登录运行。 */
     public async run(
         action: string,
         signal: AbortSignal,
-        options: RunDebugOptions = {}
+        options: RunDebugOptions = {},
+        eventPublisher: RunEventPublisher = new LoggingRunEventPublisher()
     ): Promise<RunResult> {
         const normalizedAction = action.trim();
         if (!normalizedAction) {
@@ -121,7 +125,9 @@ export class RunDebugService {
         const mode = this.normalizeMode(options.mode);
         const planRef = this.normalizePlanRef(mode, options.planRef);
 
-        return await this.executionEngine.start(
+        const executionEngine = this.executionEngine
+            ?? createConfiguredExecutionEngine(eventPublisher);
+        return await executionEngine.start(
             createDebugTestStartInput({
                 action: normalizedAction,
                 id: this.normalizeTestId(options.testId),

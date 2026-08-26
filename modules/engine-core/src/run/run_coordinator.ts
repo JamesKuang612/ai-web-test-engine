@@ -1584,7 +1584,10 @@ export class RunCoordinator implements ExecutionEngine {
             'observation.created', {
                 observationRef: reference.ref,
                 stateFingerprint: observation.stateFingerprint,
-                url: observation.page.url
+                url: observation.page.url,
+                ...observation.screenshotRef
+                    ? { screenshotRef: observation.screenshotRef }
+                    : {}
             }
         );
     }
