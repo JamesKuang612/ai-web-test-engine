@@ -15,8 +15,12 @@ import {
 export interface TestDefinitionDraft {
     action?: unknown;
     name?: unknown;
+    planRef?: unknown;
     startUrl?: unknown;
 }
+
+const PLAN_REF_PATTERN =
+    /^[a-zA-Z0-9_-]+\/json\/[a-zA-Z0-9][a-zA-Z0-9._-]*\.json$/u;
 
 /** 表示用例仓库接口收到的字段不合法。 */
 export class TestDefinitionInputError extends Error {
@@ -66,7 +70,15 @@ export class TestDefinitionService {
             name: fields.name,
             environmentId: 'jiandaoyun-test',
             startUrl: fields.startUrl,
-            action: fields.action
+            action: fields.action,
+            ...fields.planRef
+                ? {
+                    execution: {
+                        planRef: fields.planRef,
+                        preferredMode: 'structured-replay' as const
+                    }
+                }
+                : {}
         });
     }
 
@@ -75,23 +87,34 @@ export class TestDefinitionService {
         draft: TestDefinitionDraft
     ): Promise<TestDefinitionRecord> {
         const normalizedId = this.normalizeId(id);
-        if (!await this.repository.load(normalizedId)) {
+        const existing = await this.repository.load(normalizedId);
+        if (!existing) {
             throw new TestDefinitionNotFoundError(normalizedId);
         }
         const fields = this.normalizeDraft(draft);
+        const execution = fields.planRef === undefined
+            ? existing.execution
+            : fields.planRef === null
+                ? undefined
+                : {
+                    planRef: fields.planRef,
+                    preferredMode: 'structured-replay' as const
+                };
         return await this.repository.save({
             schemaVersion: 1,
             id: normalizedId,
             name: fields.name,
             environmentId: 'jiandaoyun-test',
             startUrl: fields.startUrl,
-            action: fields.action
+            action: fields.action,
+            ...execution ? { execution } : {}
         });
     }
 
     private normalizeDraft(draft: TestDefinitionDraft): {
         action: string,
         name: string,
+        planRef: null | string | undefined,
         startUrl: string
     } {
         return {
@@ -105,8 +128,21 @@ export class TestDefinitionService {
                 'name',
                 120
             ),
+            planRef: this.normalizePlanRef(draft.planRef),
             startUrl: this.normalizeStartUrl(draft.startUrl)
         };
+    }
+
+    private normalizePlanRef(value: unknown): null | string | undefined {
+        if (value === undefined || value === null) {
+            return value;
+        }
+        if (typeof value !== 'string' || !PLAN_REF_PATTERN.test(value)) {
+            throw new TestDefinitionInputError(
+                'planRef 必须是合法的运行产物 JSON 引用。'
+            );
+        }
+        return value;
     }
 
     private normalizeStartUrl(value: unknown): string {

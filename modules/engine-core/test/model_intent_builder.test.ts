@@ -240,6 +240,25 @@ describe('ModelIntentBuilder exact text assertions', () => {
             'engine-exact-text-1-mismatch'
         );
     });
+
+    it('把确认显示语句中的引号内容视为逐字断言', async () => {
+        const builder = new ModelIntentBuilder(
+            new FakeModelAdapter(modelIntent),
+            testIntentSchema
+        );
+
+        const intent = await builder.build({
+            ...buildInput,
+            test: {
+                ...buildInput.test,
+                action: '打开页面，确认显示“我的待办”。'
+            }
+        }, new AbortController().signal);
+
+        assert.deepEqual(intent.exactTextAssertions?.[0]?.values, [
+            '我的待办'
+        ]);
+    });
 });
 
 /** 使用预设输出代替真实模型，供意图构建单元测试使用。 */

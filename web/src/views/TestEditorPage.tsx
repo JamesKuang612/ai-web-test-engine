@@ -4,7 +4,11 @@ import {
     useRef,
     useState
 } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import {
+    Link,
+    useNavigate,
+    useParams,
+} from 'react-router-dom';
 import type {
     DebugRunMode,
     DebugRunResult,
@@ -12,11 +16,17 @@ import type {
 import {
     requestDebugRun,
 } from '../api/run-debug';
+import {
+    createTestDefinition,
+    getTestDefinition,
+    updateTestDefinition,
+} from '../api/test-definitions';
 import { Icon } from '../components/Icon';
-import { repositoryEntries } from '../repository-data';
 
 type InspectorTab = 'context' | 'console' | 'network' | 'html';
+type LoadState = 'error' | 'loading' | 'ready';
 type RunState = 'failed' | 'idle' | 'passed' | 'running';
+type SaveState = 'dirty' | 'saved' | 'saving';
 
 const inspectorTabs: Array<{ id: InspectorTab; label: string }> = [
     { id: 'context', label: '上下文' },
@@ -25,77 +35,90 @@ const inspectorTabs: Array<{ id: InspectorTab; label: string }> = [
     { id: 'html', label: 'HTML' }
 ];
 
-interface TestScenario {
-    action: string;
-    steps: string[];
-}
-
-const DEFAULT_SCENARIO: TestScenario = {
-    action: '使用环境变量中的账号和密码登录简道云，并等待工作台加载完成。',
-    steps: [
-        '使用环境变量中的账号和密码登录简道云，并等待工作台加载完成。'
-    ]
-};
-const TEST_SCENARIOS: Record<string, TestScenario> = {
-    'avatar-account-menu': {
-        action: [
-            '使用环境变量中的账号和密码登录简道云，等待工作台加载完成；',
-            '点击页面右上角用户头像，确认账号菜单成功展开；',
-            '从上到下逐字严格验证账号菜单完整显示以下文本：',
-            '“吾名佳欣”、“测试企业(31186)”、“我创建的”、',
-            '“我的收藏”、“个人设置”、“管理后台”、“版本购买”、',
-            '“语言”、“简体中文”、“退出”。',
-            '以上每项均为精确文本断言，顺序、文字或缺失任一不符均判定失败。'
-        ].join(''),
-        steps: [
-            '使用环境变量中的账号和密码登录简道云，并等待工作台加载完成。',
-            [
-                '点击页面右上角用户头像，验证账号菜单已展开，',
-                '并按顺序逐字显示“吾名佳欣”、“测试企业(31186)”、',
-                '“我创建的”、“我的收藏”、“个人设置”、“管理后台”、',
-                '“版本购买”、“语言”、“简体中文”、“退出”。'
-            ].join('')
-        ]
-    }
-};
-const PLAN_REFERENCE_STORAGE_KEY = 'ai-web-test-engine.last-plan-ref';
-
-function getTestScenario(testId?: string): TestScenario {
-    return testId ? TEST_SCENARIOS[testId] ?? DEFAULT_SCENARIO : DEFAULT_SCENARIO;
-}
+const DEFAULT_START_URL = 'https://test.jdydevelop.com/dashboard#/';
+const PLAN_REFERENCE_STORAGE_PREFIX = 'ai-web-test-engine.plan-ref.';
 
 export function TestEditorPage() {
     const { testId } = useParams();
-    const initialScenario = getTestScenario(testId);
+    const navigate = useNavigate();
+    const activeTestId = testId ?? 'new';
+    const isNewTest = activeTestId === 'new';
     const [activeTab, setActiveTab] = useState<InspectorTab>('context');
-    const [action, setAction] = useState(initialScenario.action);
+    const [action, setAction] = useState('');
+    const [definitionState, setDefinitionState] = useState<LoadState>('loading');
     const [elapsedSeconds, setElapsedSeconds] = useState(0);
+    const [loadError, setLoadError] = useState('');
     const [mode, setMode] = useState<DebugRunMode>('ai-explore');
-    const [planRef, setPlanRef] = useState(() => (
-        window.localStorage.getItem(PLAN_REFERENCE_STORAGE_KEY) ?? ''
-    ));
+    const [planRef, setPlanRef] = useState('');
     const [result, setResult] = useState<DebugRunResult>();
     const [runError, setRunError] = useState('');
     const [runState, setRunState] = useState<RunState>('idle');
-    const [steps, setSteps] = useState(initialScenario.steps);
-    const [url, setUrl] = useState(
-        'https://test.jdydevelop.com/portal/signin'
-    );
+    const [saveError, setSaveError] = useState('');
+    const [saveState, setSaveState] = useState<SaveState>('dirty');
+    const [testName, setTestName] = useState('');
+    const [url, setUrl] = useState(DEFAULT_START_URL);
     const abortControllerRef = useRef<AbortController | undefined>(undefined);
     const runStartedAtRef = useRef(0);
 
-    const currentTest = useMemo(() => repositoryEntries.find(
-        (entry) => entry.testId === testId
-    ), [testId]);
-    const fileName = currentTest?.name ?? (
-        testId === 'new' ? '未命名测试.test.yaml' : `${testId}.test.yaml`
-    );
+    const fileName = isNewTest
+        ? '未命名测试.test.yaml'
+        : `${ activeTestId }.test.yaml`;
+    const steps = useMemo(() => action
+        .split(/[；;\n]+/u)
+        .map((step) => step.trim())
+        .filter(Boolean), [action]);
 
     useEffect(() => {
-        const scenario = getTestScenario(testId);
-        setAction(scenario.action);
-        setSteps([...scenario.steps]);
-    }, [testId]);
+        const controller = new AbortController();
+        abortControllerRef.current?.abort();
+        abortControllerRef.current = undefined;
+        setRunState('idle');
+        setResult(undefined);
+        setRunError('');
+        setElapsedSeconds(0);
+        setMode('ai-explore');
+        setPlanRef(readStoredPlanRef(activeTestId));
+        setSaveError('');
+        setLoadError('');
+        if (isNewTest) {
+            setTestName('');
+            setAction('');
+            setUrl(DEFAULT_START_URL);
+            setDefinitionState('ready');
+            setSaveState('dirty');
+            return () => controller.abort();
+        }
+
+        setDefinitionState('loading');
+        void getTestDefinition(activeTestId, controller.signal)
+            .then((definition) => {
+                const savedPlanRef = definition.execution?.planRef
+                    ?? readStoredPlanRef(activeTestId);
+                setTestName(definition.name);
+                setAction(definition.action);
+                setUrl(definition.startUrl ?? DEFAULT_START_URL);
+                setPlanRef(savedPlanRef);
+                setMode(
+                    savedPlanRef
+                    && definition.execution?.preferredMode
+                        === 'structured-replay'
+                        ? 'structured-replay'
+                        : 'ai-explore'
+                );
+                setSaveState('saved');
+                setDefinitionState('ready');
+            }).catch((error) => {
+                if (!controller.signal.aborted) {
+                    setLoadError(
+                        error instanceof Error
+                            ? error.message
+                            : '测试用例加载失败。'
+                    );
+                    setDefinitionState('error');
+                }
+            });
+        return () => controller.abort();
+    }, [activeTestId, isNewTest]);
 
     useEffect(() => {
         if (runState !== 'running') {
@@ -112,11 +135,62 @@ export function TestEditorPage() {
 
     useEffect(() => () => abortControllerRef.current?.abort(), []);
 
+    const markDefinitionEdited = () => {
+        setSaveState('dirty');
+        setSaveError('');
+        setMode('ai-explore');
+        setPlanRef('');
+        window.localStorage.removeItem(planStorageKey(activeTestId));
+    };
+
+    const saveTest = async () => {
+        const draft = {
+            action: action.trim(),
+            name: testName.trim(),
+            planRef: planRef.trim() || null,
+            startUrl: url.trim()
+        };
+        if (!draft.name || !draft.action || !draft.startUrl) {
+            setSaveError('用例名称、起始地址和测试动作均不能为空。');
+            return;
+        }
+        setSaveState('saving');
+        setSaveError('');
+        try {
+            const record = isNewTest
+                ? await createTestDefinition(draft)
+                : await updateTestDefinition(activeTestId, draft);
+            setSaveState('saved');
+            if (isNewTest) {
+                navigate(`/tests/${ record.definition.id }`, {
+                    replace: true
+                });
+            }
+        } catch (error) {
+            setSaveState('dirty');
+            setSaveError(
+                error instanceof Error ? error.message : '保存测试用例失败。'
+            );
+        }
+    };
+
     const runTest = async () => {
         const normalizedAction = action.trim();
         const normalizedPlanRef = planRef.trim();
         if (!normalizedAction) {
             showInputError('请输入要执行的测试动作。');
+            return;
+        }
+        if (isNewTest) {
+            showInputError('请先保存新测试，再启动运行。');
+            return;
+        }
+        if (!testName.trim() || !url.trim()) {
+            showInputError('用例名称和起始地址不能为空。');
+            return;
+        }
+        if (definitionState !== 'ready') {
+            showInputError('测试用例尚未加载完成。');
             return;
         }
         if (mode === 'structured-replay' && !normalizedPlanRef) {
@@ -136,6 +210,9 @@ export function TestEditorPage() {
             const nextResult = await requestDebugRun({
                 action: normalizedAction,
                 mode,
+                startUrl: url.trim(),
+                testId: activeTestId,
+                testName: testName.trim(),
                 ...mode === 'structured-replay'
                     ? { planRef: normalizedPlanRef }
                     : {}
@@ -154,9 +231,26 @@ export function TestEditorPage() {
             if (nextResult.compiledPlanRef) {
                 setPlanRef(nextResult.compiledPlanRef);
                 window.localStorage.setItem(
-                    PLAN_REFERENCE_STORAGE_KEY,
+                    planStorageKey(activeTestId),
                     nextResult.compiledPlanRef
                 );
+                try {
+                    const record = await updateTestDefinition(activeTestId, {
+                        action: normalizedAction,
+                        name: testName.trim(),
+                        planRef: nextResult.compiledPlanRef,
+                        startUrl: url.trim()
+                    });
+                    setTestName(record.definition.name);
+                    setSaveState('saved');
+                } catch (error) {
+                    setSaveState('dirty');
+                    setSaveError(
+                        error instanceof Error
+                            ? `计划已生成，但保存到用例失败：${ error.message }`
+                            : '计划已生成，但保存到用例失败。'
+                    );
+                }
             }
         } catch (error) {
             if (controller.signal.aborted) {
@@ -187,7 +281,6 @@ export function TestEditorPage() {
         setResult(undefined);
         setRunError('');
         setElapsedSeconds(0);
-        setUrl('https://test.jdydevelop.com/portal/signin');
     };
 
     const prepareReplay = () => {
@@ -197,11 +290,20 @@ export function TestEditorPage() {
     };
 
     const addStep = () => {
-        setSteps((currentSteps) => [
-            ...currentSteps,
+        setAction((currentAction) => [
+            currentAction.trim(),
             '点击此处描述下一个测试步骤。'
-        ]);
+        ].filter(Boolean).join('\n'));
+        markDefinitionEdited();
     };
+
+    const editorDisabled = runState === 'running'
+        || definitionState === 'loading';
+    const saveLabel = saveState === 'saving'
+        ? '保存中'
+        : saveState === 'saved'
+            ? '已保存'
+            : '未保存';
 
     return (
         <main className="test-workbench">
@@ -210,7 +312,7 @@ export function TestEditorPage() {
                     <Link to="/repository">项目文件</Link>
                     <Icon name="chevron-right" size={16} />
                     <strong title={fileName}>{fileName}</strong>
-                    <span className="save-state">已保存</span>
+                    <span className="save-state">{saveLabel}</span>
                 </nav>
 
                 <div className="test-title-actions">
@@ -231,7 +333,13 @@ export function TestEditorPage() {
 
             <section className="test-toolbar" aria-label="测试工具栏">
                 <div className="editing-tools">
-                    <button aria-label="保存" title="保存" type="button">
+                    <button
+                        aria-label="保存"
+                        disabled={editorDisabled || saveState === 'saving'}
+                        onClick={() => void saveTest()}
+                        title="保存为真实 YAML 用例"
+                        type="button"
+                    >
                         <Icon name="save" size={18} />
                     </button>
                     <button aria-label="撤销" title="撤销" type="button">
@@ -254,7 +362,7 @@ export function TestEditorPage() {
 
                 <button
                     className={`run-button ${runState}`}
-                    disabled={runState === 'running'}
+                    disabled={editorDisabled || definitionState !== 'ready'}
                     onClick={() => void runTest()}
                     type="button"
                 >
@@ -282,10 +390,38 @@ export function TestEditorPage() {
                         </div>
 
                         <label className="debug-field">
+                            <span>用例名称</span>
+                            <input
+                                aria-label="用例名称"
+                                disabled={editorDisabled}
+                                onChange={(event) => {
+                                    setTestName(event.target.value);
+                                    markDefinitionEdited();
+                                }}
+                                placeholder="例如：验证我的待办"
+                                value={testName}
+                            />
+                        </label>
+
+                        <label className="debug-field">
+                            <span>起始地址</span>
+                            <input
+                                aria-label="起始地址"
+                                disabled={editorDisabled}
+                                onChange={(event) => {
+                                    setUrl(event.target.value);
+                                    markDefinitionEdited();
+                                }}
+                                spellCheck="false"
+                                value={url}
+                            />
+                        </label>
+
+                        <label className="debug-field">
                             <span>运行模式</span>
                             <select
                                 aria-label="运行模式"
-                                disabled={runState === 'running'}
+                                disabled={editorDisabled}
                                 onChange={(event) => setMode(
                                     event.target.value as DebugRunMode
                                 )}
@@ -300,9 +436,13 @@ export function TestEditorPage() {
                             <span>测试动作</span>
                             <textarea
                                 aria-label="测试动作"
-                                disabled={runState === 'running'}
-                                onChange={(event) => setAction(event.target.value)}
-                                rows={3}
+                                disabled={editorDisabled}
+                                onChange={(event) => {
+                                    setAction(event.target.value);
+                                    markDefinitionEdited();
+                                }}
+                                placeholder="用自然语言描述操作和需要严格验证的结果。"
+                                rows={5}
                                 value={action}
                             />
                         </label>
@@ -312,7 +452,7 @@ export function TestEditorPage() {
                                 <span>compiledPlanRef</span>
                                 <input
                                     aria-label="计划引用"
-                                    disabled={runState === 'running'}
+                                    disabled={editorDisabled}
                                     onChange={(event) => setPlanRef(
                                         event.target.value
                                     )}
@@ -325,9 +465,14 @@ export function TestEditorPage() {
 
                         <p className="debug-run-hint">
                             {mode === 'ai-explore'
-                                ? '预计 60～120 秒；通过后自动保存计划引用。'
+                                ? '引号内的验证文本会逐字复核；通过后按用例保存计划引用。'
                                 : '预计 20～40 秒；跳过意图构建和动作规划。'}
                         </p>
+                        {(saveError || loadError) && (
+                            <p className="debug-run-form-error" role="alert">
+                                {saveError || loadError}
+                            </p>
+                        )}
                     </section>
 
                     <div className="steps-list">
@@ -353,6 +498,7 @@ export function TestEditorPage() {
 
                     <button
                         className="add-step-button"
+                        disabled={editorDisabled}
                         onClick={addStep}
                         type="button"
                     >
@@ -370,14 +516,18 @@ export function TestEditorPage() {
                             <Icon name="monitor" size={16} />
                             <input
                                 aria-label="浏览器地址"
-                                onChange={(event) => setUrl(event.target.value)}
+                                disabled={editorDisabled}
+                                onChange={(event) => {
+                                    setUrl(event.target.value);
+                                    markDefinitionEdited();
+                                }}
                                 spellCheck="false"
                                 value={url}
                             />
                         </label>
                         <button className="browser-tab-button" type="button">
                             <span className="tab-status-dot" />
-                            标签页：登录简道云
+                            标签页：{testName || '未命名测试'}
                             <Icon name="chevron-down" size={15} />
                         </button>
                         <button
@@ -509,7 +659,7 @@ export function TestEditorPage() {
                                         <p><Icon name="chevron-down" size={15} /> env: <span>6 个变量</span></p>
                                         <dl>
                                             <div><dt>CURRENT_URL</dt><dd>"{url}"</dd></div>
-                                            <div><dt>BASE_URL</dt><dd>"https://test.jdydevelop.com/dashboard#/"</dd></div>
+                                            <div><dt>BASE_URL</dt><dd>"{url}"</dd></div>
                                         </dl>
                                     </div>
                                 </>
@@ -648,4 +798,12 @@ function formatDuration(durationMs: number): string {
     return durationMs < 1_000
         ? `${ durationMs } ms`
         : `${ (durationMs / 1_000).toFixed(1) } 秒`;
+}
+
+function planStorageKey(testId: string): string {
+    return `${ PLAN_REFERENCE_STORAGE_PREFIX }${ testId }`;
+}
+
+function readStoredPlanRef(testId: string): string {
+    return window.localStorage.getItem(planStorageKey(testId)) ?? '';
 }

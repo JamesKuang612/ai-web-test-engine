@@ -1,8 +1,16 @@
-import { useMemo, useState } from 'react';
+import {
+    useEffect,
+    useMemo,
+    useState,
+} from 'react';
 import { Link } from 'react-router-dom';
+import {
+    listTestDefinitions,
+} from '../api/test-definitions';
 import { Icon } from '../components/Icon';
 import {
-    repositoryEntries,
+    repositoryFolders,
+    type RepositoryEntry,
     type RepositoryEntryType
 } from '../repository-data';
 
@@ -12,6 +20,45 @@ export function RepositoryPage() {
     const [entryFilter, setEntryFilter] = useState<EntryFilter>('all');
     const [searchOpen, setSearchOpen] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
+    const [testEntries, setTestEntries] = useState<RepositoryEntry[]>([]);
+    const [loadError, setLoadError] = useState('');
+    const [loading, setLoading] = useState(true);
+    const [refreshVersion, setRefreshVersion] = useState(0);
+
+    useEffect(() => {
+        const controller = new AbortController();
+        setLoading(true);
+        setLoadError('');
+        void listTestDefinitions(controller.signal).then((records) => {
+            setTestEntries(records.map((record) => ({
+                id: record.definition.id,
+                name: record.fileName,
+                description: record.definition.action,
+                testId: record.definition.id,
+                type: 'test',
+                createdAt: '—',
+                updatedAt: formatUpdatedAt(record.updatedAt)
+            })));
+        }).catch((error) => {
+            if (!controller.signal.aborted) {
+                setLoadError(
+                    error instanceof Error
+                        ? error.message
+                        : '测试用例加载失败。'
+                );
+            }
+        }).finally(() => {
+            if (!controller.signal.aborted) {
+                setLoading(false);
+            }
+        });
+        return () => controller.abort();
+    }, [refreshVersion]);
+
+    const repositoryEntries = useMemo(() => [
+        ...repositoryFolders,
+        ...testEntries
+    ], [testEntries]);
 
     const visibleEntries = useMemo(() => {
         const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
@@ -26,11 +73,12 @@ export function RepositoryPage() {
 
             return matchesType && matchesSearch;
         });
-    }, [entryFilter, searchQuery]);
+    }, [entryFilter, repositoryEntries, searchQuery]);
 
     const resetFilters = () => {
         setEntryFilter('all');
         setSearchQuery('');
+        setRefreshVersion((version) => version + 1);
     };
 
     return (
@@ -71,8 +119,7 @@ export function RepositoryPage() {
 
                     <p className="sidebar-section-label">项目文件</p>
                     <nav aria-label="项目目录" className="folder-navigation">
-                        {repositoryEntries
-                            .filter((entry) => entry.type === 'folder')
+                        {repositoryFolders
                             .map((entry) => (
                                 <a href={`#${entry.id}`} key={entry.id}>
                                     <Icon name="folder" />
@@ -237,9 +284,35 @@ export function RepositoryPage() {
                                 <span>请调整搜索内容或文件类型。</span>
                             </div>
                         )}
+                        {loading && (
+                            <div className="empty-repository">
+                                <span>正在读取项目 tests 目录…</span>
+                            </div>
+                        )}
+                        {loadError && (
+                            <div className="empty-repository" role="alert">
+                                <Icon name="code" size={22} />
+                                <strong>测试用例加载失败</strong>
+                                <span>{loadError}</span>
+                            </div>
+                        )}
                     </div>
                 </section>
             </main>
         </div>
     );
+}
+
+function formatUpdatedAt(value: string): string {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+        return value;
+    }
+    return date.toLocaleString('zh-CN', {
+        hour12: false,
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+    });
 }

@@ -641,6 +641,13 @@ code {
     background: transparent;
 }
 
+.editing-tools button:disabled,
+.browser-toolbar > button:disabled,
+.add-step-button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
 .editing-tools > i {
     width: 1px;
     height: 19px;
@@ -733,6 +740,13 @@ code {
 .debug-run-hint {
     color: #858990;
     font-size: 9px;
+}
+
+.debug-run-form-error {
+    margin: 0;
+    color: #b9383e;
+    font-size: 9px;
+    line-height: 14px;
 }
 
 .debug-run-heading > i {

@@ -58,4 +58,32 @@ describe('TestDefinitionService', () => {
             action: '打开页面。'
         }), /不得包含账号或密码/u);
     });
+
+    it('按用例保存并清除独立的结构化回放计划', async () => {
+        await service.create({
+            name: 'Replay Todo Flow',
+            startUrl: 'https://test.jdydevelop.com/dashboard#/',
+            action: '打开我的待办。',
+            planRef: 'source-run/json/compiled-plan.json'
+        });
+
+        assert.deepEqual(
+            (await service.get('replay-todo-flow')).execution,
+            {
+                planRef: 'source-run/json/compiled-plan.json',
+                preferredMode: 'structured-replay'
+            }
+        );
+
+        await service.update('replay-todo-flow', {
+            name: 'Replay Todo Flow',
+            startUrl: 'https://test.jdydevelop.com/dashboard#/',
+            action: '打开我的待办。',
+            planRef: null
+        });
+        assert.equal(
+            (await service.get('replay-todo-flow')).execution,
+            undefined
+        );
+    });
 });

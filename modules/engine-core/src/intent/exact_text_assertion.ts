@@ -11,7 +11,7 @@ export interface ExtractedExactTextAssertions {
 }
 
 const ASSERTION_LANGUAGE_PATTERN =
-    /验证|断言|校验|逐字|精确文本|必须显示|应当显示|应该显示/iu;
+    /验证|断言|校验|确认|逐字|精确文本|必须显示|应当显示|应该显示/iu;
 const ORDER_LANGUAGE_PATTERN =
     /顺序|依次|从上到下|从左到右/iu;
 const QUOTED_TEXT_PATTERN =

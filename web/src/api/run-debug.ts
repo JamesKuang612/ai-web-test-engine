@@ -33,6 +33,9 @@ export interface RunDebugRequest {
     action: string;
     mode: DebugRunMode;
     planRef?: string;
+    startUrl: string;
+    testId: string;
+    testName: string;
 }
 
 /** 调试接口返回非成功状态或非法响应时使用的前端错误。 */
@@ -59,6 +62,9 @@ export async function requestDebugRun(
         body: JSON.stringify({
             action: request.action,
             mode: request.mode,
+            startUrl: request.startUrl,
+            testId: request.testId,
+            testName: request.testName,
             ...request.mode === 'structured-replay'
                 ? { planRef: request.planRef }
                 : {}
