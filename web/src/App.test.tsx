@@ -9,7 +9,8 @@ import {
     afterEach,
     describe,
     expect,
-    it
+    it,
+    vi
 } from 'vitest';
 import App from './App';
 import './setupTests';
@@ -90,7 +91,109 @@ describe('App routes', () => {
 
         await user.click(screen.getByRole('tab', { name: '控制台' }));
         expect(screen.getByText(
-            '运行测试后，页面日志会显示在这里。'
+            '运行测试后，结果和指标会显示在这里。'
         )).toBeInTheDocument();
     });
 });
+
+describe('Run debug workbench', () => {
+    afterEach(() => {
+        cleanup();
+        window.localStorage.clear();
+        vi.unstubAllGlobals();
+    });
+
+    it('runs AI explore and prepares the returned plan for replay', async () => {
+        const user = userEvent.setup();
+        const fetchMock = vi.fn().mockResolvedValue(new Response(
+            JSON.stringify({
+                result: createDebugRunResult()
+            }), {
+                status: 200,
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            }
+        ));
+        vi.stubGlobal('fetch', fetchMock);
+        render(
+            <MemoryRouter initialEntries={[
+                '/tests/login-and-open-workbench'
+            ]}>
+                <App />
+            </MemoryRouter>
+        );
+
+        await user.click(screen.getByRole('button', { name: '运行' }));
+
+        expect(await screen.findByText('测试通过')).toBeInTheDocument();
+        expect(screen.getByText('页面已经进入简道云工作台。'))
+            .toBeInTheDocument();
+        const request = JSON.parse(
+            String(fetchMock.mock.calls[0][1]?.body)
+        ) as Record<string, unknown>;
+        expect(request.mode).toBe('ai-explore');
+        expect(request.planRef).toBeUndefined();
+
+        await user.click(screen.getByRole('button', {
+            name: '使用此计划回放'
+        }));
+        expect(screen.getByLabelText('运行模式'))
+            .toHaveValue('structured-replay');
+        expect(screen.getByLabelText('计划引用')).toHaveValue(
+            'source-run/json/compiled-plan.json'
+        );
+        expect(window.localStorage.getItem(
+            'ai-web-test-engine.last-plan-ref'
+        )).toBe('source-run/json/compiled-plan.json');
+    });
+
+    it('shows backend validation errors in the console', async () => {
+        const user = userEvent.setup();
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+            JSON.stringify({
+                error: 'structured-replay 必须提供合法的 planRef。'
+            }), {
+                status: 400,
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            }
+        )));
+        render(
+            <MemoryRouter initialEntries={[
+                '/tests/login-and-open-workbench'
+            ]}>
+                <App />
+            </MemoryRouter>
+        );
+
+        await user.click(screen.getByRole('button', { name: '运行' }));
+
+        expect(await screen.findByRole('alert')).toHaveTextContent(
+            'structured-replay 必须提供合法的 planRef。'
+        );
+    });
+});
+
+function createDebugRunResult() {
+    return {
+        schemaVersion: 1,
+        runId: 'run-debug-001',
+        lifecycle: 'COMPLETED',
+        result: 'PASS',
+        summary: '页面已经进入简道云工作台。',
+        evidence: [{
+            kind: 'json',
+            ref: 'run-debug-001/json/verdict.json'
+        }],
+        traceRef: 'run-debug-001/trace.jsonl',
+        compiledPlanRef: 'source-run/json/compiled-plan.json',
+        metrics: {
+            actionCount: 8,
+            durationMs: 30_000,
+            modelCallCount: 7,
+            repeatedStateActionCount: 0
+        }
+    };
+}

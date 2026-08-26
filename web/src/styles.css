@@ -686,6 +686,10 @@ code {
     background: #158954;
 }
 
+.run-button.failed {
+    background: #b9383e;
+}
+
 .workbench-body {
     display: grid;
     grid-template-columns: 330px minmax(0, 1fr);
@@ -697,6 +701,106 @@ code {
     padding: 16px 14px;
     border-right: 1px solid #e1e3e6;
     background: #ffffff;
+}
+
+.debug-run-card {
+    display: grid;
+    gap: 10px;
+    margin-bottom: 14px;
+    padding: 13px;
+    border: 1px solid #dfe2e6;
+    border-radius: 10px;
+    background: #fafbfc;
+}
+
+.debug-run-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.debug-run-heading > div {
+    display: grid;
+    gap: 2px;
+}
+
+.debug-run-heading strong {
+    color: #24272c;
+    font-size: 12px;
+}
+
+.debug-run-heading span,
+.debug-run-hint {
+    color: #858990;
+    font-size: 9px;
+}
+
+.debug-run-heading > i {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #27a66b;
+    box-shadow: 0 0 0 3px rgb(39 166 107 / 10%);
+}
+
+.debug-run-heading > i.busy {
+    background: #d89227;
+    box-shadow: 0 0 0 3px rgb(216 146 39 / 13%);
+    animation: debug-pulse 1s ease-in-out infinite;
+}
+
+.debug-field {
+    display: grid;
+    gap: 5px;
+}
+
+.debug-field > span {
+    color: #62666d;
+    font-size: 9px;
+    font-weight: 650;
+}
+
+.debug-field select,
+.debug-field input,
+.debug-field textarea {
+    width: 100%;
+    border: 1px solid #d9dce1;
+    border-radius: 7px;
+    outline: none;
+    color: #30343a;
+    background: #ffffff;
+    font-size: 10px;
+}
+
+.debug-field select,
+.debug-field input {
+    height: 31px;
+    padding: 0 9px;
+}
+
+.debug-field textarea {
+    min-height: 58px;
+    padding: 8px 9px;
+    line-height: 15px;
+    resize: vertical;
+}
+
+.debug-field select:focus,
+.debug-field input:focus,
+.debug-field textarea:focus {
+    border-color: #727de8;
+    box-shadow: 0 0 0 2px rgb(101 116 224 / 10%);
+}
+
+.debug-field :disabled {
+    color: #8d9197;
+    background: #f0f1f3;
+    cursor: not-allowed;
+}
+
+.debug-run-hint {
+    margin: -1px 0 0;
+    line-height: 14px;
 }
 
 .steps-list {
@@ -1227,6 +1331,20 @@ code {
     font-size: 9px;
 }
 
+.run-result-toast.failed {
+    border-color: #efc7c9;
+    color: #b9383e;
+    background: #fff7f7;
+}
+
+.run-result-toast.failed strong {
+    color: #963136;
+}
+
+.run-result-toast.failed span {
+    color: #987477;
+}
+
 .inspector-panel {
     min-height: 0;
     overflow: hidden;
@@ -1347,6 +1465,205 @@ code {
     font-size: 11px;
 }
 
+.run-console-status {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 90px;
+    color: #4c5057;
+}
+
+.running-spinner.dark {
+    flex: 0 0 auto;
+    width: 24px;
+    height: 24px;
+    margin: 0;
+    border-color: #d9dce2;
+    border-top-color: #535dce;
+}
+
+.run-console-status strong,
+.run-console-error strong {
+    font-size: 11px;
+}
+
+.run-console-status p,
+.run-console-error p {
+    margin: 4px 0 0;
+    color: #858990;
+    font-size: 10px;
+}
+
+.run-console-error {
+    padding: 11px 12px;
+    border: 1px solid #edc8ca;
+    border-radius: 8px;
+    color: #a93339;
+    background: #fff8f8;
+}
+
+.run-console-result {
+    display: grid;
+    gap: 10px;
+    font-size: 10px;
+}
+
+.run-summary-row {
+    display: grid;
+    align-items: start;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 9px;
+}
+
+.run-summary-row > div {
+    display: grid;
+    gap: 3px;
+}
+
+.run-summary-row strong {
+    color: #30343a;
+    font-size: 10px;
+    line-height: 15px;
+}
+
+.run-summary-row span {
+    color: #8b8f95;
+    font-size: 9px;
+}
+
+.run-summary-row button {
+    height: 28px;
+    padding: 0 9px;
+    border: 1px solid #cfd3da;
+    border-radius: 7px;
+    color: #3d46a5;
+    background: #ffffff;
+    font-size: 9px;
+    font-weight: 650;
+}
+
+.result-badge {
+    padding: 3px 6px;
+    border-radius: 5px;
+    color: #6a6e75;
+    background: #eceef1;
+    font-size: 9px;
+    font-weight: 750;
+}
+
+.result-badge.pass {
+    color: #17754b;
+    background: #e7f7ef;
+}
+
+.result-badge.fail,
+.result-badge.uncertain {
+    color: #a4363b;
+    background: #fae9ea;
+}
+
+.run-metrics {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(72px, 1fr));
+    gap: 6px;
+    margin: 0;
+}
+
+.run-metrics div {
+    display: grid;
+    gap: 2px;
+    padding: 7px 9px;
+    border: 1px solid #eceef1;
+    border-radius: 7px;
+    background: #fafbfc;
+}
+
+.run-metrics dt {
+    color: #898d94;
+    font-size: 8px;
+}
+
+.run-metrics dd {
+    margin: 0;
+    color: #30343a;
+    font-size: 12px;
+    font-weight: 680;
+}
+
+.run-reference {
+    display: grid;
+    grid-template-columns: 100px minmax(0, 1fr);
+    align-items: center;
+    gap: 7px;
+}
+
+.run-reference > span {
+    color: #777b82;
+    font-size: 9px;
+}
+
+.run-reference code,
+.run-evidence code {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.run-failure-detail {
+    display: grid;
+    grid-template-columns: auto auto 1fr;
+    gap: 7px;
+    padding: 8px 9px;
+    border-radius: 7px;
+    color: #994044;
+    background: #fff5f5;
+}
+
+.run-failure-detail p {
+    grid-column: 1 / -1;
+    margin: 0;
+}
+
+.run-evidence summary,
+.raw-response summary {
+    color: #656970;
+    cursor: pointer;
+    font-size: 9px;
+    font-weight: 650;
+}
+
+.run-evidence ul {
+    display: grid;
+    gap: 4px;
+    margin: 7px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.run-evidence li {
+    display: grid;
+    grid-template-columns: 58px minmax(0, 1fr);
+    align-items: center;
+    gap: 6px;
+}
+
+.run-evidence li > span {
+    color: #858990;
+    text-transform: uppercase;
+}
+
+.raw-response pre {
+    overflow: auto;
+    max-height: 240px;
+    margin: 7px 0 0;
+    padding: 9px;
+    border-radius: 7px;
+    color: #3c424b;
+    background: #f5f6f8;
+    font-size: 9px;
+    line-height: 14px;
+}
+
 .html-preview {
     display: flex;
     align-items: center;
@@ -1356,6 +1673,10 @@ code {
 
 @keyframes spin {
     to { transform: rotate(360deg); }
+}
+
+@keyframes debug-pulse {
+    50% { opacity: 0.38; }
 }
 
 @media (max-width: 980px) {

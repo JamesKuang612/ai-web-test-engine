@@ -1,10 +1,22 @@
-import { useMemo, useState } from 'react';
+import {
+    useEffect,
+    useMemo,
+    useRef,
+    useState
+} from 'react';
 import { Link, useParams } from 'react-router-dom';
+import type {
+    DebugRunMode,
+    DebugRunResult,
+} from '../api/run-debug';
+import {
+    requestDebugRun,
+} from '../api/run-debug';
 import { Icon } from '../components/Icon';
 import { repositoryEntries } from '../repository-data';
 
 type InspectorTab = 'context' | 'console' | 'network' | 'html';
-type RunState = 'idle' | 'running' | 'passed';
+type RunState = 'failed' | 'idle' | 'passed' | 'running';
 
 const inspectorTabs: Array<{ id: InspectorTab; label: string }> = [
     { id: 'context', label: '上下文' },
@@ -16,15 +28,27 @@ const inspectorTabs: Array<{ id: InspectorTab; label: string }> = [
 const initialSteps = [
     '使用环境变量中的账号和密码登录简道云，并等待工作台加载完成。'
 ];
+const DEFAULT_ACTION = initialSteps[0];
+const PLAN_REFERENCE_STORAGE_KEY = 'ai-web-test-engine.last-plan-ref';
 
 export function TestEditorPage() {
     const { testId } = useParams();
     const [activeTab, setActiveTab] = useState<InspectorTab>('context');
+    const [action, setAction] = useState(DEFAULT_ACTION);
+    const [elapsedSeconds, setElapsedSeconds] = useState(0);
+    const [mode, setMode] = useState<DebugRunMode>('ai-explore');
+    const [planRef, setPlanRef] = useState(() => (
+        window.localStorage.getItem(PLAN_REFERENCE_STORAGE_KEY) ?? ''
+    ));
+    const [result, setResult] = useState<DebugRunResult>();
+    const [runError, setRunError] = useState('');
     const [runState, setRunState] = useState<RunState>('idle');
     const [steps, setSteps] = useState(initialSteps);
     const [url, setUrl] = useState(
         'https://test.jdydevelop.com/portal/signin'
     );
+    const abortControllerRef = useRef<AbortController | undefined>(undefined);
+    const runStartedAtRef = useRef(0);
 
     const currentTest = useMemo(() => repositoryEntries.find(
         (entry) => entry.testId === testId
@@ -33,14 +57,103 @@ export function TestEditorPage() {
         testId === 'new' ? '未命名测试.test.yaml' : `${testId}.test.yaml`
     );
 
-    const runTest = () => {
+    useEffect(() => {
+        if (runState !== 'running') {
+            return undefined;
+        }
+        const updateElapsed = () => setElapsedSeconds(Math.max(
+            0,
+            Math.floor((Date.now() - runStartedAtRef.current) / 1000)
+        ));
+        updateElapsed();
+        const timer = window.setInterval(updateElapsed, 1_000);
+        return () => window.clearInterval(timer);
+    }, [runState]);
+
+    useEffect(() => () => abortControllerRef.current?.abort(), []);
+
+    const runTest = async () => {
+        const normalizedAction = action.trim();
+        const normalizedPlanRef = planRef.trim();
+        if (!normalizedAction) {
+            showInputError('请输入要执行的测试动作。');
+            return;
+        }
+        if (mode === 'structured-replay' && !normalizedPlanRef) {
+            showInputError('结构化回放需要填写 compiledPlanRef。');
+            return;
+        }
+
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+        runStartedAtRef.current = Date.now();
+        setElapsedSeconds(0);
+        setResult(undefined);
+        setRunError('');
+        setActiveTab('console');
         setRunState('running');
-        window.setTimeout(() => setRunState('passed'), 700);
+        try {
+            const nextResult = await requestDebugRun({
+                action: normalizedAction,
+                mode,
+                ...mode === 'structured-replay'
+                    ? { planRef: normalizedPlanRef }
+                    : {}
+            }, controller.signal);
+            if (controller.signal.aborted) {
+                return;
+            }
+            setResult(nextResult);
+            setElapsedSeconds(Math.round(nextResult.metrics.durationMs / 1_000));
+            setRunState(
+                nextResult.lifecycle === 'COMPLETED'
+                && nextResult.result === 'PASS'
+                    ? 'passed'
+                    : 'failed'
+            );
+            if (nextResult.compiledPlanRef) {
+                setPlanRef(nextResult.compiledPlanRef);
+                window.localStorage.setItem(
+                    PLAN_REFERENCE_STORAGE_KEY,
+                    nextResult.compiledPlanRef
+                );
+            }
+        } catch (error) {
+            if (controller.signal.aborted) {
+                return;
+            }
+            setRunError(
+                error instanceof Error ? error.message : '运行请求失败。'
+            );
+            setRunState('failed');
+        } finally {
+            if (abortControllerRef.current === controller) {
+                abortControllerRef.current = undefined;
+            }
+        }
+    };
+
+    const showInputError = (message: string) => {
+        setRunError(message);
+        setResult(undefined);
+        setRunState('failed');
+        setActiveTab('console');
     };
 
     const resetTest = () => {
+        abortControllerRef.current?.abort();
+        abortControllerRef.current = undefined;
         setRunState('idle');
+        setResult(undefined);
+        setRunError('');
+        setElapsedSeconds(0);
         setUrl('https://test.jdydevelop.com/portal/signin');
+    };
+
+    const prepareReplay = () => {
+        setMode('structured-replay');
+        setRunState('idle');
+        setRunError('');
     };
 
     const addStep = () => {
@@ -102,7 +215,7 @@ export function TestEditorPage() {
                 <button
                     className={`run-button ${runState}`}
                     disabled={runState === 'running'}
-                    onClick={runTest}
+                    onClick={() => void runTest()}
                     type="button"
                 >
                     {runState === 'passed' ? (
@@ -112,12 +225,71 @@ export function TestEditorPage() {
                     )}
                     {runState === 'running' && '运行中'}
                     {runState === 'passed' && '已通过'}
+                    {runState === 'failed' && '重新运行'}
                     {runState === 'idle' && '运行'}
                 </button>
             </section>
 
             <div className="workbench-body">
                 <aside className="steps-panel">
+                    <section className="debug-run-card" aria-label="运行调试">
+                        <div className="debug-run-heading">
+                            <div>
+                                <strong>运行调试</strong>
+                                <span>连接本地执行引擎</span>
+                            </div>
+                            <i className={runState === 'running' ? 'busy' : ''} />
+                        </div>
+
+                        <label className="debug-field">
+                            <span>运行模式</span>
+                            <select
+                                aria-label="运行模式"
+                                disabled={runState === 'running'}
+                                onChange={(event) => setMode(
+                                    event.target.value as DebugRunMode
+                                )}
+                                value={mode}
+                            >
+                                <option value="ai-explore">AI 探索并生成计划</option>
+                                <option value="structured-replay">结构化回放</option>
+                            </select>
+                        </label>
+
+                        <label className="debug-field">
+                            <span>测试动作</span>
+                            <textarea
+                                aria-label="测试动作"
+                                disabled={runState === 'running'}
+                                onChange={(event) => setAction(event.target.value)}
+                                rows={3}
+                                value={action}
+                            />
+                        </label>
+
+                        {mode === 'structured-replay' && (
+                            <label className="debug-field">
+                                <span>compiledPlanRef</span>
+                                <input
+                                    aria-label="计划引用"
+                                    disabled={runState === 'running'}
+                                    onChange={(event) => setPlanRef(
+                                        event.target.value
+                                    )}
+                                    placeholder="runId/json/compiled-plan.json"
+                                    spellCheck="false"
+                                    value={planRef}
+                                />
+                            </label>
+                        )}
+
+                        <p className="debug-run-hint">
+                            {mode === 'ai-explore'
+                                ? '预计 60～120 秒；通过后自动保存计划引用。'
+                                : '预计 20～40 秒；跳过意图构建和动作规划。'}
+                        </p>
+                    </section>
+
                     <div className="steps-list">
                         {steps.map((step, index) => (
                             <article className="ai-step-card" key={`${step}-${index}`}>
@@ -236,14 +408,32 @@ export function TestEditorPage() {
                         {runState === 'running' && (
                             <div className="running-overlay">
                                 <span className="running-spinner" />
-                                <strong>AI 正在执行第 1 步</strong>
-                                <p>分析页面并查找登录入口…</p>
+                                <strong>
+                                    {mode === 'ai-explore'
+                                        ? 'AI 正在探索并执行测试'
+                                        : '正在执行结构化回放'}
+                                </strong>
+                                <p>已等待 {elapsedSeconds} 秒，请保持服务端运行…</p>
                             </div>
                         )}
                         {runState === 'passed' && (
                             <div className="run-result-toast">
                                 <Icon name="check" size={18} />
-                                <div><strong>测试通过</strong><span>共执行 1 个步骤</span></div>
+                                <div>
+                                    <strong>测试通过</strong>
+                                    <span>
+                                        {result?.metrics.actionCount ?? 0} 个动作 · {elapsedSeconds} 秒
+                                    </span>
+                                </div>
+                            </div>
+                        )}
+                        {runState === 'failed' && (
+                            <div className="run-result-toast failed">
+                                <Icon name="code" size={18} />
+                                <div>
+                                    <strong>运行未通过</strong>
+                                    <span>请在控制台查看详情</span>
+                                </div>
                             </div>
                         )}
                     </div>
@@ -285,10 +475,13 @@ export function TestEditorPage() {
                                 </>
                             )}
                             {activeTab === 'console' && (
-                                <div className="inspector-empty">
-                                    <Icon name="code" size={20} />
-                                    <span>运行测试后，页面日志会显示在这里。</span>
-                                </div>
+                                <RunConsole
+                                    elapsedSeconds={elapsedSeconds}
+                                    error={runError}
+                                    onPrepareReplay={prepareReplay}
+                                    result={result}
+                                    runState={runState}
+                                />
                             )}
                             {activeTab === 'network' && (
                                 <div className="inspector-empty">
@@ -308,4 +501,111 @@ export function TestEditorPage() {
             </div>
         </main>
     );
+}
+
+interface RunConsoleProps {
+    elapsedSeconds: number;
+    error: string;
+    onPrepareReplay: () => void;
+    result?: DebugRunResult;
+    runState: RunState;
+}
+
+/** 在现有检查器区域展示轻量运行摘要、产物引用和原始响应。 */
+function RunConsole({
+    elapsedSeconds,
+    error,
+    onPrepareReplay,
+    result,
+    runState,
+}: RunConsoleProps) {
+    if (runState === 'running') {
+        return (
+            <div className="run-console-status">
+                <span className="running-spinner dark" />
+                <div>
+                    <strong>执行引擎正在运行</strong>
+                    <p>请求已持续 {elapsedSeconds} 秒，结果完成后会自动显示。</p>
+                </div>
+            </div>
+        );
+    }
+    if (error) {
+        return (
+            <div className="run-console-error" role="alert">
+                <strong>请求失败</strong>
+                <p>{error}</p>
+            </div>
+        );
+    }
+    if (!result) {
+        return (
+            <div className="inspector-empty">
+                <Icon name="code" size={20} />
+                <span>运行测试后，结果和指标会显示在这里。</span>
+            </div>
+        );
+    }
+
+    return (
+        <div className="run-console-result">
+            <div className="run-summary-row">
+                <span className={`result-badge ${result.result?.toLowerCase()}`}>
+                    {result.result ?? result.lifecycle}
+                </span>
+                <div>
+                    <strong>{result.summary}</strong>
+                    <span>Run ID：{result.runId}</span>
+                </div>
+                {result.compiledPlanRef && (
+                    <button onClick={onPrepareReplay} type="button">
+                        使用此计划回放
+                    </button>
+                )}
+            </div>
+
+            <dl className="run-metrics">
+                <div><dt>动作</dt><dd>{result.metrics.actionCount}</dd></div>
+                <div><dt>模型调用</dt><dd>{result.metrics.modelCallCount}</dd></div>
+                <div><dt>耗时</dt><dd>{formatDuration(result.metrics.durationMs)}</dd></div>
+                <div><dt>重复状态</dt><dd>{result.metrics.repeatedStateActionCount}</dd></div>
+            </dl>
+
+            {result.compiledPlanRef && (
+                <div className="run-reference">
+                    <span>compiledPlanRef</span>
+                    <code>{result.compiledPlanRef}</code>
+                </div>
+            )}
+            {result.failure && (
+                <div className="run-failure-detail">
+                    <strong>{result.failure.category}</strong>
+                    <span>{result.failure.phase}</span>
+                    <p>{result.failure.summary}</p>
+                </div>
+            )}
+
+            <details className="run-evidence">
+                <summary>运行产物（{result.evidence.length}）</summary>
+                <ul>
+                    {result.evidence.map((evidence) => (
+                        <li key={evidence.ref}>
+                            <span>{evidence.kind}</span>
+                            <code>{evidence.ref}</code>
+                        </li>
+                    ))}
+                </ul>
+            </details>
+            <details className="raw-response">
+                <summary>原始响应</summary>
+                <pre>{JSON.stringify(result, null, 2)}</pre>
+            </details>
+        </div>
+    );
+}
+
+function formatDuration(durationMs: number): string {
+    return durationMs < 1_000
+        ? `${ durationMs } ms`
+        : `${ (durationMs / 1_000).toFixed(1) } 秒`;
 }
