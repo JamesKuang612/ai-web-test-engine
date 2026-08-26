@@ -8,6 +8,7 @@ import type {
     BrowserAdapter,
     BrowserSession,
     BuildIntentInput,
+    CompiledPlan,
     EvidenceRef,
     EnvironmentValueResolver,
     EnvironmentVariable,
@@ -495,6 +496,187 @@ describe('RunCoordinator 回放失败路径', () => {
     });
 });
 
+describe('RunCoordinator structured-replay', () => {
+    it('读取计划后跳过 Intent Builder 和 Planner 完成独立运行', async () => {
+        const artifactStore = new FakeArtifactStore();
+        const planRef = 'source-run/json/compiled-plan.json';
+        artifactStore.readableJson.set(planRef, createStructuredReplayPlan());
+        const intentBuilder = new FakeIntentBuilder(testIntent);
+        const actionPlanner = new FakeActionPlanner(plannedTypeCommand);
+        const browserAdapter = new FakeBrowserAdapter();
+        const valueResolver = new FakeEnvironmentValueResolver();
+        const verdictEvaluator = new FakeVerdictEvaluator(passVerdict);
+        const coordinator = new RunCoordinator(
+            artifactStore,
+            new FakeRunEventPublisher(),
+            intentBuilder,
+            browserAdapter,
+            {
+                actionPlanner,
+                verdictEvaluator
+            },
+            valueResolver
+        );
+
+        const result = await coordinator.start(
+            createStructuredReplayInput(planRef),
+            new AbortController().signal
+        );
+
+        assert.equal(result.lifecycle, 'COMPLETED');
+        assert.equal(result.result, 'PASS');
+        assert.equal(result.compiledPlanRef, planRef);
+        assert.equal(result.metrics.actionCount, 4);
+        assert.equal(result.metrics.modelCallCount, 1);
+        assert.equal(intentBuilder.callCount, 0);
+        assert.equal(actionPlanner.callCount, 0);
+        assert.equal(verdictEvaluator.callCount, 1);
+        assert.equal(browserAdapter.startCount, 1);
+        assert.equal(browserAdapter.executeCount, 4);
+        assert.equal(artifactStore.traces.length, 4);
+        assert.equal(
+            artifactStore.savedJson.some(({ name }) => name === 'intent'),
+            false
+        );
+        assert.deepEqual(valueResolver.resolvedNames, [
+            'username',
+            'password'
+        ]);
+    });
+
+    it('缺少 planRef 时在启动浏览器前安全失败', async () => {
+        const artifactStore = new FakeArtifactStore();
+        const browserAdapter = new FakeBrowserAdapter();
+        const coordinator = new RunCoordinator(
+            artifactStore,
+            new FakeRunEventPublisher(),
+            new FakeIntentBuilder(testIntent),
+            browserAdapter,
+            {
+                actionPlanner: new FakeActionPlanner(plannedTypeCommand),
+                verdictEvaluator: new FakeVerdictEvaluator(passVerdict)
+            },
+            new FakeEnvironmentValueResolver()
+        );
+        const input = createStructuredReplayInput('');
+
+        const result = await coordinator.start(
+            input,
+            new AbortController().signal
+        );
+
+        assert.equal(result.lifecycle, 'CRASHED');
+        assert.equal(result.failure?.category, 'REPLAY_FAILED');
+        assert.equal(result.failure?.phase, 'REPLAY_VALIDATING');
+        assert.equal(browserAdapter.startCount, 0);
+    });
+});
+
+function createStructuredReplayInput(planRef: string): StartRunInput {
+    return {
+        ...structuredClone(startInput),
+        mode: 'structured-replay',
+        test: {
+            ...structuredClone(startInput.test),
+            execution: {
+                planRef,
+                preferredMode: 'structured-replay'
+            }
+        },
+        budgets: {
+            ...startInput.budgets,
+            maxModelCalls: 1
+        }
+    };
+}
+
+function createStructuredReplayPlan(): CompiledPlan {
+    return {
+        schemaVersion: 1,
+        planId: 'compiled-login-plan',
+        testId: startInput.test.id,
+        sourceRunId: 'source-run',
+        sourceTraceRef: 'source-run/trace.jsonl',
+        createdAt: '2026-08-26T06:00:00.000Z',
+        allowedHosts: [ 'test.jdydevelop.com' ],
+        testIntent: structuredClone(testIntent),
+        steps: [{
+            id: 'step-1',
+            sequence: 1,
+            type: 'NAVIGATE',
+            value: {
+                source: 'literal',
+                value: startInput.test.startUrl ?? ''
+            },
+            expectedEffect: '浏览器加载测试起始页面',
+            risk: 'read-only'
+        }, createCompiledTypeStep(
+            2,
+            'username',
+            '账号',
+            'textbox::账号',
+            'text'
+        ), createCompiledTypeStep(
+            3,
+            'password',
+            '密码',
+            'textbox::密码',
+            'password'
+        ), {
+            id: 'step-4',
+            sequence: 4,
+            type: 'CLICK',
+            target: {
+                description: '登录按钮',
+                locatorHints: [{
+                    strategy: 'role-name',
+                    value: 'button::登录'
+                }],
+                identity: {
+                    tag: 'button',
+                    role: 'button',
+                    name: '登录'
+                }
+            },
+            expectedEffect: '页面进入简道云工作台',
+            risk: 'side-effect'
+        }]
+    };
+}
+
+function createCompiledTypeStep(
+    sequence: number,
+    key: string,
+    name: string,
+    locatorValue: string,
+    inputType: string
+): CompiledPlan['steps'][number] {
+    return {
+        id: `step-${ sequence }`,
+        sequence,
+        type: 'TYPE',
+        target: {
+            description: `${ name }输入框`,
+            locatorHints: [{
+                strategy: 'role-name',
+                value: locatorValue
+            }],
+            identity: {
+                tag: 'input',
+                role: 'textbox',
+                name,
+                inputType
+            }
+        },
+        value: {
+            source: 'environment',
+            key
+        },
+        expectedEffect: `${ name }输入框变为已填写`,
+        risk: 'reversible'
+    };
+}
+
 /** 使用内存数组记录 RunCoordinator 的持久化调用。 */
 class FakeArtifactStore implements ArtifactStore {
     public readonly createdSnapshots: RunSnapshot[] = [];
@@ -507,6 +689,7 @@ class FakeArtifactStore implements ArtifactStore {
         name: string,
         value: JsonValue
     }> = [];
+    public readonly readableJson = new Map<string, unknown>();
 
     /** 记录初始运行快照。 */
     public createRun = (snapshot: RunSnapshot): Promise<void> => {
@@ -560,9 +743,15 @@ class FakeArtifactStore implements ArtifactStore {
         });
     };
 
-    /** 测试默认不配置可读取 JSON。 */
-    public loadJson = (_reference: string): Promise<unknown> =>
-        Promise.reject(new Error('FakeArtifactStore 没有预设 JSON。'));
+    /** 返回测试预先注册的 JSON。 */
+    public loadJson = (reference: string): Promise<unknown> => {
+        if (!this.readableJson.has(reference)) {
+            return Promise.reject(
+                new Error(`FakeArtifactStore 没有预设 JSON：${ reference }`)
+            );
+        }
+        return Promise.resolve(this.readableJson.get(reference));
+    };
 
     /** 记录协调器生成的最终运行结果。 */
     public saveResult = (

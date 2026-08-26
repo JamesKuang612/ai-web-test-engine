@@ -42,6 +42,7 @@ import type {
 } from '../replay';
 import {
     DeterministicPlanReplayer,
+    parseCompiledPlan,
     PlanReplayError,
     TracePlanCompiler,
 } from '../replay';
@@ -172,6 +173,9 @@ export class RunCoordinator implements ExecutionEngine {
 
         try {
             await this.initializeRun(context);
+            if (input.mode === 'structured-replay') {
+                return await this.executeStructuredReplayRun(context);
+            }
             const testIntent = await this.buildAndSaveIntent(context);
             const execution = await this.executeAgentRun(
                 context,
@@ -188,6 +192,78 @@ export class RunCoordinator implements ExecutionEngine {
             }
             return await this.finishAbnormally(context, error);
         }
+    }
+
+    /** 读取既有计划并直接回放，完全跳过 Intent Builder 和 Planner。 */
+    private async executeStructuredReplayRun(
+        context: RunExecutionContext
+    ): Promise<RunResult> {
+        await this.transition(
+            context,
+            'REPLAY_VALIDATING',
+            '正在读取并执行结构化计划'
+        );
+        const planReference = context.input.test.execution?.planRef;
+        if (!planReference) {
+            throw new PlanReplayError(
+                'structured-replay 模式必须提供 execution.planRef。',
+                0
+            );
+        }
+        const plan = parseCompiledPlan(
+            await this.artifactStore.loadJson(planReference)
+        );
+        if (plan.testId !== context.input.test.id) {
+            throw new PlanReplayError(
+                `结构化计划属于其他测试：${ plan.testId }`,
+                0
+            );
+        }
+
+        this.requireReplayBudget(context, plan);
+        const replay = await this.executeDeterministicReplay(context, plan);
+        const persistedReplay = await this.persistReplayEvidence(
+            context,
+            replay,
+            true
+        );
+        const decision = await this.evaluateReplayVerdict(
+            context,
+            plan.testIntent,
+            persistedReplay
+        );
+        const verdictReference = await this.artifactStore.saveJson(
+            context.runId,
+            'verdict',
+            toVerdictJson(decision)
+        );
+        context.evidence.push(verdictReference);
+        const validationReference = await this.artifactStore.saveJson(
+            context.runId,
+            'structured-replay-validation',
+            this.createReplayValidationJson(plan, replay, decision)
+        );
+        context.evidence.push(validationReference);
+        const result: RunResult = {
+            schemaVersion: 1,
+            runId: context.runId,
+            lifecycle: 'COMPLETED',
+            result: decision.result,
+            summary: decision.summary,
+            evidence: [ ...context.evidence ],
+            traceRef: `${ context.runId }/trace.jsonl`,
+            compiledPlanRef: planReference,
+            metrics: this.createMetrics(context)
+        };
+
+        await this.publishVerdict(context, result);
+        await this.transition(context, 'COMPLETED', result.summary);
+        await this.persistStructuredReplayRun(
+            context,
+            result,
+            persistedReplay
+        );
+        return result;
     }
 
     /** 创建尚未持久化的初始运行上下文。 */
@@ -731,7 +807,8 @@ export class RunCoordinator implements ExecutionEngine {
     /** 保存每一步回放前后观察和截图，并构建最终判定历史。 */
     private async persistReplayEvidence(
         context: RunExecutionContext,
-        replay: ReplayExecution
+        replay: ReplayExecution,
+        appendTrace = false
     ): Promise<PersistedReplay> {
         const history: PlannerHistoryEntry[] = [];
         let finalObservation: PageObservation | undefined;
@@ -767,16 +844,45 @@ export class RunCoordinator implements ExecutionEngine {
                 afterReference,
                 screenshotReference
             );
+            const effect: EffectVerification = {
+                ...execution.effect,
+                evidence: [ afterReference, screenshotReference ]
+            };
             history.push({
                 command: execution.command,
                 actionResult: execution.result,
-                effect: {
-                    ...execution.effect,
-                    evidence: [ afterReference, screenshotReference ]
-                },
+                effect,
                 beforeObservationRef: beforeReference.ref,
                 afterObservationRef: afterReference.ref
             });
+            if (appendTrace) {
+                const traceEvent: TraceEvent = {
+                    schemaVersion: 1,
+                    runId: context.runId,
+                    sequence,
+                    command: execution.command,
+                    beforeObservationRef: beforeReference.ref,
+                    afterObservationRef: afterReference.ref,
+                    actionResult: execution.result,
+                    effect,
+                    artifacts: [
+                        beforeReference,
+                        afterReference,
+                        screenshotReference
+                    ]
+                };
+                await this.artifactStore.appendTrace(
+                    context.runId,
+                    traceEvent
+                );
+                await this.publishEvent(
+                    context.runId,
+                    this.nextSequence(context),
+                    'trace.appended', {
+                        traceSequence: traceEvent.sequence
+                    }
+                );
+            }
             finalObservation = persistedAfter;
             finalObservationReference = afterReference;
         }
@@ -789,6 +895,35 @@ export class RunCoordinator implements ExecutionEngine {
             finalObservationReference,
             history
         };
+    }
+
+    /** 保存 structured-replay 的终态快照、结果和完成事件。 */
+    private async persistStructuredReplayRun(
+        context: RunExecutionContext,
+        result: RunResult,
+        replay: PersistedReplay
+    ): Promise<void> {
+        context.snapshot = {
+            ...context.snapshot,
+            result: result.result,
+            failure: result.failure,
+            metadata: {
+                ...context.snapshot.metadata,
+                observationRef: replay.finalObservationReference.ref,
+                stateFingerprint: replay.finalObservation.stateFingerprint,
+                compiledPlanRef: result.compiledPlanRef ?? ''
+            }
+        };
+        await this.artifactStore.updateRun(context.snapshot);
+        await this.artifactStore.saveResult(result);
+        await this.publishEvent(
+            context.runId,
+            this.nextSequence(context),
+            'run.completed', {
+                result: result.result ?? 'UNCERTAIN',
+                summary: result.summary
+            }
+        );
     }
 
     /** 使用独立 Verdict 对回放终点再次做业务结果判定。 */
