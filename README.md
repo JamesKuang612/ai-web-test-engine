@@ -1,5 +1,7 @@
 # ai-web-test-engine
 
+新人第一次拉取项目时，请先阅读[新人快速上手](docs/getting-started.md)，按照文档完成环境准备、构建和第一条真实链路验证。
+
 ## 开发说明
 
 #### 开发准备
@@ -33,22 +35,24 @@
 
 ### 地基调试接口
 
-当前已经跑通第一条最小纵向链路：
+当前已经跑通登录 POC 的探索、判定、计划编译和确定性回放链路：
 
 ```text
 自然语言 action
   → ModelIntentBuilder
   → RunCoordinator
-  → Playwright 启动与起始页导航
-  → 页面 observe
-  → 本地 Run、Observation、Trace、Result
+  → Playwright 页面观察与登录动作
+  → 独立 Verdict 判定
+  → CompiledPlan 编译
+  → 全新浏览器上下文确定性回放
+  → 本地 Run、Observation、Screenshot、Trace、Result
 ```
 
 服务启动后，可以在 PowerShell 中执行：
 
 ```powershell
 $body = @{
-  action = '打开简道云登录页'
+  action = '使用环境变量中的账号和密码登录简道云，并等待工作台加载完成。'
 } | ConvertTo-Json
 
 Invoke-RestMethod `
@@ -58,7 +62,7 @@ Invoke-RestMethod `
   -Body $body
 ```
 
-成功打开并观察起始页面时，接口会返回生命周期为 `COMPLETED`、业务结果为 `UNCERTAIN` 的 `RunResult`。`UNCERTAIN` 表示基础链路已经跑通，但当前版本尚未执行登录交互和业务断言，不能误报为测试通过。
+成功完成探索和全新上下文回放时，接口会返回生命周期为 `COMPLETED`、业务结果为 `PASS` 的 `RunResult`，并附带可用于结构化回放的 `compiledPlanRef`。
 
 每次运行的产物默认保存在：
 
@@ -67,13 +71,18 @@ test-results/<runId>/
 ├── run.json
 ├── result.json
 ├── trace.jsonl
+├── artifacts/
+│   ├── screenshot-after-*.png
+│   └── replay-screenshot-after-*.png
 └── json/
     ├── intent.json
-    ├── observation-before-navigation.json
-    └── observation-after-navigation.json
+    ├── observation-*.json
+    ├── verdict.json
+    ├── replay-validation.json
+    └── compiled-plan.json
 ```
 
-浏览器是否显示以及视口大小由 `components.browser` 控制。本机调试时可以在 `~/.ai-web-test-engine/config.yml` 中将 `headless` 覆盖为 `false`，不要修改并提交团队默认配置。
+浏览器是否显示以及视口大小由 `components.browser` 控制。当前本地调试基线使用 `headless: false`，可直接观察探索和回放过程；后台或 CI 运行时应在部署配置中覆盖为 `true`。
 
 建议新人优先在以下位置打断点理解链路：
 
@@ -85,7 +94,7 @@ test-results/<runId>/
 
 ### 模型 Provider
 
-开发环境默认使用本机 Codex 订阅调用 `gpt-5.6-sol`，不需要在项目中填写 API Key。首次使用前需要安装 Codex CLI 并完成登录：
+开发环境默认使用本机 Codex 订阅调用 `gpt-5.6-terra`，不需要在项目中填写 API Key。首次使用前需要安装 Codex CLI 并完成登录：
 
 ```bash
 codex login
@@ -98,7 +107,7 @@ codex --version
 components:
   llm:
     provider: codex_app_server
-    model: gpt-5.6-sol
+    model: gpt-5.6-terra
     reasoning_effort: high
     codex_command: codex
 ```
