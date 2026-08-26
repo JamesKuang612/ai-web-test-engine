@@ -33,7 +33,7 @@ system:
   trusted_proxy: []
 components:
   browser:
-    headless: true
+    headless: false
     viewport:
       width: 1280
       height: 720

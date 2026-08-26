@@ -456,6 +456,71 @@ describe('RunCoordinator 终止路径', () => {
     });
 });
 
+describe('RunCoordinator 稳定性保护', () => {
+    it('持久化异常前移除 ANSI 终端样式码', async () => {
+        const escape = String.fromCharCode(27);
+        const coordinator = new RunCoordinator(
+            new FakeArtifactStore(),
+            new FakeRunEventPublisher(),
+            {
+                build: () => Promise.reject(new Error(
+                    `page.screenshot: ${ escape }[2mTimeout${ escape }[22m`
+                ))
+            },
+            new FakeBrowserAdapter(),
+            {
+                actionPlanner: new FakeActionPlanner(plannedTypeCommand),
+                verdictEvaluator: new FakeVerdictEvaluator(passVerdict)
+            },
+            new FakeEnvironmentValueResolver()
+        );
+
+        const result = await coordinator.start(
+            startInput,
+            new AbortController().signal
+        );
+
+        assert.equal(
+            result.summary,
+            '测试运行异常：page.screenshot: Timeout'
+        );
+        assert.equal(result.summary.includes(escape), false);
+    });
+
+    it('最终页面未渲染时不误判为业务成功', async () => {
+        const browserAdapter = new FakeBrowserAdapter(false, true);
+        const verdictEvaluator = new FakeVerdictEvaluator(passVerdict);
+        const coordinator = new RunCoordinator(
+            new FakeArtifactStore(),
+            new FakeRunEventPublisher(),
+            new FakeIntentBuilder(testIntent),
+            browserAdapter,
+            {
+                actionPlanner: new FakeActionPlanner([
+                    plannedTypeCommand,
+                    plannedPasswordCommand,
+                    plannedClickCommand,
+                    finishCommand
+                ]),
+                verdictEvaluator
+            },
+            new FakeEnvironmentValueResolver()
+        );
+
+        const result = await coordinator.start(
+            startInput,
+            new AbortController().signal
+        );
+
+        assert.equal(result.lifecycle, 'COMPLETED');
+        assert.equal(result.result, 'UNCERTAIN');
+        assert.equal(result.failure?.category, 'VERDICT_INSUFFICIENT');
+        assert.equal(verdictEvaluator.callCount, 0);
+        assert.equal(browserAdapter.startCount, 1);
+        assert.match(result.summary, /未渲染出可验证内容/u);
+    });
+});
+
 describe('RunCoordinator 回放失败路径', () => {
     it('回放失败时不保存候选计划并返回稳定失败分类', async () => {
         const artifactStore = new FakeArtifactStore();
@@ -870,7 +935,10 @@ class FakeBrowserAdapter implements BrowserAdapter {
     public readonly commands: ActionCommand[] = [];
     private readonly sessionCommands = new Map<string, ActionCommand[]>();
 
-    constructor(private readonly failReplay = false) {}
+    constructor(
+        private readonly failReplay = false,
+        private readonly unreadyAfterLogin = false
+    ) {}
 
     /** 返回一段固定的浏览器会话。 */
     public start = (): Promise<BrowserSession> => {
@@ -895,7 +963,7 @@ class FakeBrowserAdapter implements BrowserAdapter {
         const loginSubmitted = commands.some(
             (command) => command.type === 'CLICK'
         );
-        return Promise.resolve(createObservation(
+        const observation = createObservation(
             loginSubmitted
                 ? 'https://test.jdydevelop.com/dashboard#/'
                 : startInput.test.startUrl ?? '',
@@ -908,7 +976,24 @@ class FakeBrowserAdapter implements BrowserAdapter {
                     command.value.value === 'test-password'
             ),
             loginSubmitted
-        ));
+        );
+        return Promise.resolve(
+            loginSubmitted && this.unreadyAfterLogin
+                ? {
+                    ...observation,
+                    page: {
+                        ...observation.page,
+                        loading: true
+                    },
+                    visibleText: [],
+                    interactiveElements: [],
+                    notices: [{
+                        level: 'warning',
+                        text: '页面仍未渲染。'
+                    }]
+                }
+                : observation
+        );
     };
 
     /** 模拟一次成功的起始页导航。 */

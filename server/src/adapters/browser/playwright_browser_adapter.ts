@@ -58,14 +58,24 @@ interface CapturedPageState {
     title: string;
 }
 
+/** 允许测试缩短页面内容等待时间，生产环境继续使用稳健默认值。 */
+export interface PlaywrightBrowserAdapterOptions {
+    pageContentWaitMs?: number;
+}
+
 const NAVIGATION_TIMEOUT_MS = 30_000;
 const MAX_VISIBLE_TEXT_LINES = 200;
 const MAX_VISIBLE_TEXT_LENGTH = 500;
-const PAGE_CONTENT_WAIT_MS = 10_000;
+const DEFAULT_PAGE_CONTENT_WAIT_MS = 30_000;
 const OBSERVATION_ATTEMPTS = 5;
 const OBSERVATION_RETRY_DELAY_MS = 250;
 const CLICK_NAVIGATION_WAIT_MS = 15_000;
 const CLICK_SETTLE_DELAY_MS = 250;
+const SCREENSHOT_TIMEOUT_MS = 15_000;
+const SCREENSHOT_ATTEMPTS = 2;
+const SCREENSHOT_RETRY_DELAY_MS = 250;
+const PAGE_NOT_RENDERED_NOTICE =
+    '页面在等待窗口内未渲染出可见文本、交互元素或视觉内容。';
 
 /**
  * 使用 Playwright Chromium 实现浏览器端口。
@@ -76,6 +86,12 @@ const CLICK_SETTLE_DELAY_MS = 250;
 export class PlaywrightBrowserAdapter implements BrowserAdapter {
     private readonly sessions =
         new Map<string, ManagedBrowserSession>();
+    private readonly pageContentWaitMs: number;
+
+    constructor(options: PlaywrightBrowserAdapterOptions = {}) {
+        this.pageContentWaitMs = options.pageContentWaitMs ??
+            DEFAULT_PAGE_CONTENT_WAIT_MS;
+    }
 
     /**
      * 启动一个独立的 Chromium 浏览器，并创建新的上下文和空白页面。
@@ -127,7 +143,7 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
             page,
         } = managedSession;
         const observationId = randomUUID();
-        await this.waitForRenderedContent(page);
+        const contentReady = await this.waitForRenderedContent(page);
         const capturedAt = new Date().toISOString();
         const viewport = page.viewportSize();
 
@@ -156,6 +172,7 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
             .update(JSON.stringify({
                 title,
                 url,
+                loading: loading || !contentReady,
                 visibleText,
                 interactiveElements: interactiveElements.elements.map(
                     (element) => ({
@@ -175,14 +192,19 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
             observationId,
             capturedAt,
             page: {
-                loading,
+                loading: loading || !contentReady,
                 title,
                 url,
                 viewport
             },
             visibleText,
             interactiveElements: interactiveElements.elements,
-            notices: [],
+            notices: contentReady
+                ? []
+                : [{
+                    level: 'warning',
+                    text: PAGE_NOT_RENDERED_NOTICE
+                }],
             tabs,
             stateFingerprint,
             truncated: truncated || interactiveElements.truncated
@@ -284,13 +306,30 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
         session: BrowserSession
     ): Promise<BrowserScreenshot> => {
         const managedSession = this.requireSession(session);
-        return {
-            content: await managedSession.page.screenshot({
-                fullPage: false,
-                type: 'png'
-            }),
-            mediaType: 'image/png'
-        };
+        for (let attempt = 1; attempt <= SCREENSHOT_ATTEMPTS; attempt += 1) {
+            try {
+                return {
+                    content: await managedSession.page.screenshot({
+                        animations: 'disabled',
+                        fullPage: false,
+                        timeout: SCREENSHOT_TIMEOUT_MS,
+                        type: 'png'
+                    }),
+                    mediaType: 'image/png'
+                };
+            } catch (error) {
+                if (!this.isRetryableScreenshotError(error)) {
+                    throw error;
+                }
+                if (attempt < SCREENSHOT_ATTEMPTS) {
+                    await managedSession.page.waitForTimeout(
+                        SCREENSHOT_RETRY_DELAY_MS
+                    );
+                }
+            }
+        }
+
+        return await this.captureScreenshotViaCdp(managedSession);
     };
 
     /**
@@ -567,32 +606,73 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
     }
 
     /** 为延迟渲染的 SPA 等待首批可见文本或交互元素。 */
-    private async waitForRenderedContent(page: Page): Promise<void> {
+    private async waitForRenderedContent(page: Page): Promise<boolean> {
         if (page.url() === 'about:blank') {
-            return;
+            return true;
         }
         try {
-            const bodyText = await page.locator('body').innerText({
-                timeout: 1_000
-            });
-            if (bodyText.trim()) {
-                return;
-            }
-        } catch {
-            // 页面切换期间继续等待交互元素，后续观察仍会处理实际异常。
-        }
-
-        try {
-            await page.locator(INTERACTIVE_SELECTOR).first().waitFor({
-                state: 'visible',
-                timeout: PAGE_CONTENT_WAIT_MS
-            });
+            await page.waitForFunction(
+                [
+                    '(() => {',
+                    'const bodyText = document.body?.innerText.trim() ?? "";',
+                    `const interactiveSelector = ${
+                        JSON.stringify(INTERACTIVE_SELECTOR)
+                    };`,
+                    'if (bodyText || document.querySelector(interactiveSelector)) {',
+                    'return true;',
+                    '}',
+                    'return Array.from(document.querySelectorAll(',
+                    '"canvas, img, svg, video"',
+                    ')).some((element) => {',
+                    'const rectangle = element.getBoundingClientRect();',
+                    'return rectangle.width > 0 && rectangle.height > 0;',
+                    '});',
+                    '})()'
+                ].join(''),
+                undefined,
+                {
+                    timeout: this.pageContentWaitMs
+                }
+            );
+            return true;
         } catch (error) {
             if (!(error instanceof errors.TimeoutError)) {
                 throw error;
             }
-            // 无交互页面仍需返回已有状态，由 observation 表达空内容。
+            return false;
         }
+    }
+
+    /** Playwright 截图卡在字体或渲染阶段时，改用 Chromium CDP 直接取证。 */
+    private async captureScreenshotViaCdp(
+        session: ManagedBrowserSession
+    ): Promise<BrowserScreenshot> {
+        const cdpSession = await session.context.newCDPSession(session.page);
+        try {
+            const response = await cdpSession.send(
+                'Page.captureScreenshot',
+                {
+                    captureBeyondViewport: false,
+                    format: 'png',
+                    fromSurface: true
+                }
+            ) as {
+                data: string
+            };
+            return {
+                content: new Uint8Array(Buffer.from(response.data, 'base64')),
+                mediaType: 'image/png'
+            };
+        } finally {
+            await cdpSession.detach();
+        }
+    }
+
+    /** 只对截图超时或渲染阶段异常做重试，页面关闭等硬错误立即上抛。 */
+    private isRetryableScreenshotError(error: unknown): boolean {
+        return error instanceof errors.TimeoutError ||
+            error instanceof Error &&
+            /screenshot|font|render|timeout/iu.test(error.message);
     }
 
     /**

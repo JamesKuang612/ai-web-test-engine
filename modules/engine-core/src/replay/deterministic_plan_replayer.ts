@@ -243,14 +243,17 @@ export class DeterministicPlanReplayer {
 
         const changed = result.browserSignals.urlChanged
             || before.stateFingerprint !== after.stateFingerprint;
-        const confirmed = result.status === 'executed' && changed;
+        const pageReady = !after.page.loading;
+        const confirmed = result.status === 'executed' && changed && pageReady;
         return this.createEffect(
             command,
             confirmed,
             result.status,
             confirmed
                 ? '点击后页面状态发生了变化。'
-                : '点击后页面状态没有产生可观察变化。'
+                : !pageReady
+                    ? '点击后页面未在等待窗口内渲染出可验证内容。'
+                    : '点击后页面状态没有产生可观察变化。'
         );
     }
 

@@ -8,6 +8,12 @@ import {
     it,
 } from 'mocha';
 import type {
+    Page,
+} from 'playwright';
+import {
+    errors,
+} from 'playwright';
+import type {
     ActionCommand,
     BrowserSession,
 } from '@ai-web-test-engine/core';
@@ -330,6 +336,39 @@ describe('PlaywrightBrowserAdapter', () => {
         }
     }).timeout(15_000);
 
+    it('页面长时间空白时标记为仍在加载', async () => {
+        const testServer = await startTestHttpServer(
+            '<!doctype html><title>空白工作台</title><body></body>'
+        );
+        const adapter = new PlaywrightBrowserAdapter({
+            pageContentWaitMs: 50
+        });
+        let session: BrowserSession | undefined;
+
+        try {
+            session = await adapter.start(START_OPTIONS);
+            await adapter.execute(
+                session,
+                createNavigateCommand(testServer.url)
+            );
+
+            const observation = await adapter.observe(session);
+
+            assert.equal(observation.page.loading, true);
+            assert.deepEqual(observation.visibleText, []);
+            assert.deepEqual(observation.interactiveElements, []);
+            assert.deepEqual(observation.notices, [{
+                level: 'warning',
+                text: '页面在等待窗口内未渲染出可见文本、交互元素或视觉内容。'
+            }]);
+        } finally {
+            if (session) {
+                await adapter.close(session);
+            }
+            await testServer.close();
+        }
+    }).timeout(15_000);
+
     it('采集当前页面 PNG 截图', async () => {
         const testServer = await startTestHttpServer();
         const adapter = new PlaywrightBrowserAdapter();
@@ -344,6 +383,50 @@ describe('PlaywrightBrowserAdapter', () => {
 
             const screenshot = await adapter.captureScreenshot(session);
 
+            assert.equal(screenshot.mediaType, 'image/png');
+            assert.deepEqual(
+                [...screenshot.content.slice(0, 4)],
+                [
+                    137,
+                    80,
+                    78,
+                    71
+                ]
+            );
+        } finally {
+            if (session) {
+                await adapter.close(session);
+            }
+            await testServer.close();
+        }
+    }).timeout(15_000);
+
+    it('Playwright 截图连续超时时使用 CDP 降级取证', async () => {
+        const testServer = await startTestHttpServer();
+        const adapter = new PlaywrightBrowserAdapter();
+        let session: BrowserSession | undefined;
+
+        try {
+            session = await adapter.start(START_OPTIONS);
+            await adapter.execute(
+                session,
+                createNavigateCommand(testServer.url)
+            );
+            const page = requireManagedPage(adapter, session);
+            let screenshotAttempts = 0;
+            Object.defineProperty(page, 'screenshot', {
+                configurable: true,
+                value: () => {
+                    screenshotAttempts += 1;
+                    return Promise.reject(new errors.TimeoutError(
+                        'page.screenshot: Timeout exceeded while waiting for fonts'
+                    ));
+                }
+            });
+
+            const screenshot = await adapter.captureScreenshot(session);
+
+            assert.equal(screenshotAttempts, 2);
             assert.equal(screenshot.mediaType, 'image/png');
             assert.deepEqual(
                 [...screenshot.content.slice(0, 4)],
@@ -441,6 +524,21 @@ function createNavigateCommand(url: string): ActionCommand {
         reasonSummary: '打开测试页面',
         risk: 'read-only'
     };
+}
+
+/** 仅供适配器白盒测试模拟 Playwright 截图超时。 */
+function requireManagedPage(
+    adapter: PlaywrightBrowserAdapter,
+    session: BrowserSession
+): Page {
+    const inspectable = adapter as unknown as {
+        sessions: Map<string, {
+            page: Page
+        }>
+    };
+    const page = inspectable.sessions.get(session.sessionId)?.page;
+    assert.ok(page);
+    return page;
 }
 
 /** 启动本地 HTTP 页面，避免导航测试依赖外部网络。 */

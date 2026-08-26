@@ -56,6 +56,11 @@ import type {
     VerdictEvaluator,
 } from '../verdict';
 
+const ANSI_ESCAPE_PATTERN = new RegExp(
+    `${ String.fromCharCode(27) }\\[[0-?]*[ -/]*[@-~]`,
+    'gu'
+);
+
 /** RunCoordinator 启动浏览器时使用的可覆盖参数。 */
 export interface RunCoordinatorOptions {
     browserStartOptions: BrowserStartOptions;
@@ -1298,7 +1303,8 @@ export class RunCoordinator implements ExecutionEngine {
         }
         const changed = before?.stateFingerprint !==
             after.observation.stateFingerprint;
-        const confirmed = result.status === 'executed' && changed;
+        const pageReady = this.isObservationReady(after.observation);
+        const confirmed = result.status === 'executed' && changed && pageReady;
         return {
             status: result.status !== 'executed'
                 ? 'contradicted'
@@ -1312,6 +1318,8 @@ export class RunCoordinator implements ExecutionEngine {
             ],
             summary: confirmed
                 ? '页面状态在动作执行后发生了变化。'
+                : result.status === 'executed' && !pageReady
+                    ? '动作已执行，但页面在等待窗口内仍未完成可见内容渲染。'
                 : result.status === 'executed'
                     ? '动作已执行，但页面观察未发现状态变化。'
                     : '浏览器没有成功执行页面动作。'
@@ -1670,6 +1678,12 @@ export class RunCoordinator implements ExecutionEngine {
         const latestObservation = latestAction?.afterObservation ??
             execution.navigation.afterObservation;
         const history = this.createExecutionHistory(execution);
+        if (!this.isObservationReady(latestObservation)) {
+            return this.createInsufficientVerdictResult(
+                context,
+                '最终页面仍在加载或未渲染出可验证内容，不能判定业务成功。'
+            );
+        }
         const remainingBudgets = this.getRemainingBudgets(context);
         if (
             remainingBudgets.maxDurationMs < 1 ||
@@ -1791,7 +1805,7 @@ export class RunCoordinator implements ExecutionEngine {
             ? '测试运行已取消。'
             : `测试运行异常：${
                 error instanceof Error
-                    ? error.message
+                    ? this.sanitizeErrorMessage(error.message)
                     : '未知错误'
             }`;
         const failedPhase = context.snapshot.lifecycle;
@@ -1820,6 +1834,16 @@ export class RunCoordinator implements ExecutionEngine {
             }
         );
         return result;
+    }
+
+    /** 判断最终页面是否有足够的可见证据支持业务结论。 */
+    private isObservationReady(observation: PageObservation): boolean {
+        return !observation.page.loading;
+    }
+
+    /** 去除 Playwright 等库面向终端的 ANSI 样式码，避免泄漏到 API 和前端。 */
+    private sanitizeErrorMessage(message: string): string {
+        return message.replace(ANSI_ESCAPE_PATTERN, '').trim();
     }
 
     /** 创建取消或崩溃时的最终结果。 */
