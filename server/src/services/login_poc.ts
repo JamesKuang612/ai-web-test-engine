@@ -54,7 +54,7 @@ export function createLoginPocBuildInput(
     };
 }
 
-/** 为地基调试接口补充执行模式和保守的单次运行预算。 */
+/** 为登录调试接口补充执行模式和多轮运行预算。 */
 export function createLoginPocStartInput(
     action: string
 ): StartRunInput {
@@ -62,10 +62,10 @@ export function createLoginPocStartInput(
         ...createLoginPocBuildInput(action),
         mode: 'ai-explore',
         budgets: {
-            maxActions: 2,
-            maxDurationMs: 180_000,
-            maxModelCalls: 2,
-            maxRepeatedStateActions: 0
+            maxActions: 6,
+            maxDurationMs: 300_000,
+            maxModelCalls: 7,
+            maxRepeatedStateActions: 1
         }
     };
 }

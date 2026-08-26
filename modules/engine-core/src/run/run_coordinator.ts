@@ -15,6 +15,7 @@ import type {
     StartRunInput,
     TestIntent,
     TraceEvent,
+    VerdictDecision,
 } from '../contracts';
 import type {
     ActionPlanner,
@@ -40,10 +41,19 @@ import {
 import type {
     RunContext,
 } from './run_context';
+import type {
+    VerdictEvaluator,
+} from '../verdict';
 
 /** RunCoordinator 启动浏览器时使用的可覆盖参数。 */
 export interface RunCoordinatorOptions {
     browserStartOptions: BrowserStartOptions;
+}
+
+/** RunCoordinator 使用的规划与独立判定能力。 */
+export interface RunCoordinatorDecisionServices {
+    actionPlanner: ActionPlanner;
+    verdictEvaluator: VerdictEvaluator;
 }
 
 /** 一次协调流程内部共享的可变运行状态。 */
@@ -54,6 +64,7 @@ interface RunExecutionContext {
     input: StartRunInput;
     lifecycle: RunLifecycle;
     modelCallCount: number;
+    repeatedStateActionCount: number;
     runCreated: boolean;
     runId: string;
     signal: AbortSignal;
@@ -85,8 +96,8 @@ interface PlannedActionExecution {
 /** 浏览器阶段完成后交给最终判定的数据。 */
 interface BrowserExecution {
     navigation: NavigationExecution;
-    plannedAction?: PlannedActionExecution;
-    plannerDecision?: ActionCommand;
+    plannedActions: PlannedActionExecution[];
+    stopCommand: ActionCommand;
 }
 
 /** 同时保存结构化观察和对应截图。 */
@@ -116,12 +127,12 @@ export class RunCoordinator implements ExecutionEngine {
         private readonly eventPublisher: RunEventPublisher,
         private readonly intentBuilder: IntentBuilder,
         private readonly browserAdapter: BrowserAdapter,
-        private readonly actionPlanner: ActionPlanner,
+        private readonly decisionServices: RunCoordinatorDecisionServices,
         private readonly environmentValueResolver: EnvironmentValueResolver,
         private readonly options: RunCoordinatorOptions = DEFAULT_OPTIONS
     ) {}
 
-    /** 创建一次运行，并执行当前阶段支持的起始页导航闭环。 */
+    /** 创建一次运行，并执行受预算约束的多轮浏览器 Agent 闭环。 */
     public async start(
         input: StartRunInput,
         signal: AbortSignal
@@ -131,11 +142,15 @@ export class RunCoordinator implements ExecutionEngine {
         try {
             await this.initializeRun(context);
             const testIntent = await this.buildAndSaveIntent(context);
-            const execution = await this.executeMinimalAiRun(
+            const execution = await this.executeAgentRun(
                 context,
                 testIntent
             );
-            return await this.completeMinimalAiRun(context, execution);
+            return await this.completeAgentRun(
+                context,
+                testIntent,
+                execution
+            );
         } catch (error) {
             if (!context.runCreated) {
                 throw error;
@@ -159,6 +174,7 @@ export class RunCoordinator implements ExecutionEngine {
             input,
             lifecycle: new RunLifecycle(),
             modelCallCount: 0,
+            repeatedStateActionCount: 0,
             runCreated: false,
             runId,
             signal,
@@ -235,8 +251,8 @@ export class RunCoordinator implements ExecutionEngine {
         return intent;
     }
 
-    /** 完成确定性导航和最多一次 AI 规划动作，并始终释放浏览器会话。 */
-    private async executeMinimalAiRun(
+    /** 完成确定性导航和多轮规划动作，并始终释放浏览器会话。 */
+    private async executeAgentRun(
         context: RunExecutionContext,
         testIntent: TestIntent
     ): Promise<BrowserExecution> {
@@ -267,7 +283,12 @@ export class RunCoordinator implements ExecutionEngine {
 
             if (navigation.result.status !== 'executed') {
                 return {
-                    navigation
+                    navigation,
+                    plannedActions: [],
+                    stopCommand: this.createStopCommand(
+                        'FAIL',
+                        '测试起始页面导航失败。'
+                    )
                 };
             }
 
@@ -277,25 +298,92 @@ export class RunCoordinator implements ExecutionEngine {
                 session,
                 navigation
             );
-            const command = await this.planNextAction(context, runtime);
-            if (command.type !== 'TYPE') {
+            return await this.runActionLoop(context, runtime, navigation);
+        } finally {
+            await this.browserAdapter.close(session);
+        }
+    }
+
+    /** 重复执行 Observe、Plan、Act、Verify，直到终止动作或预算边界。 */
+    private async runActionLoop(
+        context: RunExecutionContext,
+        runtime: RunContext,
+        navigation: NavigationExecution
+    ): Promise<BrowserExecution> {
+        const plannedActions: PlannedActionExecution[] = [];
+        let beforeObservationReference =
+            navigation.afterObservationReference;
+
+        while (true) {
+            const budgetStop = this.createBudgetStopCommand(context);
+            if (budgetStop) {
                 return {
                     navigation,
-                    plannerDecision: command
+                    plannedActions,
+                    stopCommand: budgetStop
                 };
             }
-            const plannedAction = await this.executePlannedAction(
+
+            const command = await this.planNextAction(context, runtime);
+            if (this.isTerminalCommand(command)) {
+                return {
+                    navigation,
+                    plannedActions,
+                    stopCommand: command
+                };
+            }
+            if (command.type !== 'TYPE' && command.type !== 'CLICK') {
+                return {
+                    navigation,
+                    plannedActions,
+                    stopCommand: this.createStopCommand(
+                        'UNCERTAIN',
+                        `当前执行阶段不支持 Planner 返回的 ${ command.type } 动作。`
+                    )
+                };
+            }
+
+            const previousFingerprint =
+                runtime.latestObservation?.stateFingerprint;
+            const execution = await this.executePlannedAction(
                 context,
                 runtime,
                 command,
-                navigation.afterObservationReference
+                beforeObservationReference
             );
-            return {
-                navigation,
-                plannedAction
-            };
-        } finally {
-            await this.browserAdapter.close(session);
+            plannedActions.push(execution);
+            this.updateRepeatedStateCount(
+                context,
+                runtime,
+                previousFingerprint,
+                execution.afterObservation.stateFingerprint
+            );
+
+            if (execution.result.status !== 'executed') {
+                return {
+                    navigation,
+                    plannedActions,
+                    stopCommand: this.createStopCommand(
+                        'FAIL',
+                        execution.result.error?.message ?? '浏览器动作执行失败。'
+                    )
+                };
+            }
+            if (
+                context.repeatedStateActionCount >
+                context.input.budgets.maxRepeatedStateActions
+            ) {
+                return {
+                    navigation,
+                    plannedActions,
+                    stopCommand: this.createStopCommand(
+                        'UNCERTAIN',
+                        '连续动作没有产生可观察的页面变化，已停止运行。'
+                    )
+                };
+            }
+
+            beforeObservationReference = execution.afterObservationReference;
         }
     }
 
@@ -430,17 +518,25 @@ export class RunCoordinator implements ExecutionEngine {
         );
     }
 
-    /** 对已完成的最小执行闭环给出保守终局判定。 */
-    private async completeMinimalAiRun(
+    /** 对多轮执行结果进行独立业务判定并持久化终态。 */
+    private async completeAgentRun(
         context: RunExecutionContext,
+        testIntent: TestIntent,
         execution: BrowserExecution
     ): Promise<RunResult> {
         await this.transition(
             context,
             'DECIDING_VERDICT',
-            '正在生成阶段性运行结论'
+            '正在根据最终页面证据生成运行结论'
         );
-        const result = this.createMinimalAiResult(context, execution);
+        const failedAction = this.findFailedAction(execution);
+        const result = failedAction
+            ? this.createFailedActionResult(context, failedAction)
+            : await this.evaluateFinalVerdict(
+                context,
+                testIntent,
+                execution
+            );
         await this.publishVerdict(context, result);
         await this.transition(context, 'COMPLETED', result.summary);
         await this.persistCompletedRun(context, execution, result);
@@ -473,7 +569,7 @@ export class RunCoordinator implements ExecutionEngine {
             counters: {
                 actionCount: context.actionCount,
                 modelCallCount: context.modelCallCount,
-                repeatedStateActionCount: 0
+                repeatedStateActionCount: context.repeatedStateActionCount
             },
             startedAt: context.startedAt
         };
@@ -503,7 +599,7 @@ export class RunCoordinator implements ExecutionEngine {
         context.modelCallCount += 1;
         runtime.counters.modelCallCount = context.modelCallCount;
         runtime.lifecycle = context.lifecycle.current();
-        const command = await this.actionPlanner.plan(
+        const command = await this.decisionServices.actionPlanner.plan(
             {
                 testIntent: runtime.testIntent,
                 observation,
@@ -547,9 +643,70 @@ export class RunCoordinator implements ExecutionEngine {
             ),
             maxRepeatedStateActions: Math.max(
                 0,
-                context.input.budgets.maxRepeatedStateActions
+                context.input.budgets.maxRepeatedStateActions -
+                    context.repeatedStateActionCount
             )
         };
+    }
+
+    /** 在循环继续前保留一次模型调用给独立 Verdict。 */
+    private createBudgetStopCommand(
+        context: RunExecutionContext
+    ): ActionCommand | undefined {
+        const budgets = this.getRemainingBudgets(context);
+        if (budgets.maxDurationMs < 1) {
+            return this.createStopCommand(
+                'UNCERTAIN',
+                '运行时间预算已耗尽。'
+            );
+        }
+        if (budgets.maxActions < 1) {
+            return this.createStopCommand(
+                'UNCERTAIN',
+                '浏览器动作预算已耗尽。'
+            );
+        }
+        if (budgets.maxModelCalls <= 1) {
+            return this.createStopCommand(
+                'UNCERTAIN',
+                '已停止继续规划，并保留最后一次模型调用用于独立判定。'
+            );
+        }
+        return undefined;
+    }
+
+    /** 判断 Planner 是否建议停止页面执行。 */
+    private isTerminalCommand(command: ActionCommand): boolean {
+        return command.type === 'FINISH' ||
+            command.type === 'FAIL' ||
+            command.type === 'UNCERTAIN';
+    }
+
+    /** 创建不引用页面元素的内部终止命令。 */
+    private createStopCommand(
+        type: 'FAIL' | 'FINISH' | 'UNCERTAIN',
+        reasonSummary: string
+    ): ActionCommand {
+        return {
+            type,
+            reasonSummary,
+            risk: 'read-only'
+        };
+    }
+
+    /** 根据动作前后指纹维护连续无变化计数。 */
+    private updateRepeatedStateCount(
+        context: RunExecutionContext,
+        runtime: RunContext,
+        beforeFingerprint: string | undefined,
+        afterFingerprint: string
+    ): void {
+        context.repeatedStateActionCount =
+            beforeFingerprint === afterFingerprint
+                ? context.repeatedStateActionCount + 1
+                : 0;
+        runtime.counters.repeatedStateActionCount =
+            context.repeatedStateActionCount;
     }
 
     /** 在模型调用前拒绝已经耗尽的关键预算。 */
@@ -563,7 +720,7 @@ export class RunCoordinator implements ExecutionEngine {
         }
     }
 
-    /** 执行、验证并记录本阶段唯一的一次 TYPE 动作。 */
+    /** 执行、验证并记录一轮受控页面动作。 */
     private async executePlannedAction(
         context: RunExecutionContext,
         runtime: RunContext,
@@ -584,7 +741,12 @@ export class RunCoordinator implements ExecutionEngine {
             context,
             runtime.browserSession
         );
-        const effect = this.createTypeEffect(command, result, after);
+        const effect = this.createActionEffect(
+            command,
+            result,
+            runtime.latestObservation,
+            after
+        );
         const execution = {
             command,
             result,
@@ -641,7 +803,7 @@ export class RunCoordinator implements ExecutionEngine {
         await this.transition(
             context,
             'ACTING',
-            '正在执行一次 AI 规划的输入动作'
+            `正在执行 AI 规划的 ${ executableCommand.type } 动作`
         );
         await this.publishEvent(
             context.runId,
@@ -668,7 +830,7 @@ export class RunCoordinator implements ExecutionEngine {
         return result;
     }
 
-    /** 保存输入动作完成后的观察与截图。 */
+    /** 保存本轮页面动作完成后的观察与截图。 */
     private async observeAfterPlannedAction(
         context: RunExecutionContext,
         session: BrowserSession
@@ -676,14 +838,47 @@ export class RunCoordinator implements ExecutionEngine {
         await this.transition(
             context,
             'VERIFYING',
-            '正在验证输入动作后的页面状态'
+            '正在验证页面动作后的状态'
         );
+        const traceSequence = context.actionCount;
         return await this.captureObservationEvidence(
             context,
             session,
-            'observation-after-planned-action',
-            'screenshot-after-planned-action.png'
+            `observation-after-action-${ traceSequence }`,
+            `screenshot-after-action-${ traceSequence }.png`
         );
+    }
+
+    /** 根据动作类型与前后状态验证页面是否产生可观察效果。 */
+    private createActionEffect(
+        command: ActionCommand,
+        result: ActionResult,
+        before: PageObservation | undefined,
+        after: ObservationEvidence
+    ): EffectVerification {
+        if (command.type === 'TYPE') {
+            return this.createTypeEffect(command, result, after);
+        }
+        const changed = before?.stateFingerprint !==
+            after.observation.stateFingerprint;
+        const confirmed = result.status === 'executed' && changed;
+        return {
+            status: result.status !== 'executed'
+                ? 'contradicted'
+                : confirmed
+                    ? 'confirmed'
+                    : 'not-observed',
+            expectedEffect: command.expectedEffect ?? '页面状态发生预期变化',
+            evidence: [
+                after.observationReference,
+                after.screenshotReference
+            ],
+            summary: confirmed
+                ? '页面状态在动作执行后发生了变化。'
+                : result.status === 'executed'
+                    ? '动作已执行，但页面观察未发现状态变化。'
+                    : '浏览器没有成功执行页面动作。'
+        };
     }
 
     /** 根据候选输入框的值状态验证 TYPE 是否产生预期效果。 */
@@ -718,7 +913,7 @@ export class RunCoordinator implements ExecutionEngine {
         };
     }
 
-    /** 追加第二条 Trace，并把安全命令引用加入 Planner 历史。 */
+    /** 追加本轮 Trace，并把安全命令引用加入 Planner 历史。 */
     private async recordPlannedAction(
         context: RunExecutionContext,
         runtime: RunContext,
@@ -728,12 +923,12 @@ export class RunCoordinator implements ExecutionEngine {
         await this.transition(
             context,
             'RECORDING',
-            '正在记录 AI 输入动作轨迹'
+            '正在记录 AI 页面动作轨迹'
         );
         const traceEvent: TraceEvent = {
             schemaVersion: 1,
             runId: context.runId,
-            sequence: 2,
+            sequence: runtime.history.length + 1,
             command: execution.command,
             beforeObservationRef: execution.beforeObservationReference.ref,
             afterObservationRef: execution.afterObservationReference.ref,
@@ -885,10 +1080,11 @@ export class RunCoordinator implements ExecutionEngine {
         execution: BrowserExecution,
         result: RunResult
     ): Promise<void> {
-        const latestObservation = execution.plannedAction?.afterObservation ??
+        const latestAction = execution.plannedActions.at(-1);
+        const latestObservation = latestAction?.afterObservation ??
             execution.navigation.afterObservation;
         const latestObservationReference =
-            execution.plannedAction?.afterObservationReference ??
+            latestAction?.afterObservationReference ??
             execution.navigation.afterObservationReference;
         context.snapshot = {
             ...context.snapshot,
@@ -898,11 +1094,7 @@ export class RunCoordinator implements ExecutionEngine {
                 ...context.snapshot.metadata,
                 observationRef: latestObservationReference.ref,
                 stateFingerprint: latestObservation.stateFingerprint,
-                ...(execution.plannerDecision
-                    ? {
-                        plannerDecision: execution.plannerDecision.type
-                    }
-                    : {})
+                plannerDecision: execution.stopCommand.type
             }
         };
         await this.artifactStore.updateRun(context.snapshot);
@@ -984,72 +1176,144 @@ export class RunCoordinator implements ExecutionEngine {
         }
     }
 
-    /** 根据导航和一次 Planner 决策生成不会误报业务成功的阶段性结论。 */
-    private createMinimalAiResult(
-        context: RunExecutionContext,
+    /** 返回浏览器阶段首个失败动作，供技术失败快速收尾。 */
+    private findFailedAction(
         execution: BrowserExecution
+    ): ActionResult | undefined {
+        if (execution.navigation.result.status !== 'executed') {
+            return execution.navigation.result;
+        }
+        return execution.plannedActions.find(
+            (action) => action.result.status !== 'executed'
+        )?.result;
+    }
+
+    /** 将浏览器动作失败转换为稳定的测试失败结果。 */
+    private createFailedActionResult(
+        context: RunExecutionContext,
+        failedResult: ActionResult
     ): RunResult {
-        const navigationSucceeded =
-            execution.navigation.result.status === 'executed';
-        const plannedResult = execution.plannedAction?.result;
-        const failedResult = !navigationSucceeded
-            ? execution.navigation.result
-            : plannedResult?.status !== 'executed'
-                ? plannedResult
-                : undefined;
-        const failureCategory = failedResult
-            ? this.getActionFailureCategory(failedResult)
-            : undefined;
+        const failureCategory = this.getActionFailureCategory(failedResult) ??
+            'ACTION_FAILED';
+        const summary = `浏览器动作执行失败：${
+            failedResult.error?.message ?? failedResult.status
+        }`;
 
         return {
             schemaVersion: 1,
             runId: context.runId,
             lifecycle: 'COMPLETED',
-            result: failedResult ? 'FAIL' : 'UNCERTAIN',
-            summary: this.createMinimalAiSummary(execution, failedResult),
+            result: 'FAIL',
+            summary,
             evidence: context.evidence,
-            ...(failedResult && failureCategory
-                ? {
-                    failure: {
-                        category: failureCategory,
-                        phase: 'ACTING' as const,
-                        summary: failedResult.error?.message ??
-                            '浏览器动作执行失败。',
-                        recoverable: failedResult.status === 'timed-out',
-                        evidence: context.evidence
-                    }
-                }
-                : {}),
+            failure: {
+                category: failureCategory,
+                phase: 'ACTING',
+                summary,
+                recoverable: failedResult.status === 'timed-out',
+                evidence: context.evidence
+            },
             traceRef: `${ context.runId }/trace.jsonl`,
             metrics: this.createMetrics(context)
         };
     }
 
-    /** 为最小闭环返回明确的阶段边界说明。 */
-    private createMinimalAiSummary(
-        execution: BrowserExecution,
-        failedResult: ActionResult | undefined
-    ): string {
-        if (execution.navigation.result.status !== 'executed') {
-            return `测试起始页面导航失败：${
-                failedResult?.error?.message ?? failedResult?.status
-            }`;
+    /** 调用独立 Verdict，并把结构化判定加入运行证据。 */
+    private async evaluateFinalVerdict(
+        context: RunExecutionContext,
+        testIntent: TestIntent,
+        execution: BrowserExecution
+    ): Promise<RunResult> {
+        const latestAction = execution.plannedActions.at(-1);
+        const latestObservation = latestAction?.afterObservation ??
+            execution.navigation.afterObservation;
+        const history = this.createExecutionHistory(execution);
+        const remainingBudgets = this.getRemainingBudgets(context);
+        if (
+            remainingBudgets.maxDurationMs < 1 ||
+            remainingBudgets.maxModelCalls < 1
+        ) {
+            return this.createInsufficientVerdictResult(
+                context,
+                '运行预算不足，无法执行独立最终判定。'
+            );
         }
-        if (execution.plannedAction) {
-            if (failedResult) {
-                return `AI 规划的输入动作失败：${
-                    failedResult.error?.message ?? failedResult.status
-                }`;
-            }
-            return execution.plannedAction.effect.status === 'confirmed'
-                ? '已执行一次 AI 规划的账号输入并确认填写状态；尚未提交登录或判断业务结果。'
-                : '已执行一次 AI 规划的账号输入，但页面证据尚未确认填写状态。';
-        }
-        if (execution.plannerDecision) {
-            return `Planner 返回 ${ execution.plannerDecision.type }；` +
-                '当前最小阶段未执行 TYPE 之外的页面动作。';
-        }
-        return '已完成起始页导航；没有可执行的 AI 页面动作。';
+
+        context.modelCallCount += 1;
+        const decision = await this.decisionServices.verdictEvaluator.evaluate(
+            {
+                testIntent,
+                observation: latestObservation,
+                history,
+                stopCommand: execution.stopCommand
+            },
+            context.signal
+        );
+        context.signal.throwIfAborted();
+        const verdictReference = await this.artifactStore.saveJson(
+            context.runId,
+            'verdict',
+            toVerdictJson(decision)
+        );
+        context.evidence.push(verdictReference);
+        return {
+            schemaVersion: 1,
+            runId: context.runId,
+            lifecycle: 'COMPLETED',
+            result: decision.result,
+            summary: decision.summary,
+            evidence: context.evidence,
+            traceRef: `${ context.runId }/trace.jsonl`,
+            metrics: this.createMetrics(context)
+        };
+    }
+
+    /** 汇总导航和所有页面动作，供独立判定器参考。 */
+    private createExecutionHistory(
+        execution: BrowserExecution
+    ): PlannerHistoryEntry[] {
+        return [
+            {
+                command: execution.navigation.command,
+                actionResult: execution.navigation.result,
+                effect: this.createNavigationEffect(execution.navigation),
+                beforeObservationRef:
+                    execution.navigation.beforeObservationReference.ref,
+                afterObservationRef:
+                    execution.navigation.afterObservationReference.ref
+            },
+            ...execution.plannedActions.map((action) => ({
+                command: action.command,
+                actionResult: action.result,
+                effect: action.effect,
+                beforeObservationRef: action.beforeObservationReference.ref,
+                afterObservationRef: action.afterObservationReference.ref
+            }))
+        ];
+    }
+
+    /** 当 Verdict 预算不足时返回不会误报业务成功的结果。 */
+    private createInsufficientVerdictResult(
+        context: RunExecutionContext,
+        summary: string
+    ): RunResult {
+        return {
+            schemaVersion: 1,
+            runId: context.runId,
+            lifecycle: 'COMPLETED',
+            result: 'UNCERTAIN',
+            summary,
+            evidence: context.evidence,
+            failure: {
+                category: 'VERDICT_INSUFFICIENT',
+                phase: 'DECIDING_VERDICT',
+                summary,
+                recoverable: true,
+                evidence: context.evidence
+            },
+            traceRef: `${ context.runId }/trace.jsonl`,
+            metrics: this.createMetrics(context)
+        };
     }
 
     /** 将浏览器动作状态映射成稳定的失败分类。 */
@@ -1154,7 +1418,7 @@ export class RunCoordinator implements ExecutionEngine {
             actionCount: context.actionCount,
             durationMs: Date.now() - context.startedAt,
             modelCallCount: context.modelCallCount,
-            repeatedStateActionCount: 0
+            repeatedStateActionCount: context.repeatedStateActionCount
         };
     }
 
@@ -1163,6 +1427,12 @@ export class RunCoordinator implements ExecutionEngine {
         lifecycle: RunLifecycleState
     ): FailureCategory {
         if (lifecycle === 'BUILDING_INTENT') {
+            return 'MODEL_UNAVAILABLE';
+        }
+        if (
+            lifecycle === 'PLANNING' ||
+            lifecycle === 'DECIDING_VERDICT'
+        ) {
             return 'MODEL_UNAVAILABLE';
         }
         if (
@@ -1268,6 +1538,24 @@ function toTestIntentJson(intent: TestIntent): JsonValue {
                 ...intent.dataPolicy.generatedValues
             }
         }
+    };
+}
+
+/** 将独立 Verdict 显式转换为可持久化 JSON。 */
+function toVerdictJson(decision: VerdictDecision): JsonValue {
+    return {
+        result: decision.result,
+        summary: decision.summary,
+        successCriteria: decision.successCriteria.map((criterion) => ({
+            criterionId: criterion.criterionId,
+            status: criterion.status,
+            summary: criterion.summary
+        })),
+        failureCriteria: decision.failureCriteria.map((criterion) => ({
+            criterionId: criterion.criterionId,
+            status: criterion.status,
+            summary: criterion.summary
+        }))
     };
 }
 

@@ -7,3 +7,4 @@ export * from './run';
 export * from './schema';
 export * from './test_definition';
 export * from './trace';
+export * from './verdict';

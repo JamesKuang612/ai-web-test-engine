@@ -61,11 +61,14 @@ export class ModelActionPlanner implements ActionPlanner {
             '你是 AI Web 测试执行引擎的单步动作规划器。',
             '每次只能返回一个符合 ActionCommand Schema 的动作。',
             '结合 TestIntent、最新 PageObservation 和执行历史决定下一步。',
+            '当前可执行的页面动作只有 TYPE 和 CLICK；不要返回其他非终止动作。',
+            '登录流程应根据 valueState 依次填写未填写的账号和密码，再点击登录按钮。',
             '操作页面元素时只能引用 observation 中真实存在的 candidateId。',
             '不得输出 Playwright API、CSS、XPath 或 JavaScript。',
             '无法唯一确定目标时返回 UNCERTAIN，禁止猜测 candidateId。',
             '环境变量只能引用 availableEnvironmentVariables 中的逻辑名称。',
             '不得输出账号、密码、令牌等敏感值。',
+            '页面已经满足目标时返回 FINISH；出现明确失败证据时返回 FAIL；证据不足且无法继续时返回 UNCERTAIN。',
             'FINISH 只表示建议结束，不代表最终测试结果为 PASS。'
         ].join('\n');
     }

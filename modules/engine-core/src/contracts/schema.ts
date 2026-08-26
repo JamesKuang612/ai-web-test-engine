@@ -22,6 +22,9 @@ import type {
 import type {
     TraceEvent,
 } from './trace';
+import type {
+    VerdictDecision,
+} from './verdict';
 
 /**
  * JSON Schema 生成入口。这里只聚合跨进程或持久化边界上的根对象。
@@ -37,4 +40,5 @@ export interface EngineContracts {
     testDefinition: TestDefinition;
     testIntent: TestIntent;
     traceEvent: TraceEvent;
+    verdictDecision: VerdictDecision;
 }

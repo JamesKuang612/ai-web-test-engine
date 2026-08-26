@@ -5,7 +5,9 @@ import type {
 import {
     actionCommandSchema,
     ModelActionPlanner,
+    ModelVerdictEvaluator,
     RunCoordinator,
+    verdictDecisionSchema,
 } from '@ai-web-test-engine/core';
 import { service } from 'nstarter-core';
 import { PlaywrightBrowserAdapter } from '../adapters/browser';
@@ -37,14 +39,24 @@ function createConfiguredExecutionEngine(): ExecutionEngine {
         new LoggingRunEventPublisher(),
         createConfiguredIntentBuilder(modelAdapter),
         new PlaywrightBrowserAdapter(),
-        new ModelActionPlanner(
-            modelAdapter,
-            actionCommandSchema,
-            {
-                maxOutputTokens: 1_200,
-                timeoutMs: 300_000
-            }
-        ),
+        {
+            actionPlanner: new ModelActionPlanner(
+                modelAdapter,
+                actionCommandSchema,
+                {
+                    maxOutputTokens: 1_200,
+                    timeoutMs: 300_000
+                }
+            ),
+            verdictEvaluator: new ModelVerdictEvaluator(
+                modelAdapter,
+                verdictDecisionSchema,
+                {
+                    maxOutputTokens: 2_000,
+                    timeoutMs: 300_000
+                }
+            )
+        },
         new LocalEnvironmentValueResolver(),
         {
             browserStartOptions: {
@@ -58,7 +70,7 @@ function createConfiguredExecutionEngine(): ExecutionEngine {
     );
 }
 
-/** 执行登录 POC 的完整地基链路，并返回本地保存后的 RunResult。 */
+/** 执行登录 POC 的多轮 Agent 闭环，并返回独立判定后的 RunResult。 */
 @service()
 export class RunDebugService {
     /** 默认装配真实执行引擎，测试可以注入不访问模型和浏览器的替身。 */
@@ -67,7 +79,7 @@ export class RunDebugService {
             createConfiguredExecutionEngine()
     ) {}
 
-    /** 校验自然语言输入并启动一次阶段性完整运行。 */
+    /** 校验自然语言输入并启动一次完整登录运行。 */
     public async run(
         action: string,
         signal: AbortSignal

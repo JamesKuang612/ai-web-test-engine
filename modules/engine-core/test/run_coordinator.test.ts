@@ -11,6 +11,7 @@ import type {
     EvidenceRef,
     EnvironmentValueResolver,
     EnvironmentVariable,
+    EvaluateVerdictInput,
     IntentBuilder,
     JsonValue,
     PageObservation,
@@ -22,6 +23,8 @@ import type {
     StartRunInput,
     TestIntent,
     TraceEvent,
+    VerdictDecision,
+    VerdictEvaluator,
 } from '../src';
 import {
     RunCoordinator,
@@ -48,6 +51,10 @@ const startInput: StartRunInput = {
             username: {
                 source: 'literal',
                 value: 'tester@example.com'
+            },
+            password: {
+                source: 'literal',
+                value: 'test-password'
             }
         }
     },
@@ -112,20 +119,91 @@ const plannedTypeCommand: ActionCommand = {
     risk: 'reversible'
 };
 
+const plannedPasswordCommand: ActionCommand = {
+    type: 'TYPE',
+    target: {
+        candidateId: 'e2',
+        description: '密码输入框'
+    },
+    value: {
+        source: 'environment',
+        key: 'password'
+    },
+    expectedEffect: '密码输入框变为已填写',
+    reasonSummary: '填写登录密码',
+    risk: 'reversible'
+};
+
+const plannedClickCommand: ActionCommand = {
+    type: 'CLICK',
+    target: {
+        candidateId: 'e3',
+        description: '登录按钮'
+    },
+    expectedEffect: '页面进入简道云工作台',
+    reasonSummary: '提交登录表单',
+    risk: 'side-effect'
+};
+
+const finishCommand: ActionCommand = {
+    type: 'FINISH',
+    reasonSummary: '页面已经显示简道云工作台',
+    risk: 'read-only'
+};
+
+const passVerdict: VerdictDecision = {
+    result: 'PASS',
+    summary: '页面已经进入简道云工作台，登录成功。',
+    successCriteria: [{
+        criterionId: 'workspace-visible',
+        status: 'MATCHED',
+        summary: '最终页面显示简道云工作台。'
+    }],
+    failureCriteria: [{
+        criterionId: 'login-error',
+        status: 'NOT_MATCHED',
+        summary: '页面没有账号或密码错误提示。'
+    }]
+};
+
+const uncertainVerdict: VerdictDecision = {
+    result: 'UNCERTAIN',
+    summary: '最终页面证据不足，无法判断是否登录成功。',
+    successCriteria: [{
+        criterionId: 'workspace-visible',
+        status: 'UNKNOWN',
+        summary: '没有观察到工作台。'
+    }],
+    failureCriteria: [{
+        criterionId: 'login-error',
+        status: 'NOT_MATCHED',
+        summary: '页面没有账号或密码错误提示。'
+    }]
+};
+
 describe('RunCoordinator', () => {
-    it('串联意图、浏览器导航、页面观察和本地产物', async () => {
+    it('串联完整登录多轮动作并使用独立 Verdict 判定成功', async () => {
         const artifactStore = new FakeArtifactStore();
         const eventPublisher = new FakeRunEventPublisher();
         const intentBuilder = new FakeIntentBuilder(testIntent);
         const browserAdapter = new FakeBrowserAdapter();
-        const actionPlanner = new FakeActionPlanner(plannedTypeCommand);
+        const actionPlanner = new FakeActionPlanner([
+            plannedTypeCommand,
+            plannedPasswordCommand,
+            plannedClickCommand,
+            finishCommand
+        ]);
         const valueResolver = new FakeEnvironmentValueResolver();
+        const verdictEvaluator = new FakeVerdictEvaluator(passVerdict);
         const coordinator = new RunCoordinator(
             artifactStore,
             eventPublisher,
             intentBuilder,
             browserAdapter,
-            actionPlanner,
+            {
+                actionPlanner,
+                verdictEvaluator
+            },
             valueResolver
         );
         const controller = new AbortController();
@@ -142,12 +220,13 @@ describe('RunCoordinator', () => {
             intentBuilder,
             browserAdapter,
             actionPlanner,
+            verdictEvaluator,
             valueResolver,
             signal: controller.signal
         });
     });
 
-    it('Planner 未返回 TYPE 时保守结束且不执行额外浏览器动作', async () => {
+    it('Planner 返回 UNCERTAIN 后由独立 Verdict 保守结束', async () => {
         const artifactStore = new FakeArtifactStore();
         const browserAdapter = new FakeBrowserAdapter();
         const coordinator = new RunCoordinator(
@@ -155,11 +234,14 @@ describe('RunCoordinator', () => {
             new FakeRunEventPublisher(),
             new FakeIntentBuilder(testIntent),
             browserAdapter,
-            new FakeActionPlanner({
-                type: 'UNCERTAIN',
-                reasonSummary: '当前页面无法确定下一步',
-                risk: 'read-only'
-            }),
+            {
+                actionPlanner: new FakeActionPlanner({
+                    type: 'UNCERTAIN',
+                    reasonSummary: '当前页面无法确定下一步',
+                    risk: 'read-only'
+                }),
+                verdictEvaluator: new FakeVerdictEvaluator(uncertainVerdict)
+            },
             new FakeEnvironmentValueResolver()
         );
 
@@ -171,10 +253,10 @@ describe('RunCoordinator', () => {
         assert.equal(result.lifecycle, 'COMPLETED');
         assert.equal(result.result, 'UNCERTAIN');
         assert.equal(result.metrics.actionCount, 1);
-        assert.equal(result.metrics.modelCallCount, 2);
+        assert.equal(result.metrics.modelCallCount, 3);
         assert.equal(browserAdapter.executeCount, 1);
         assert.equal(artifactStore.traces.length, 1);
-        assert.match(result.summary, /Planner 返回 UNCERTAIN/u);
+        assert.equal(result.summary, uncertainVerdict.summary);
     });
 });
 
@@ -187,9 +269,10 @@ interface CompletedRunState {
     result: RunResult;
     signal: AbortSignal;
     valueResolver: FakeEnvironmentValueResolver;
+    verdictEvaluator: FakeVerdictEvaluator;
 }
 
-/** 校验最小 AI 输入闭环的调用次数、证据和敏感值边界。 */
+/** 校验多轮登录闭环的调用次数、证据和敏感值边界。 */
 function assertCompletedAiRun(state: CompletedRunState): void {
     const {
         actionPlanner,
@@ -200,11 +283,13 @@ function assertCompletedAiRun(state: CompletedRunState): void {
         result,
         signal,
         valueResolver,
+        verdictEvaluator,
     } = state;
     assert.equal(result.lifecycle, 'COMPLETED');
-    assert.equal(result.result, 'UNCERTAIN');
-    assert.equal(result.metrics.actionCount, 2);
-    assert.equal(result.metrics.modelCallCount, 2);
+    assert.equal(result.result, 'PASS');
+    assert.equal(result.summary, passVerdict.summary);
+    assert.equal(result.metrics.actionCount, 4);
+    assert.equal(result.metrics.modelCallCount, 6);
     assert.equal(intentBuilder.callCount, 1);
     assert.equal(intentBuilder.lastSignal, signal);
     assert.deepEqual(intentBuilder.lastInput, {
@@ -218,7 +303,10 @@ function assertCompletedAiRun(state: CompletedRunState): void {
             'intent',
             'observation-before-navigation',
             'observation-after-navigation',
-            'observation-after-planned-action'
+            'observation-after-action-2',
+            'observation-after-action-3',
+            'observation-after-action-4',
+            'verdict'
         ]
     );
     assert.equal(
@@ -226,20 +314,23 @@ function assertCompletedAiRun(state: CompletedRunState): void {
         'COMPLETED'
     );
     assert.equal(browserAdapter.startCount, 1);
-    assert.equal(browserAdapter.executeCount, 2);
-    assert.equal(browserAdapter.observeCount, 3);
-    assert.equal(browserAdapter.captureScreenshotCount, 2);
+    assert.equal(browserAdapter.executeCount, 4);
+    assert.equal(browserAdapter.observeCount, 5);
+    assert.equal(browserAdapter.captureScreenshotCount, 4);
     assert.equal(browserAdapter.closeCount, 1);
-    assert.equal(artifactStore.traces.length, 2);
-    assert.equal(artifactStore.savedArtifacts.length, 2);
-    assert.equal(actionPlanner.callCount, 1);
+    assert.equal(artifactStore.traces.length, 4);
+    assert.equal(artifactStore.savedArtifacts.length, 4);
+    assert.equal(actionPlanner.callCount, 4);
     assert.deepEqual(
         actionPlanner.lastInput?.availableEnvironmentVariables,
-        ['username']
+        [
+            'username',
+            'password'
+        ]
     );
     assert.equal(
         actionPlanner.lastInput?.remainingBudgets.maxActions,
-        19
+        16
     );
     assert.deepEqual(artifactStore.traces[1]?.command.value, {
         source: 'environment',
@@ -249,7 +340,17 @@ function assertCompletedAiRun(state: CompletedRunState): void {
         source: 'literal',
         value: 'tester@example.com'
     });
-    assert.deepEqual(valueResolver.resolvedNames, ['username']);
+    assert.deepEqual(browserAdapter.commands[2]?.value, {
+        source: 'literal',
+        value: 'test-password'
+    });
+    assert.equal(browserAdapter.commands[3]?.type, 'CLICK');
+    assert.deepEqual(valueResolver.resolvedNames, [
+        'username',
+        'password'
+    ]);
+    assert.equal(verdictEvaluator.callCount, 1);
+    assert.equal(verdictEvaluator.lastInput?.stopCommand.type, 'FINISH');
     assert.equal(artifactStore.results[0], result);
     assert.deepEqual(
         eventPublisher.events.map((event) => event.sequence),
@@ -269,7 +370,10 @@ describe('RunCoordinator 终止路径', () => {
             eventPublisher,
             intentBuilder,
             browserAdapter,
-            new FakeActionPlanner(plannedTypeCommand),
+            {
+                actionPlanner: new FakeActionPlanner(plannedTypeCommand),
+                verdictEvaluator: new FakeVerdictEvaluator(passVerdict)
+            },
             new FakeEnvironmentValueResolver()
         );
         const controller = new AbortController();
@@ -308,7 +412,10 @@ describe('RunCoordinator 终止路径', () => {
                 )
             },
             browserAdapter,
-            new FakeActionPlanner(plannedTypeCommand),
+            {
+                actionPlanner: new FakeActionPlanner(plannedTypeCommand),
+                verdictEvaluator: new FakeVerdictEvaluator(passVerdict)
+            },
             new FakeEnvironmentValueResolver()
         );
 
@@ -435,7 +542,13 @@ class FakeActionPlanner implements ActionPlanner {
     public callCount = 0;
     public lastInput?: PlanActionInput;
 
-    constructor(private readonly command: ActionCommand) {}
+    private readonly commands: ActionCommand[];
+
+    constructor(command: ActionCommand | ActionCommand[]) {
+        this.commands = Array.isArray(command)
+            ? command
+            : [command];
+    }
 
     /** 模拟一次受控的单步规划。 */
     public plan = (
@@ -445,7 +558,31 @@ class FakeActionPlanner implements ActionPlanner {
         signal.throwIfAborted();
         this.callCount += 1;
         this.lastInput = input;
-        return Promise.resolve(this.command);
+        const command = this.commands[this.callCount - 1] ??
+            this.commands.at(-1);
+        if (!command) {
+            return Promise.reject(new Error('Fake Planner 没有预设动作。'));
+        }
+        return Promise.resolve(command);
+    };
+}
+
+/** 返回固定独立判定并记录最终页面上下文。 */
+class FakeVerdictEvaluator implements VerdictEvaluator {
+    public callCount = 0;
+    public lastInput?: EvaluateVerdictInput;
+
+    constructor(private readonly decision: VerdictDecision) {}
+
+    /** 模拟一次独立 Verdict 调用。 */
+    public evaluate = (
+        input: EvaluateVerdictInput,
+        signal: AbortSignal
+    ): Promise<VerdictDecision> => {
+        signal.throwIfAborted();
+        this.callCount += 1;
+        this.lastInput = input;
+        return Promise.resolve(this.decision);
     };
 }
 
@@ -483,14 +620,28 @@ class FakeBrowserAdapter implements BrowserAdapter {
         });
     };
 
-    /** 第一次返回空白页，后续返回登录页及输入状态。 */
+    /** 依次返回空白页、登录表单各输入状态和工作台。 */
     public observe = (): Promise<PageObservation> => {
         this.observeCount += 1;
+        if (this.observeCount === 1) {
+            return Promise.resolve(createObservation('about:blank'));
+        }
+        const loginSubmitted = this.commands.some(
+            (command) => command.type === 'CLICK'
+        );
         return Promise.resolve(createObservation(
-            this.observeCount === 1
-                ? 'about:blank'
+            loginSubmitted
+                ? 'https://test.jdydevelop.com/dashboard#/'
                 : startInput.test.startUrl ?? '',
-            this.executeCount > 1
+            this.commands.some(
+                (command) => command.value?.source === 'literal' &&
+                    command.value.value === 'tester@example.com'
+            ),
+            this.commands.some(
+                (command) => command.value?.source === 'literal' &&
+                    command.value.value === 'test-password'
+            ),
+            loginSubmitted
         ));
     };
 
@@ -509,7 +660,8 @@ class FakeBrowserAdapter implements BrowserAdapter {
                 dialogOpened: false,
                 downloadStarted: false,
                 newTabOpened: false,
-                urlChanged: command.type === 'NAVIGATE'
+                urlChanged: command.type === 'NAVIGATE' ||
+                    command.type === 'CLICK'
             }
         });
     };
@@ -545,7 +697,9 @@ class FakeBrowserAdapter implements BrowserAdapter {
 /** 创建供协调器持久化的最小页面观察。 */
 function createObservation(
     url: string,
-    usernameFilled = false
+    usernameFilled = false,
+    passwordFilled = false,
+    workspaceVisible = false
 ): PageObservation {
     return {
         schemaVersion: 1,
@@ -555,7 +709,9 @@ function createObservation(
             loading: false,
             title: url === 'about:blank'
                 ? ''
-                : '简道云登录',
+                : workspaceVisible
+                    ? '简道云工作台'
+                    : '简道云登录',
             url,
             viewport: {
                 width: 1280,
@@ -564,29 +720,66 @@ function createObservation(
         },
         visibleText: url === 'about:blank'
             ? []
-            : ['登录'],
-        interactiveElements: url === 'about:blank'
+            : workspaceVisible
+                ? ['简道云工作台']
+                : ['登录'],
+        interactiveElements: url === 'about:blank' || workspaceVisible
             ? []
-            : [{
-                candidateId: 'e1',
-                tag: 'input',
-                role: 'textbox',
-                name: '账号',
-                valueState: usernameFilled ? 'filled' : 'empty',
-                disabled: false,
-                visible: true,
-                inViewport: true,
-                attributes: {},
-                nearbyText: [],
-                locatorHints: []
-            }],
+            : [
+                {
+                    candidateId: 'e1',
+                    tag: 'input',
+                    role: 'textbox',
+                    name: '账号',
+                    valueState: usernameFilled ? 'filled' : 'empty',
+                    disabled: false,
+                    visible: true,
+                    inViewport: true,
+                    attributes: {},
+                    nearbyText: [],
+                    locatorHints: []
+                },
+                {
+                    candidateId: 'e2',
+                    tag: 'input',
+                    role: 'textbox',
+                    name: '密码',
+                    valueState: passwordFilled ? 'masked' : 'empty',
+                    disabled: false,
+                    visible: true,
+                    inViewport: true,
+                    attributes: {
+                        type: 'password'
+                    },
+                    nearbyText: [],
+                    locatorHints: []
+                },
+                {
+                    candidateId: 'e3',
+                    tag: 'button',
+                    role: 'button',
+                    name: '登录',
+                    disabled: false,
+                    visible: true,
+                    inViewport: true,
+                    attributes: {},
+                    nearbyText: [],
+                    locatorHints: []
+                }
+            ],
         notices: [],
         tabs: [{
             active: true,
             title: '',
             url
         }],
-        stateFingerprint: `fingerprint-${ url }`,
+        stateFingerprint: [
+            'fingerprint',
+            url,
+            usernameFilled,
+            passwordFilled,
+            workspaceVisible
+        ].join('-'),
         truncated: false
     };
 }
