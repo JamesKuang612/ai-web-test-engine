@@ -56,7 +56,7 @@ describe('RunDebugService', () => {
                 'test.frjdy.com'
             ]
         );
-        assert.equal(engine.lastInput?.budgets.maxActions, 6);
+        assert.equal(engine.lastInput?.budgets.maxActions, 10);
         assert.equal(engine.lastInput?.budgets.maxModelCalls, 7);
         assert.equal(engine.lastSignal, controller.signal);
     });

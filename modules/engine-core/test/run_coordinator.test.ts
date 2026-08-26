@@ -288,8 +288,9 @@ function assertCompletedAiRun(state: CompletedRunState): void {
     assert.equal(result.lifecycle, 'COMPLETED');
     assert.equal(result.result, 'PASS');
     assert.equal(result.summary, passVerdict.summary);
-    assert.equal(result.metrics.actionCount, 4);
-    assert.equal(result.metrics.modelCallCount, 6);
+    assert.equal(result.metrics.actionCount, 8);
+    assert.equal(result.metrics.modelCallCount, 7);
+    assert.match(result.compiledPlanRef ?? '', /compiled-plan\.json$/);
     assert.equal(intentBuilder.callCount, 1);
     assert.equal(intentBuilder.lastSignal, signal);
     assert.deepEqual(intentBuilder.lastInput, {
@@ -306,20 +307,31 @@ function assertCompletedAiRun(state: CompletedRunState): void {
             'observation-after-action-2',
             'observation-after-action-3',
             'observation-after-action-4',
-            'verdict'
+            'verdict',
+            'replay-observation-before-1',
+            'replay-observation-after-1',
+            'replay-observation-before-2',
+            'replay-observation-after-2',
+            'replay-observation-before-3',
+            'replay-observation-after-3',
+            'replay-observation-before-4',
+            'replay-observation-after-4',
+            'replay-verdict',
+            'replay-validation',
+            'compiled-plan'
         ]
     );
     assert.equal(
         artifactStore.updatedSnapshots.at(-1)?.lifecycle,
         'COMPLETED'
     );
-    assert.equal(browserAdapter.startCount, 1);
-    assert.equal(browserAdapter.executeCount, 4);
-    assert.equal(browserAdapter.observeCount, 5);
-    assert.equal(browserAdapter.captureScreenshotCount, 4);
-    assert.equal(browserAdapter.closeCount, 1);
+    assert.equal(browserAdapter.startCount, 2);
+    assert.equal(browserAdapter.executeCount, 8);
+    assert.equal(browserAdapter.observeCount, 13);
+    assert.equal(browserAdapter.captureScreenshotCount, 8);
+    assert.equal(browserAdapter.closeCount, 2);
     assert.equal(artifactStore.traces.length, 4);
-    assert.equal(artifactStore.savedArtifacts.length, 4);
+    assert.equal(artifactStore.savedArtifacts.length, 8);
     assert.equal(actionPlanner.callCount, 4);
     assert.deepEqual(
         actionPlanner.lastInput?.availableEnvironmentVariables,
@@ -347,16 +359,28 @@ function assertCompletedAiRun(state: CompletedRunState): void {
     assert.equal(browserAdapter.commands[3]?.type, 'CLICK');
     assert.deepEqual(valueResolver.resolvedNames, [
         'username',
+        'password',
+        'username',
         'password'
     ]);
-    assert.equal(verdictEvaluator.callCount, 1);
+    assert.equal(verdictEvaluator.callCount, 2);
     assert.equal(verdictEvaluator.lastInput?.stopCommand.type, 'FINISH');
     assert.equal(artifactStore.results[0], result);
+    assertCompiledPlanIsSafe(artifactStore);
     assert.deepEqual(
         eventPublisher.events.map((event) => event.sequence),
         eventPublisher.events.map((_event, index) => index + 1)
     );
     assert.equal(eventPublisher.events.at(-1)?.type, 'run.completed');
+}
+
+/** 校验候选计划既已保存，又不泄露运行时定位或密码值。 */
+function assertCompiledPlanIsSafe(artifactStore: FakeArtifactStore): void {
+    const compiledPlan = artifactStore.savedJson.find(
+        ({ name }) => name === 'compiled-plan'
+    )?.value;
+    assert.equal(JSON.stringify(compiledPlan).includes('candidateId'), false);
+    assert.equal(JSON.stringify(compiledPlan).includes('test-password'), false);
 }
 
 describe('RunCoordinator 终止路径', () => {
@@ -428,6 +452,46 @@ describe('RunCoordinator 终止路径', () => {
         assert.equal(result.failure?.phase, 'BUILDING_INTENT');
         assert.equal(result.failure?.category, 'MODEL_UNAVAILABLE');
         assert.equal(browserAdapter.startCount, 0);
+    });
+});
+
+describe('RunCoordinator 回放失败路径', () => {
+    it('回放失败时不保存候选计划并返回稳定失败分类', async () => {
+        const artifactStore = new FakeArtifactStore();
+        const browserAdapter = new FakeBrowserAdapter(true);
+        const verdictEvaluator = new FakeVerdictEvaluator(passVerdict);
+        const coordinator = new RunCoordinator(
+            artifactStore,
+            new FakeRunEventPublisher(),
+            new FakeIntentBuilder(testIntent),
+            browserAdapter,
+            {
+                actionPlanner: new FakeActionPlanner([
+                    plannedTypeCommand,
+                    plannedPasswordCommand,
+                    plannedClickCommand,
+                    finishCommand
+                ]),
+                verdictEvaluator
+            },
+            new FakeEnvironmentValueResolver()
+        );
+
+        const result = await coordinator.start(
+            startInput,
+            new AbortController().signal
+        );
+
+        assert.equal(result.lifecycle, 'CRASHED');
+        assert.equal(result.failure?.phase, 'REPLAY_VALIDATING');
+        assert.equal(result.failure?.category, 'REPLAY_FAILED');
+        assert.equal(result.metrics.actionCount, 5);
+        assert.equal(verdictEvaluator.callCount, 1);
+        assert.equal(browserAdapter.closeCount, 2);
+        assert.equal(
+            artifactStore.savedJson.some(({ name }) => name === 'compiled-plan'),
+            false
+        );
     });
 });
 
@@ -611,33 +675,42 @@ class FakeBrowserAdapter implements BrowserAdapter {
     public closeCount = 0;
     public captureScreenshotCount = 0;
     public readonly commands: ActionCommand[] = [];
+    private readonly sessionCommands = new Map<string, ActionCommand[]>();
+
+    constructor(private readonly failReplay = false) {}
 
     /** 返回一段固定的浏览器会话。 */
     public start = (): Promise<BrowserSession> => {
         this.startCount += 1;
+        const sessionId = `browser-session-${ this.startCount }`;
+        this.sessionCommands.set(sessionId, []);
         return Promise.resolve({
-            sessionId: 'browser-session-001'
+            sessionId
         });
     };
 
     /** 依次返回空白页、登录表单各输入状态和工作台。 */
-    public observe = (): Promise<PageObservation> => {
+    public observe = (session: BrowserSession): Promise<PageObservation> => {
         this.observeCount += 1;
-        if (this.observeCount === 1) {
+        const commands = this.sessionCommands.get(session.sessionId);
+        if (!commands) {
+            return Promise.reject(new Error('测试浏览器会话不存在。'));
+        }
+        if (commands.length === 0) {
             return Promise.resolve(createObservation('about:blank'));
         }
-        const loginSubmitted = this.commands.some(
+        const loginSubmitted = commands.some(
             (command) => command.type === 'CLICK'
         );
         return Promise.resolve(createObservation(
             loginSubmitted
                 ? 'https://test.jdydevelop.com/dashboard#/'
                 : startInput.test.startUrl ?? '',
-            this.commands.some(
+            commands.some(
                 (command) => command.value?.source === 'literal' &&
                     command.value.value === 'tester@example.com'
             ),
-            this.commands.some(
+            commands.some(
                 (command) => command.value?.source === 'literal' &&
                     command.value.value === 'test-password'
             ),
@@ -647,15 +720,30 @@ class FakeBrowserAdapter implements BrowserAdapter {
 
     /** 模拟一次成功的起始页导航。 */
     public execute = (
-        _session: BrowserSession,
+        session: BrowserSession,
         command: ActionCommand
     ): Promise<ActionResult> => {
         this.executeCount += 1;
         this.commands.push(command);
+        const commands = this.sessionCommands.get(session.sessionId);
+        if (!commands) {
+            return Promise.reject(new Error('测试浏览器会话不存在。'));
+        }
+        commands.push(command);
+        const shouldFail = this.failReplay
+            && session.sessionId === 'browser-session-2';
         return Promise.resolve({
-            status: 'executed',
+            status: shouldFail ? 'failed' : 'executed',
             startedAt: '2026-08-21T00:00:00.000Z',
             finishedAt: '2026-08-21T00:00:01.000Z',
+            ...shouldFail
+                ? {
+                    error: {
+                        code: 'REPLAY_TEST_FAILURE',
+                        message: '模拟回放失败'
+                    }
+                }
+                : {},
             browserSignals: {
                 dialogOpened: false,
                 downloadStarted: false,
@@ -688,8 +776,9 @@ class FakeBrowserAdapter implements BrowserAdapter {
         Promise.resolve();
 
     /** 记录浏览器会话已经释放。 */
-    public close = (_session: BrowserSession): Promise<void> => {
+    public close = (session: BrowserSession): Promise<void> => {
         this.closeCount += 1;
+        this.sessionCommands.delete(session.sessionId);
         return Promise.resolve();
     };
 }
@@ -737,7 +826,10 @@ function createObservation(
                     inViewport: true,
                     attributes: {},
                     nearbyText: [],
-                    locatorHints: []
+                    locatorHints: [{
+                        strategy: 'role-name',
+                        value: 'textbox::账号'
+                    }]
                 },
                 {
                     candidateId: 'e2',
@@ -752,7 +844,10 @@ function createObservation(
                         type: 'password'
                     },
                     nearbyText: [],
-                    locatorHints: []
+                    locatorHints: [{
+                        strategy: 'role-name',
+                        value: 'textbox::密码'
+                    }]
                 },
                 {
                     candidateId: 'e3',
@@ -764,7 +859,10 @@ function createObservation(
                     inViewport: true,
                     attributes: {},
                     nearbyText: [],
-                    locatorHints: []
+                    locatorHints: [{
+                        strategy: 'role-name',
+                        value: 'button::登录'
+                    }]
                 }
             ],
         notices: [],

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type {
     ActionCommand,
     ActionResult,
+    CompiledPlan,
     EvidenceRef,
     EffectVerification,
     FailureCategory,
@@ -35,6 +36,15 @@ import type {
 import type {
     ExecutionEngine,
 } from './execution_engine';
+import type {
+    CompilableTraceStep,
+    ReplayExecution,
+} from '../replay';
+import {
+    DeterministicPlanReplayer,
+    PlanReplayError,
+    TracePlanCompiler,
+} from '../replay';
 import {
     RunLifecycle,
 } from './run_lifecycle';
@@ -77,6 +87,7 @@ interface NavigationExecution {
     afterObservation: PageObservation;
     afterObservationReference: EvidenceRef;
     afterScreenshotReference: EvidenceRef;
+    beforeObservation: PageObservation;
     beforeObservationReference: EvidenceRef;
     command: ActionCommand;
     result: ActionResult;
@@ -87,6 +98,7 @@ interface PlannedActionExecution {
     afterObservation: PageObservation;
     afterObservationReference: EvidenceRef;
     afterScreenshotReference: EvidenceRef;
+    beforeObservation: PageObservation;
     beforeObservationReference: EvidenceRef;
     command: ActionCommand;
     effect: EffectVerification;
@@ -105,6 +117,25 @@ interface ObservationEvidence {
     observation: PageObservation;
     observationReference: EvidenceRef;
     screenshotReference: EvidenceRef;
+}
+
+/** 初始空白页只保存观察，不额外截取无业务价值的截图。 */
+interface InitialObservationEvidence {
+    observation: PageObservation;
+    observationReference: EvidenceRef;
+}
+
+/** 回放证据持久化后交给最终业务判定的数据。 */
+interface PersistedReplay {
+    finalObservation: PageObservation;
+    finalObservationReference: EvidenceRef;
+    history: PlannerHistoryEntry[];
+}
+
+/** PASS 轨迹编译和回放完成后的最终结果及证据终点。 */
+interface ReplayCompletion {
+    result: RunResult;
+    replay: PersistedReplay;
 }
 
 const DEFAULT_OPTIONS: RunCoordinatorOptions = {
@@ -268,13 +299,14 @@ export class RunCoordinator implements ExecutionEngine {
         );
 
         try {
-            const beforeReference =
+            const before =
                 await this.observeBeforeNavigation(context, session);
             const navigationResult = await this.navigate(context, session);
             const after = await this.observeAfterNavigation(context, session);
             const navigation: NavigationExecution = {
                 ...navigationResult,
-                beforeObservationReference: beforeReference,
+                beforeObservation: before.observation,
+                beforeObservationReference: before.observationReference,
                 afterObservation: after.observation,
                 afterObservationReference: after.observationReference,
                 afterScreenshotReference: after.screenshotReference
@@ -391,7 +423,7 @@ export class RunCoordinator implements ExecutionEngine {
     private async observeBeforeNavigation(
         context: RunExecutionContext,
         session: BrowserSession
-    ): Promise<EvidenceRef> {
+    ): Promise<InitialObservationEvidence> {
         await this.transition(
             context,
             'OBSERVING',
@@ -409,7 +441,10 @@ export class RunCoordinator implements ExecutionEngine {
             observation
         );
         context.signal.throwIfAborted();
-        return reference;
+        return {
+            observation,
+            observationReference: reference
+        };
     }
 
     /** 生成并执行当前地基版本唯一支持的起始页导航动作。 */
@@ -530,17 +565,279 @@ export class RunCoordinator implements ExecutionEngine {
             '正在根据最终页面证据生成运行结论'
         );
         const failedAction = this.findFailedAction(execution);
-        const result = failedAction
+        let result = failedAction
             ? this.createFailedActionResult(context, failedAction)
             : await this.evaluateFinalVerdict(
                 context,
                 testIntent,
                 execution
             );
+        let replay: PersistedReplay | undefined;
+        if (result.result === 'PASS') {
+            const completion = await this.compileAndValidatePlan(
+                context,
+                testIntent,
+                execution,
+                result
+            );
+            result = completion.result;
+            replay = completion.replay;
+        }
         await this.publishVerdict(context, result);
         await this.transition(context, 'COMPLETED', result.summary);
-        await this.persistCompletedRun(context, execution, result);
+        await this.persistCompletedRun(context, execution, result, replay);
         return result;
+    }
+
+    /** PASS 后编译探索轨迹，并在全新浏览器上下文完成一次确定性回放。 */
+    private async compileAndValidatePlan(
+        context: RunExecutionContext,
+        testIntent: TestIntent,
+        execution: BrowserExecution,
+        initialResult: RunResult
+    ): Promise<ReplayCompletion> {
+        await this.transition(
+            context,
+            'COMPILING_PLAN',
+            '正在将成功轨迹编译为结构化计划'
+        );
+        const plan = new TracePlanCompiler().compile({
+            runId: context.runId,
+            testId: context.input.test.id,
+            testIntent,
+            steps: this.createCompilableTrace(execution)
+        });
+
+        await this.transition(
+            context,
+            'REPLAY_VALIDATING',
+            '正在全新浏览器上下文验证结构化计划'
+        );
+        this.requireReplayBudget(context, plan);
+        const replay = await this.executeDeterministicReplay(context, plan);
+        const persistedReplay = await this.persistReplayEvidence(
+            context,
+            replay
+        );
+        const replayVerdict = await this.evaluateReplayVerdict(
+            context,
+            testIntent,
+            persistedReplay
+        );
+        if (replayVerdict.result !== 'PASS') {
+            throw new PlanReplayError(
+                `确定性回放最终判定为 ${ replayVerdict.result }：${
+                    replayVerdict.summary
+                }`,
+                replay.actionCount
+            );
+        }
+
+        const replayVerdictReference = await this.artifactStore.saveJson(
+            context.runId,
+            'replay-verdict',
+            toVerdictJson(replayVerdict)
+        );
+        context.evidence.push(replayVerdictReference);
+        const validationReference = await this.artifactStore.saveJson(
+            context.runId,
+            'replay-validation',
+            this.createReplayValidationJson(plan, replay, replayVerdict)
+        );
+        context.evidence.push(validationReference);
+        const planReference = await this.artifactStore.saveJson(
+            context.runId,
+            'compiled-plan',
+            toJsonValue(plan)
+        );
+        context.evidence.push(planReference);
+
+        return {
+            replay: persistedReplay,
+            result: {
+                ...initialResult,
+                evidence: [ ...context.evidence ],
+                compiledPlanRef: planReference.ref,
+                metrics: this.createMetrics(context)
+            }
+        };
+    }
+
+    /** 把内存中的真实执行记录转换为编译器要求的连续轨迹。 */
+    private createCompilableTrace(
+        execution: BrowserExecution
+    ): CompilableTraceStep[] {
+        return [{
+            sequence: 1,
+            command: execution.navigation.command,
+            actionResult: execution.navigation.result,
+            effect: this.createNavigationEffect(execution.navigation),
+            beforeObservation: execution.navigation.beforeObservation,
+            afterObservation: execution.navigation.afterObservation
+        }, ...execution.plannedActions.map((action, index) => ({
+            sequence: index + 2,
+            command: action.command,
+            actionResult: action.result,
+            effect: action.effect,
+            beforeObservation: action.beforeObservation,
+            afterObservation: action.afterObservation
+        }))];
+    }
+
+    /** 在进入回放前一次性确认剩余动作、模型和时间预算。 */
+    private requireReplayBudget(
+        context: RunExecutionContext,
+        plan: CompiledPlan
+    ): void {
+        const remaining = this.getRemainingBudgets(context);
+        if (remaining.maxActions < plan.steps.length) {
+            throw new PlanReplayError('剩余动作预算不足，无法验证编译计划。', 0);
+        }
+        if (remaining.maxModelCalls < 1) {
+            throw new PlanReplayError('剩余模型预算不足，无法判定回放结果。', 0);
+        }
+        if (remaining.maxDurationMs < 1) {
+            throw new PlanReplayError('剩余时间预算不足，无法验证编译计划。', 0);
+        }
+    }
+
+    /** 执行不调用 Planner 的回放，并准确累计回放动作数量。 */
+    private async executeDeterministicReplay(
+        context: RunExecutionContext,
+        plan: CompiledPlan
+    ): Promise<ReplayExecution> {
+        const replayer = new DeterministicPlanReplayer(
+            this.browserAdapter,
+            this.environmentValueResolver,
+            undefined,
+            this.options.browserStartOptions
+        );
+        try {
+            const replay = await replayer.replay({
+                plan,
+                environment: context.input.environment,
+                signal: context.signal
+            });
+            context.actionCount += replay.actionCount;
+            return replay;
+        } catch (error) {
+            if (error instanceof PlanReplayError) {
+                context.actionCount += error.actionCount;
+            }
+            throw error;
+        }
+    }
+
+    /** 保存每一步回放前后观察和截图，并构建最终判定历史。 */
+    private async persistReplayEvidence(
+        context: RunExecutionContext,
+        replay: ReplayExecution
+    ): Promise<PersistedReplay> {
+        const history: PlannerHistoryEntry[] = [];
+        let finalObservation: PageObservation | undefined;
+        let finalObservationReference: EvidenceRef | undefined;
+
+        for (const execution of replay.steps) {
+            const sequence = execution.step.sequence;
+            const beforeReference = await this.saveObservation(
+                context.runId,
+                `replay-observation-before-${ sequence }`,
+                execution.beforeObservation
+            );
+            const screenshotReference = await this.artifactStore.saveArtifact(
+                context.runId,
+                {
+                    content: execution.afterScreenshot.content,
+                    kind: 'screenshot',
+                    mediaType: execution.afterScreenshot.mediaType,
+                    name: `replay-screenshot-after-${ sequence }.png`
+                }
+            );
+            const persistedAfter: PageObservation = {
+                ...execution.afterObservation,
+                screenshotRef: screenshotReference.ref
+            };
+            const afterReference = await this.saveObservation(
+                context.runId,
+                `replay-observation-after-${ sequence }`,
+                persistedAfter
+            );
+            context.evidence.push(
+                beforeReference,
+                afterReference,
+                screenshotReference
+            );
+            history.push({
+                command: execution.command,
+                actionResult: execution.result,
+                effect: {
+                    ...execution.effect,
+                    evidence: [ afterReference, screenshotReference ]
+                },
+                beforeObservationRef: beforeReference.ref,
+                afterObservationRef: afterReference.ref
+            });
+            finalObservation = persistedAfter;
+            finalObservationReference = afterReference;
+        }
+
+        if (!finalObservation || !finalObservationReference) {
+            throw new PlanReplayError('确定性回放没有生成最终页面证据。', 0);
+        }
+        return {
+            finalObservation,
+            finalObservationReference,
+            history
+        };
+    }
+
+    /** 使用独立 Verdict 对回放终点再次做业务结果判定。 */
+    private async evaluateReplayVerdict(
+        context: RunExecutionContext,
+        testIntent: TestIntent,
+        replay: PersistedReplay
+    ): Promise<VerdictDecision> {
+        context.modelCallCount += 1;
+        const decision = await this.decisionServices.verdictEvaluator.evaluate(
+            {
+                testIntent,
+                observation: replay.finalObservation,
+                history: replay.history,
+                stopCommand: this.createStopCommand(
+                    'FINISH',
+                    '结构化计划已经完成全部回放步骤。'
+                )
+            },
+            context.signal
+        );
+        context.signal.throwIfAborted();
+        return decision;
+    }
+
+    /** 生成不包含实际输入值和截图字节的回放验证摘要。 */
+    private createReplayValidationJson(
+        plan: CompiledPlan,
+        replay: ReplayExecution,
+        verdict: VerdictDecision
+    ): JsonValue {
+        return {
+            schemaVersion: 1,
+            planId: plan.planId,
+            sourceRunId: plan.sourceRunId,
+            status: 'passed',
+            actionCount: replay.actionCount,
+            finalObservationId: replay.finalObservation.observationId,
+            verdict: {
+                result: verdict.result,
+                summary: verdict.summary
+            },
+            steps: replay.steps.map((execution) => ({
+                sequence: execution.step.sequence,
+                type: execution.step.type,
+                status: execution.result.status,
+                effectStatus: execution.effect.status
+            }))
+        };
     }
 
     /** 将导航后的稳定状态转换为 Planner 使用的正式运行上下文。 */
@@ -727,6 +1024,10 @@ export class RunCoordinator implements ExecutionEngine {
         command: ActionCommand,
         beforeObservationReference: EvidenceRef
     ): Promise<PlannedActionExecution> {
+        const beforeObservation = runtime.latestObservation;
+        if (!beforeObservation) {
+            throw new Error('执行页面动作前缺少最新页面观察。');
+        }
         const executableCommand = await this.resolveCommandValue(
             context,
             command
@@ -744,13 +1045,14 @@ export class RunCoordinator implements ExecutionEngine {
         const effect = this.createActionEffect(
             command,
             result,
-            runtime.latestObservation,
+            beforeObservation,
             after
         );
         const execution = {
             command,
             result,
             effect,
+            beforeObservation,
             beforeObservationReference,
             afterObservation: after.observation,
             afterObservationReference: after.observationReference,
@@ -1078,12 +1380,14 @@ export class RunCoordinator implements ExecutionEngine {
     private async persistCompletedRun(
         context: RunExecutionContext,
         execution: BrowserExecution,
-        result: RunResult
+        result: RunResult,
+        replay?: PersistedReplay
     ): Promise<void> {
         const latestAction = execution.plannedActions.at(-1);
-        const latestObservation = latestAction?.afterObservation ??
-            execution.navigation.afterObservation;
+        const latestObservation = replay?.finalObservation ??
+            latestAction?.afterObservation ?? execution.navigation.afterObservation;
         const latestObservationReference =
+            replay?.finalObservationReference ??
             latestAction?.afterObservationReference ??
             execution.navigation.afterObservationReference;
         context.snapshot = {
@@ -1094,7 +1398,10 @@ export class RunCoordinator implements ExecutionEngine {
                 ...context.snapshot.metadata,
                 observationRef: latestObservationReference.ref,
                 stateFingerprint: latestObservation.stateFingerprint,
-                plannerDecision: execution.stopCommand.type
+                plannerDecision: execution.stopCommand.type,
+                ...result.compiledPlanRef
+                    ? { compiledPlanRef: result.compiledPlanRef }
+                    : {}
             }
         };
         await this.artifactStore.updateRun(context.snapshot);
@@ -1426,6 +1733,12 @@ export class RunCoordinator implements ExecutionEngine {
     private getCrashCategory(
         lifecycle: RunLifecycleState
     ): FailureCategory {
+        if (lifecycle === 'COMPILING_PLAN') {
+            return 'TRACE_COMPILE_ERROR';
+        }
+        if (lifecycle === 'REPLAY_VALIDATING') {
+            return 'REPLAY_FAILED';
+        }
         if (lifecycle === 'BUILDING_INTENT') {
             return 'MODEL_UNAVAILABLE';
         }

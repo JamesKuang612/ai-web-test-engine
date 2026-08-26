@@ -123,6 +123,163 @@
             ],
             "type": "string"
         },
+        "CompiledActionType": {
+            "description": "可由确定性回放器执行的动作集合。",
+            "enum": [
+                "CLICK",
+                "NAVIGATE",
+                "TYPE"
+            ],
+            "type": "string"
+        },
+        "CompiledPlan": {
+            "additionalProperties": false,
+            "description": "经全新浏览器上下文回放验证后才可作为候选计划保存的结构化用例。",
+            "properties": {
+                "allowedHosts": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "planId": {
+                    "type": "string"
+                },
+                "schemaVersion": {
+                    "const": 1,
+                    "description": "当前核心领域数据契约的版本。",
+                    "type": "number"
+                },
+                "sourceRunId": {
+                    "type": "string"
+                },
+                "sourceTraceRef": {
+                    "type": "string"
+                },
+                "steps": {
+                    "items": {
+                        "$ref": "#/definitions/CompiledStep"
+                    },
+                    "type": "array"
+                },
+                "testId": {
+                    "type": "string"
+                },
+                "testIntent": {
+                    "$ref": "#/definitions/TestIntent"
+                }
+            },
+            "required": [
+                "allowedHosts",
+                "createdAt",
+                "planId",
+                "schemaVersion",
+                "sourceRunId",
+                "sourceTraceRef",
+                "steps",
+                "testId",
+                "testIntent"
+            ],
+            "type": "object"
+        },
+        "CompiledStep": {
+            "additionalProperties": false,
+            "description": "成功探索轨迹中可以被确定性重放的单个步骤。",
+            "properties": {
+                "expectedEffect": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "risk": {
+                    "enum": [
+                        "read-only",
+                        "reversible",
+                        "side-effect"
+                    ],
+                    "type": "string"
+                },
+                "sequence": {
+                    "type": "number"
+                },
+                "target": {
+                    "$ref": "#/definitions/CompiledTarget"
+                },
+                "type": {
+                    "$ref": "#/definitions/CompiledActionType"
+                },
+                "value": {
+                    "$ref": "#/definitions/ValueReference"
+                }
+            },
+            "required": [
+                "expectedEffect",
+                "id",
+                "risk",
+                "sequence",
+                "type"
+            ],
+            "type": "object"
+        },
+        "CompiledTarget": {
+            "additionalProperties": false,
+            "description": "编译后保存的稳定元素目标，回放时会重新解析为当前页面 candidateId。",
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "identity": {
+                    "$ref": "#/definitions/CompiledTargetIdentity"
+                },
+                "locatorHints": {
+                    "items": {
+                        "$ref": "#/definitions/LocatorHint"
+                    },
+                    "type": "array"
+                }
+            },
+            "required": [
+                "description",
+                "identity",
+                "locatorHints"
+            ],
+            "type": "object"
+        },
+        "CompiledTargetIdentity": {
+            "additionalProperties": false,
+            "description": "不依赖单次页面采集 candidateId 的元素语义身份。",
+            "properties": {
+                "inputType": {
+                    "type": "string"
+                },
+                "label": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "placeholder": {
+                    "type": "string"
+                },
+                "role": {
+                    "type": "string"
+                },
+                "tag": {
+                    "type": "string"
+                },
+                "text": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "tag"
+            ],
+            "type": "object"
+        },
         "CriterionAssessment": {
             "additionalProperties": false,
             "description": "Verdict 对单条 TestIntent 条件给出的证据化判断。",
@@ -1319,6 +1476,9 @@
         "actionCommand": {
             "$ref": "#/definitions/ActionCommand"
         },
+        "compiledPlan": {
+            "$ref": "#/definitions/CompiledPlan"
+        },
         "environmentDefinition": {
             "$ref": "#/definitions/EnvironmentDefinition"
         },
@@ -1352,6 +1512,7 @@
     },
     "required": [
         "actionCommand",
+        "compiledPlan",
         "environmentDefinition",
         "pageObservation",
         "runEvent",
