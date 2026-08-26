@@ -169,6 +169,87 @@ describe('ModelVerdictEvaluator', () => {
     });
 });
 
+describe('ModelVerdictEvaluator exact text assertions', () => {
+    it('程序级逐字复核会推翻模型的宽松 PASS', async () => {
+        const exactSuccessId = 'engine-exact-text-1';
+        const exactFailureId = 'engine-exact-text-1-mismatch';
+        const exactInput: EvaluateVerdictInput = {
+            ...input,
+            testIntent: {
+                ...input.testIntent,
+                successCriteria: [
+                    ...input.testIntent.successCriteria,
+                    {
+                        id: exactSuccessId,
+                        description: '页面逐字显示“退出登录”。',
+                        preferredEvidence: ['dom'],
+                        required: true
+                    }
+                ],
+                failureCriteria: [
+                    ...input.testIntent.failureCriteria,
+                    {
+                        id: exactFailureId,
+                        description: '“退出登录”文字不完全一致。'
+                    }
+                ],
+                exactTextAssertions: [{
+                    successCriterionId: exactSuccessId,
+                    failureCriterionId: exactFailureId,
+                    ordered: false,
+                    values: ['退出登录']
+                }]
+            },
+            observation: {
+                ...input.observation,
+                visibleText: [
+                    '简道云工作台',
+                    '退出'
+                ]
+            }
+        };
+        const loosePass: VerdictDecision = {
+            ...passDecision,
+            successCriteria: [
+                ...passDecision.successCriteria,
+                {
+                    criterionId: exactSuccessId,
+                    status: 'MATCHED',
+                    summary: '“退出”语义等同于退出登录。'
+                }
+            ],
+            failureCriteria: [
+                ...passDecision.failureCriteria,
+                {
+                    criterionId: exactFailureId,
+                    status: 'NOT_MATCHED',
+                    summary: '模型认为没有差异。'
+                }
+            ]
+        };
+        const evaluator = new ModelVerdictEvaluator(
+            new FakeModelAdapter(loosePass),
+            verdictDecisionSchema
+        );
+
+        const decision = await evaluator.evaluate(
+            exactInput,
+            new AbortController().signal
+        );
+
+        assert.equal(decision.result, 'FAIL');
+        assert.equal(
+            decision.successCriteria.at(-1)?.status,
+            'NOT_MATCHED'
+        );
+        assert.equal(
+            decision.failureCriteria.at(-1)?.status,
+            'MATCHED'
+        );
+        assert.match(decision.summary, /缺失精确文本：退出登录/u);
+    });
+});
+
 /** 返回固定结构化输出并记录模型请求。 */
 class FakeModelAdapter implements ModelAdapter {
     public lastRequest?: ModelRequest;

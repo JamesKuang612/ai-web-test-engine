@@ -54,9 +54,13 @@ export class ModelVerdictEvaluator implements VerdictEvaluator {
             signal
         );
         signal.throwIfAborted();
-        this.requireCompleteCriteria(result.value, input);
-        this.requireConsistentResult(result.value, input);
-        return result.value;
+        const decision = this.applyExactTextAssertions(
+            result.value,
+            input
+        );
+        this.requireCompleteCriteria(decision, input);
+        this.requireConsistentResult(decision, input);
+        return decision;
     }
 
     /** 明确 PASS、FAIL 与证据不足之间的边界。 */
@@ -70,8 +74,78 @@ export class ModelVerdictEvaluator implements VerdictEvaluator {
             '只有所有 required 成功条件均 MATCHED，且失败条件均 NOT_MATCHED 时才能 PASS。',
             '只有至少一条失败条件 MATCHED 时才能 FAIL；其他情况必须 UNCERTAIN。',
             'Planner 的 FINISH、FAIL 或 UNCERTAIN 只作为停止原因，不决定最终结果。',
+            '精确文本断言必须逐字匹配，不能把近义词、缩写或扩展文案判为 MATCHED。',
             '输出必须严格符合提供的 JSON Schema。'
         ].join('\n');
+    }
+
+    /** 使用 DOM 文本进行程序级精确复核，并覆盖模型可能出现的宽松语义判断。 */
+    private applyExactTextAssertions(
+        decision: VerdictDecision,
+        input: EvaluateVerdictInput
+    ): VerdictDecision {
+        const assertions = input.testIntent.exactTextAssertions ?? [];
+        if (assertions.length === 0) {
+            return decision;
+        }
+
+        const successCriteria = decision.successCriteria.map(
+            (assessment) => ({ ...assessment })
+        );
+        const failureCriteria = decision.failureCriteria.map(
+            (assessment) => ({ ...assessment })
+        );
+        const failures: string[] = [];
+
+        assertions.forEach((assertion) => {
+            const match = matchExactVisibleText(
+                input.observation.visibleText,
+                assertion.values,
+                assertion.ordered
+            );
+            const success = successCriteria.find(
+                (item) => item.criterionId === assertion.successCriterionId
+            );
+            const failure = failureCriteria.find(
+                (item) => item.criterionId === assertion.failureCriterionId
+            );
+            if (!success || !failure) {
+                return;
+            }
+            if (match.matched) {
+                success.status = 'MATCHED';
+                success.summary = assertion.ordered
+                    ? 'DOM 证据逐字包含全部目标文本且顺序一致。'
+                    : 'DOM 证据逐字包含全部目标文本。';
+                failure.status = 'NOT_MATCHED';
+                failure.summary = '未发现精确文本缺失或文字差异。';
+                return;
+            }
+
+            const detail = match.missing.length > 0
+                ? `缺失精确文本：${ match.missing.join('、') }`
+                : '精确文本的显示顺序不符合要求。';
+            success.status = 'NOT_MATCHED';
+            success.summary = detail;
+            failure.status = 'MATCHED';
+            failure.summary = detail;
+            failures.push(detail);
+        });
+
+        const result = calculateResult(
+            successCriteria,
+            failureCriteria,
+            input
+        );
+        return {
+            ...decision,
+            result,
+            summary: failures.length > 0
+                ? `严格文本断言失败：${ failures.join('；') }`
+                : decision.summary,
+            successCriteria,
+            failureCriteria
+        };
     }
 
     /** 只发送脱敏观察、动作摘要和条件，不发送环境变量实际值。 */
@@ -221,4 +295,85 @@ function requireSameCriterionIds(
     ) {
         throw new Error(`${ label }判断没有完整覆盖 TestIntent。`);
     }
+}
+
+/** 按 PageObservation 的 DOM 文本顺序进行完全相等匹配。 */
+function matchExactVisibleText(
+    visibleText: string[],
+    expectedValues: string[],
+    ordered: boolean
+): {
+    matched: boolean,
+    missing: string[]
+} {
+    const remainingText = [...visibleText];
+    const missing = expectedValues.filter((expected) => {
+        const index = remainingText.findIndex((actual) => actual === expected);
+        if (index < 0) {
+            return true;
+        }
+        remainingText.splice(index, 1);
+        return false;
+    });
+    if (missing.length > 0) {
+        return {
+            matched: false,
+            missing
+        };
+    }
+    if (!ordered) {
+        return {
+            matched: true,
+            missing: []
+        };
+    }
+
+    let cursor = 0;
+    const orderedMatch = expectedValues.every((expected) => {
+        const relativeIndex = visibleText
+            .slice(cursor)
+            .findIndex((actual) => actual === expected);
+        if (relativeIndex < 0) {
+            return false;
+        }
+        cursor += relativeIndex + 1;
+        return true;
+    });
+    return {
+        matched: orderedMatch,
+        missing: []
+    };
+}
+
+/** 在程序覆盖精确断言后重新计算最终业务结果。 */
+function calculateResult(
+    successCriteria: CriterionAssessment[],
+    failureCriteria: CriterionAssessment[],
+    input: EvaluateVerdictInput
+): VerdictDecision['result'] {
+    const successById = new Map(
+        successCriteria.map((criterion) => [
+            criterion.criterionId,
+            criterion.status
+        ])
+    );
+    const requiredMatched = input.testIntent.successCriteria
+        .filter((criterion) => criterion.required)
+        .every((criterion) => (
+            successById.get(criterion.id) === 'MATCHED'
+        ));
+    if (failureCriteria.some((criterion) => (
+        criterion.status === 'MATCHED'
+    ))) {
+        return 'FAIL';
+    }
+    if (
+        requiredMatched
+        && failureCriteria.every((criterion) => (
+            criterion.status === 'NOT_MATCHED'
+        ))
+    ) {
+        return 'PASS';
+    }
+    return 'UNCERTAIN';
 }

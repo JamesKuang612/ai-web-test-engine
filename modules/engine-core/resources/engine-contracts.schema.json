@@ -436,6 +436,34 @@
             ],
             "type": "string"
         },
+        "ExactTextAssertion": {
+            "additionalProperties": false,
+            "description": "由用户自然语言中的显式校验语句提取出的逐字文本断言。",
+            "properties": {
+                "failureCriterionId": {
+                    "type": "string"
+                },
+                "ordered": {
+                    "type": "boolean"
+                },
+                "successCriterionId": {
+                    "type": "string"
+                },
+                "values": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                }
+            },
+            "required": [
+                "failureCriterionId",
+                "ordered",
+                "successCriterionId",
+                "values"
+            ],
+            "type": "object"
+        },
         "FailureCategory": {
             "description": "对失败原因进行稳定分类，供重试、统计和界面展示使用。",
             "enum": [
@@ -1281,6 +1309,13 @@
                 },
                 "dataPolicy": {
                     "$ref": "#/definitions/DataPolicy"
+                },
+                "exactTextAssertions": {
+                    "description": "程序提取并最终复核的严格文本断言；旧计划可以不包含该字段。",
+                    "items": {
+                        "$ref": "#/definitions/ExactTextAssertion"
+                    },
+                    "type": "array"
                 },
                 "failureCriteria": {
                     "items": {

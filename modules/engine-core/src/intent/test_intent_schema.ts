@@ -1,6 +1,7 @@
 import type {
     EvidenceType,
     FailureCriterion,
+    ExactTextAssertion,
     JsonValue,
     SuccessCriterion,
     TestIntent,
@@ -25,6 +26,9 @@ const TEST_INTENT_FIELDS = [
     'constraints',
     'allowedHosts',
     'dataPolicy'
+];
+const TEST_INTENT_OPTIONAL_FIELDS = [
+    'exactTextAssertions'
 ];
 
 const TEST_INTENT_JSON_SCHEMA: Record<string, JsonValue> = {
@@ -177,9 +181,10 @@ export const testIntentSchema: RuntimeSchema<TestIntent> = {
 function parseTestIntent(value: unknown): TestIntent {
     const object = requireObject(value, 'TestIntent');
 
-    requireExactFields(
+    requireAllowedAndRequiredFields(
         object,
         TEST_INTENT_FIELDS,
+        TEST_INTENT_OPTIONAL_FIELDS,
         'TestIntent'
     );
 
@@ -217,6 +222,10 @@ function parseTestIntent(value: unknown): TestIntent {
         );
     }
 
+    const exactTextAssertions = object.exactTextAssertions === undefined
+        ? undefined
+        : parseExactTextAssertions(object.exactTextAssertions);
+
     return {
         schemaVersion: 1,
         objective: requireNonEmptyString(
@@ -234,8 +243,53 @@ function parseTestIntent(value: unknown): TestIntent {
             'TestIntent.constraints'
         ),
         allowedHosts: [...new Set(allowedHosts)],
-        dataPolicy: parseDataPolicy(object.dataPolicy)
+        dataPolicy: parseDataPolicy(object.dataPolicy),
+        ...exactTextAssertions
+            ? { exactTextAssertions }
+            : {}
     };
+}
+
+/** 解析程序生成并随计划持久化的严格文本断言。 */
+function parseExactTextAssertions(value: unknown): ExactTextAssertion[] {
+    return requireArray(
+        value,
+        'TestIntent.exactTextAssertions'
+    ).map((item, index) => {
+        const path = `TestIntent.exactTextAssertions[${ index }]`;
+        const object = requireObject(item, path);
+        requireExactFields(object, [
+            'failureCriterionId',
+            'ordered',
+            'successCriterionId',
+            'values'
+        ], path);
+        const values = requireStringArray(
+            object.values,
+            `${ path }.values`
+        );
+        if (values.length === 0) {
+            throw new TestIntentSchemaError(
+                `${ path }.values`,
+                '至少需要一个精确文本'
+            );
+        }
+        return {
+            failureCriterionId: requireNonEmptyString(
+                object.failureCriterionId,
+                `${ path }.failureCriterionId`
+            ),
+            ordered: requireBoolean(
+                object.ordered,
+                `${ path }.ordered`
+            ),
+            successCriterionId: requireNonEmptyString(
+                object.successCriterionId,
+                `${ path }.successCriterionId`
+            ),
+            values
+        };
+    });
 }
 
 /** 解析一条测试成功条件。 */
@@ -530,6 +584,35 @@ function requireExactFields(
     });
 
     allowedFields.forEach((field) => {
+        if (!(field in value)) {
+            throw new TestIntentSchemaError(
+                `${ path }.${ field }`,
+                '缺少必填字段'
+            );
+        }
+    });
+}
+
+/** 顶层 TestIntent 允许兼容可选内部字段，同时仍要求模型字段完整。 */
+function requireAllowedAndRequiredFields(
+    value: Record<string, unknown>,
+    requiredFields: string[],
+    optionalFields: string[],
+    path: string
+): void {
+    const allowedFieldSet = new Set([
+        ...requiredFields,
+        ...optionalFields
+    ]);
+    Object.keys(value).forEach((field) => {
+        if (!allowedFieldSet.has(field)) {
+            throw new TestIntentSchemaError(
+                `${ path }.${ field }`,
+                '不允许出现该字段'
+            );
+        }
+    });
+    requiredFields.forEach((field) => {
         if (!(field in value)) {
             throw new TestIntentSchemaError(
                 `${ path }.${ field }`,

@@ -203,6 +203,45 @@ describe('ModelIntentBuilder', () => {
     });
 });
 
+describe('ModelIntentBuilder exact text assertions', () => {
+    it('从明确验证语句提取程序级逐字文本断言', async () => {
+        const adapter = new FakeModelAdapter(modelIntent);
+        const builder = new ModelIntentBuilder(
+            adapter,
+            testIntentSchema
+        );
+
+        const intent = await builder.build({
+            ...buildInput,
+            test: {
+                ...buildInput.test,
+                action: [
+                    '点击“用户头像”；',
+                    '从上到下逐字验证菜单显示“个人设置”、“退出”。'
+                ].join('')
+            }
+        }, new AbortController().signal);
+
+        assert.deepEqual(intent.exactTextAssertions, [{
+            successCriterionId: 'engine-exact-text-1',
+            failureCriterionId: 'engine-exact-text-1-mismatch',
+            ordered: true,
+            values: [
+                '个人设置',
+                '退出'
+            ]
+        }]);
+        assert.equal(
+            intent.successCriteria.at(-1)?.id,
+            'engine-exact-text-1'
+        );
+        assert.equal(
+            intent.failureCriteria.at(-1)?.id,
+            'engine-exact-text-1-mismatch'
+        );
+    });
+});
+
 /** 使用预设输出代替真实模型，供意图构建单元测试使用。 */
 class FakeModelAdapter implements ModelAdapter {
     public callCount = 0;

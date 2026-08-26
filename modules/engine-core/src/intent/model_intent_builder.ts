@@ -9,6 +9,9 @@ import type {
     BuildIntentInput,
     IntentBuilder,
 } from './intent_builder';
+import {
+    extractExactTextAssertions,
+} from './exact_text_assertion';
 
 export interface ModelIntentBuilderOptions {
     maxOutputTokens: number;
@@ -51,6 +54,12 @@ export class ModelIntentBuilder implements IntentBuilder {
 
         signal.throwIfAborted();
 
+        const exactText = extractExactTextAssertions(
+            input.test.action,
+            result.value.successCriteria,
+            result.value.failureCriteria
+        );
+
         return {
             ...result.value,
 
@@ -65,7 +74,20 @@ export class ModelIntentBuilder implements IntentBuilder {
                     ...result.value.constraints,
                     ...input.projectContext.rules
                 ])
-            ]
+            ],
+            successCriteria: [
+                ...result.value.successCriteria,
+                ...exactText.successCriteria
+            ],
+            failureCriteria: [
+                ...result.value.failureCriteria,
+                ...exactText.failureCriteria
+            ],
+            ...exactText.assertions.length > 0
+                ? {
+                    exactTextAssertions: exactText.assertions
+                }
+                : {}
         };
     }
 
@@ -81,6 +103,7 @@ export class ModelIntentBuilder implements IntentBuilder {
             '不要猜测或输出账号、密码、令牌等敏感信息。',
             '环境变量只能按给出的逻辑名称进行引用。',
             '不得扩展允许访问的域名。',
+            '用户在验证、断言或校验语句中用引号标出的界面文本是逐字断言，不得使用同义词替换。',
             '输出必须严格符合提供的 JSON Schema。'
         ].join('\n');
     }

@@ -23,6 +23,14 @@ export interface FailureCriterion {
     description: string;
 }
 
+/** 由用户自然语言中的显式校验语句提取出的逐字文本断言。 */
+export interface ExactTextAssertion {
+    failureCriterionId: string;
+    ordered: boolean;
+    successCriterionId: string;
+    values: string[];
+}
+
 /** 记录测试执行期间需要动态生成的数据规则。 */
 export interface DataPolicy {
     generatedValues: Record<string, string>;
@@ -38,4 +46,6 @@ export interface TestIntent {
     constraints: string[];
     allowedHosts: string[];
     dataPolicy: DataPolicy;
+    /** 程序提取并最终复核的严格文本断言；旧计划可以不包含该字段。 */
+    exactTextAssertions?: ExactTextAssertion[];
 }
