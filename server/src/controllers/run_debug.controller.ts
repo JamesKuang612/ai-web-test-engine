@@ -38,7 +38,10 @@ export class RunDebugController {
                 abortController.signal,
                 {
                     mode: req.body?.mode,
-                    planRef: req.body?.planRef
+                    planRef: req.body?.planRef,
+                    startUrl: req.body?.startUrl,
+                    testId: req.body?.testId,
+                    testName: req.body?.testName
                 }
             );
             res.json({

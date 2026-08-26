@@ -20,7 +20,11 @@ import {
     createConfiguredIntentBuilder,
     createConfiguredModelAdapter,
 } from './intent_preview.service';
-import { createLoginPocStartInput } from './login_poc';
+import {
+    createDebugTestStartInput,
+    DEFAULT_TEST_START_URL,
+    JIANDAOYUN_ALLOWED_HOSTS,
+} from './debug_test_context';
 
 /** 表示完整调试接口收到的自然语言内容不合法。 */
 export class RunDebugInputError extends Error {
@@ -35,6 +39,9 @@ export class RunDebugInputError extends Error {
 export interface RunDebugOptions {
     mode?: unknown;
     planRef?: unknown;
+    startUrl?: unknown;
+    testId?: unknown;
+    testName?: unknown;
 }
 
 const SUPPORTED_RUN_MODES = new Set<RunMode>([
@@ -115,7 +122,12 @@ export class RunDebugService {
         const planRef = this.normalizePlanRef(mode, options.planRef);
 
         return await this.executionEngine.start(
-            createLoginPocStartInput(normalizedAction, mode, planRef),
+            createDebugTestStartInput({
+                action: normalizedAction,
+                id: this.normalizeTestId(options.testId),
+                name: this.normalizeTestName(options.testName),
+                startUrl: this.normalizeStartUrl(options.startUrl)
+            }, mode, planRef),
             signal
         );
     }
@@ -158,5 +170,76 @@ export class RunDebugService {
             );
         }
         return value;
+    }
+
+    /** 用例 ID 会写入运行和结构化计划，必须是安全稳定的文件标识。 */
+    private normalizeTestId(value: unknown): string {
+        if (value === undefined) {
+            return 'debug-natural-language-run';
+        }
+        if (
+            typeof value !== 'string'
+            || !/^[a-z0-9][a-z0-9-]{0,63}$/u.test(value)
+        ) {
+            throw new RunDebugInputError(
+                'testId 只能包含小写字母、数字和连字符。'
+            );
+        }
+        return value;
+    }
+
+    /** 用例名称只用于模型上下文，不允许空白或超长输入。 */
+    private normalizeTestName(value: unknown): string {
+        if (value === undefined) {
+            return '自然语言调试用例';
+        }
+        if (typeof value !== 'string' || value.trim().length === 0) {
+            throw new RunDebugInputError('testName 必须是非空字符串。');
+        }
+        if (value.trim().length > 120) {
+            throw new RunDebugInputError(
+                'testName 长度不能超过 120 个字符。'
+            );
+        }
+        return value.trim();
+    }
+
+    /** 起始地址只允许位于当前简道云测试环境的 Host 范围内。 */
+    private normalizeStartUrl(value: unknown): string {
+        if (value === undefined) {
+            return DEFAULT_TEST_START_URL;
+        }
+        if (typeof value !== 'string' || value.trim().length === 0) {
+            throw new RunDebugInputError('startUrl 必须是非空字符串。');
+        }
+        if (value.length > 2_048) {
+            throw new RunDebugInputError(
+                'startUrl 长度不能超过 2048 个字符。'
+            );
+        }
+        let url: URL;
+        try {
+            url = new URL(value.trim());
+        } catch {
+            throw new RunDebugInputError('startUrl 必须是合法 URL。');
+        }
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+            throw new RunDebugInputError(
+                'startUrl 只允许 HTTP 或 HTTPS。'
+            );
+        }
+        if (url.username || url.password) {
+            throw new RunDebugInputError(
+                'startUrl 不得包含账号或密码。'
+            );
+        }
+        if (!JIANDAOYUN_ALLOWED_HOSTS.includes(url.hostname.toLowerCase())) {
+            throw new RunDebugInputError(
+                `startUrl 只允许以下 Host：${
+                    JIANDAOYUN_ALLOWED_HOSTS.join('、')
+                }。`
+            );
+        }
+        return url.toString();
     }
 }

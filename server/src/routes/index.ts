@@ -3,6 +3,7 @@ import { ErrorHandler } from './middlewares/error.handler';
 import {
     intentPreviewController,
     runDebugController,
+    testDefinitionController,
 } from '../controllers';
 
 export { securityMiddlewares } from './middlewares/security.handler';
@@ -17,6 +18,22 @@ requestRouter.post(
 requestRouter.post(
     '/api/debug/run',
     runDebugController.run
+);
+requestRouter.get(
+    '/api/tests',
+    testDefinitionController.list
+);
+requestRouter.post(
+    '/api/tests',
+    testDefinitionController.create
+);
+requestRouter.get(
+    '/api/tests/:testId',
+    testDefinitionController.get
+);
+requestRouter.put(
+    '/api/tests/:testId',
+    testDefinitionController.update
 );
 requestRouter.use(ErrorHandler.requestErrorHandler);
 

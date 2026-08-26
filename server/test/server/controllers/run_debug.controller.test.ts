@@ -114,8 +114,55 @@ describe('RunDebugController structured-replay', () => {
             assert.equal(response.status, 200);
             assert.deepEqual(receivedOptions, {
                 mode: 'structured-replay',
-                planRef: 'source-run/json/compiled-plan.json'
+                planRef: 'source-run/json/compiled-plan.json',
+                startUrl: undefined,
+                testId: undefined,
+                testName: undefined
             });
+        } finally {
+            await closeServer(server);
+        }
+    });
+});
+
+describe('RunDebugController generic test context', () => {
+    it('把前端用例标识、名称和起始地址传给服务层', async () => {
+        let receivedOptions: RunDebugOptions | undefined;
+        const controller = new RunDebugController({
+            run: async (_action, _signal, options) => {
+                receivedOptions = options;
+                return runResult;
+            }
+        });
+        const app = express();
+        app.use(express.json());
+        app.post('/api/debug/run', controller.run);
+        const server = app.listen(0);
+
+        try {
+            await new Promise<void>((resolve) => {
+                server.once('listening', resolve);
+            });
+            const address = server.address() as AddressInfo;
+            await fetch(`http://127.0.0.1:${ address.port }/api/debug/run`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    action: '点击我的待办',
+                    startUrl: 'https://test.jdydevelop.com/dashboard#/',
+                    testId: 'my-todo',
+                    testName: '验证我的待办'
+                })
+            });
+
+            assert.equal(receivedOptions?.testId, 'my-todo');
+            assert.equal(receivedOptions?.testName, '验证我的待办');
+            assert.equal(
+                receivedOptions?.startUrl,
+                'https://test.jdydevelop.com/dashboard#/'
+            );
         } finally {
             await closeServer(server);
         }

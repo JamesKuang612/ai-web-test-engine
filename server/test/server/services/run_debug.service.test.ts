@@ -56,8 +56,8 @@ describe('RunDebugService', () => {
                 'test.frjdy.com'
             ]
         );
-        assert.equal(engine.lastInput?.budgets.maxActions, 12);
-        assert.equal(engine.lastInput?.budgets.maxModelCalls, 9);
+        assert.equal(engine.lastInput?.budgets.maxActions, 20);
+        assert.equal(engine.lastInput?.budgets.maxModelCalls, 15);
         assert.equal(
             engine.lastInput?.projectContext.terms.accountMenu,
             '点击工作台右上角用户头像后展开的账号菜单'
@@ -114,6 +114,40 @@ describe('RunDebugService', () => {
                 planRef: '../compiled-plan.json'
             }
         ), RunDebugInputError);
+    });
+
+    it('使用前端提供的用例身份和安全起始地址', async () => {
+        const engine = new FakeExecutionEngine();
+        const service = new RunDebugService(engine);
+
+        await service.run(
+            '点击“我的待办”。',
+            new AbortController().signal,
+            {
+                testId: 'my-todo',
+                testName: '验证我的待办',
+                startUrl: 'https://test.jdydevelop.com/dashboard#/todo'
+            }
+        );
+
+        assert.equal(engine.lastInput?.test.id, 'my-todo');
+        assert.equal(engine.lastInput?.test.name, '验证我的待办');
+        assert.equal(
+            engine.lastInput?.test.startUrl,
+            'https://test.jdydevelop.com/dashboard#/todo'
+        );
+    });
+
+    it('拒绝越过环境 Host 边界的起始地址', async () => {
+        const service = new RunDebugService(new FakeExecutionEngine());
+
+        await assert.rejects(() => service.run(
+            '打开页面',
+            new AbortController().signal,
+            {
+                startUrl: 'https://example.com/'
+            }
+        ), /只允许以下 Host/u);
     });
 });
 
