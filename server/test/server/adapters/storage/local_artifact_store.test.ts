@@ -208,6 +208,37 @@ describe('LocalArtifactStore', () => {
         assert.deepEqual(await readJson('result.json'), result);
     });
 
+    it('通过安全相对引用读取并解析结构化 JSON', async () => {
+        await store.createRun(snapshot);
+        const value = {
+            planId: 'plan-001'
+        };
+        const reference = await store.saveJson(
+            snapshot.runId,
+            'compiled-plan',
+            value
+        );
+
+        assert.deepEqual(await store.loadJson(reference.ref), value);
+    });
+
+    it('拒绝目录穿越、绝对路径和非 JSON 产物引用', async () => {
+        await store.createRun(snapshot);
+
+        await assert.rejects(
+            store.loadJson('../run-001/json/compiled-plan.json'),
+            /非法的 JSON 产物引用/u
+        );
+        await assert.rejects(
+            store.loadJson('run-001/artifacts/page.png'),
+            /非法的 JSON 产物引用/u
+        );
+        await assert.rejects(
+            store.loadJson('C:/secret.json'),
+            /非法的 JSON 产物引用/u
+        );
+    });
+
     function runPath(...segments: string[]): string {
         return path.join(
             temporaryDirectory,

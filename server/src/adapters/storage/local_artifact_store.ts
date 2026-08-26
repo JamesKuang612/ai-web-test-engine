@@ -13,6 +13,7 @@ import type {
 
 const RUN_ID_PATTERN = /^[a-zA-Z0-9_-]+$/u;
 const FILE_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u;
+const MAX_JSON_FILE_BYTES = 5 * 1024 * 1024;
 
 /**
  * 将每次测试运行的快照、轨迹、证据和结果持久化到本地文件系统。
@@ -127,6 +128,27 @@ export class LocalArtifactStore implements ArtifactStore {
         };
     };
 
+    /** 按受控相对引用读取 JSON，拒绝绝对路径、目录穿越和超大文件。 */
+    public loadJson = async (reference: string): Promise<unknown> => {
+        const {
+            runId,
+            fileName,
+        } = this.parseJsonReference(reference);
+        const runDirectory = await this.requireRun(runId);
+        const filePath = path.join(runDirectory, 'json', fileName);
+        const stats = await fs.stat(filePath);
+        if (stats.size > MAX_JSON_FILE_BYTES) {
+            throw new Error(`JSON 产物超过读取上限：${ reference }`);
+        }
+        const content = await fs.readFile(filePath, 'utf8');
+
+        try {
+            return JSON.parse(content) as unknown;
+        } catch {
+            throw new Error(`JSON 产物内容无效：${ reference }`);
+        }
+    };
+
     /** 将一次运行的最终结果原子写入 result.json。 */
     public saveResult = async (
         result: RunResult
@@ -167,6 +189,28 @@ export class LocalArtifactStore implements ArtifactStore {
         return fileName.endsWith('.json')
             ? fileName
             : `${ fileName }.json`;
+    }
+
+    /** 只接受 runId/json/file.json 形式的存储引用。 */
+    private parseJsonReference(reference: string): {
+        runId: string,
+        fileName: string
+    } {
+        const segments = reference.split('/');
+        if (
+            segments.length !== 3
+            || segments[1] !== 'json'
+            || !RUN_ID_PATTERN.test(segments[0])
+            || !FILE_NAME_PATTERN.test(segments[2])
+            || !segments[2].endsWith('.json')
+        ) {
+            throw new Error(`非法的 JSON 产物引用：${ reference }`);
+        }
+
+        return {
+            runId: segments[0],
+            fileName: segments[2]
+        };
     }
 
     /**

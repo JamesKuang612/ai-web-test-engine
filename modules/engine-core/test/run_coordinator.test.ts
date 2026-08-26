@@ -560,6 +560,10 @@ class FakeArtifactStore implements ArtifactStore {
         });
     };
 
+    /** 测试默认不配置可读取 JSON。 */
+    public loadJson = (_reference: string): Promise<unknown> =>
+        Promise.reject(new Error('FakeArtifactStore 没有预设 JSON。'));
+
     /** 记录协调器生成的最终运行结果。 */
     public saveResult = (
         result: RunResult

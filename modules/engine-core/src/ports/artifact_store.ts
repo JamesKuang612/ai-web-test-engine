@@ -30,6 +30,8 @@ export interface ArtifactStore {
         name: string,
         value: JsonValue
     ) => Promise<EvidenceRef>;
+    /** 通过存储层生成的相对引用读取不可信 JSON，调用方仍需做领域校验。 */
+    loadJson: (reference: string) => Promise<unknown>;
     /** 保存一次运行的最终判定结果。 */
     saveResult: (result: RunResult) => Promise<void>;
 }
