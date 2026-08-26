@@ -2,6 +2,9 @@ import type {
     ActionCommand,
 } from './action';
 import type {
+    CompiledPlan,
+} from './compiled_plan';
+import type {
     TestIntent,
 } from './intent';
 import type {
@@ -31,6 +34,7 @@ import type {
  */
 export interface EngineContracts {
     actionCommand: ActionCommand;
+    compiledPlan: CompiledPlan;
     environmentDefinition: EnvironmentDefinition;
     pageObservation: PageObservation;
     runEvent: RunEvent;

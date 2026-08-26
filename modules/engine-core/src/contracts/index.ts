@@ -1,5 +1,6 @@
 export * from './action';
 export * from './common';
+export * from './compiled_plan';
 export * from './intent';
 export * from './observation';
 export * from './run_event';
