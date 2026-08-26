@@ -77,6 +77,27 @@ describe('App routes', () => {
             .toHaveValue('https://test.jdydevelop.com/portal/signin');
     });
 
+    it('loads the account menu acceptance scenario', () => {
+        render(
+            <MemoryRouter initialEntries={[
+                '/tests/avatar-account-menu'
+            ]}>
+                <App />
+            </MemoryRouter>
+        );
+
+        expect(screen.getByText('avatar-account-menu.test.yaml'))
+            .toBeInTheDocument();
+        expect(screen.getByLabelText('测试动作')).toHaveValue(
+            '使用环境变量中的账号和密码登录简道云，等待工作台加载完成；'
+            + '点击页面右上角用户头像，确认账号菜单成功展开，'
+            + '并验证菜单中显示“退出登录”。'
+        );
+        expect(screen.getByRole('button', {
+            name: '点击页面右上角用户头像，验证账号菜单已展开且显示“退出登录”。'
+        })).toBeInTheDocument();
+    });
+
     it('supports adding a step and switching inspector tabs', async () => {
         const user = userEvent.setup();
         render(

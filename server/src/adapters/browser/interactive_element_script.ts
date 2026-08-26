@@ -3,11 +3,11 @@ import type {
 } from '@ai-web-test-engine/core';
 
 /** 页面脚本采集后返回给 Node.js 侧的可交互元素摘要。 */
-export interface CapturedInteractiveElement extends ObservedElement {
-    sourceIndex: number;
-}
+export type CapturedInteractiveElement = ObservedElement;
 
 export const MAX_INTERACTIVE_ELEMENTS = 200;
+export const RUNTIME_CANDIDATE_ATTRIBUTE =
+    'data-ai-web-test-candidate';
 
 export const INTERACTIVE_SELECTOR = [
     'a[href]',
@@ -17,22 +17,93 @@ export const INTERACTIVE_SELECTOR = [
     'textarea',
     '[contenteditable="true"]',
     '[role]',
-    '[tabindex]:not([tabindex="-1"])'
+    '[tabindex]:not([tabindex="-1"])',
+    '[onclick]',
+    '[aria-haspopup]',
+    '[aria-controls]',
+    '[style*="cursor" i]',
+    '[class*="avatar" i]',
+    '[class*="user-head" i]',
+    '[class*="portrait" i]',
+    '[class*="profile-icon" i]',
+    '[class*="account-icon" i]',
+    'img',
+    'svg'
 ].join(',');
 
 const SELECTOR_LITERAL = JSON.stringify(INTERACTIVE_SELECTOR);
+const CANDIDATE_ATTRIBUTE_LITERAL =
+    JSON.stringify(RUNTIME_CANDIDATE_ATTRIBUTE);
 
 /**
  * 以字符串隔离页面内 DOM 采集逻辑，避免 Node 覆盖率插桩污染浏览器执行上下文。
  */
 export const INTERACTIVE_ELEMENT_SCRIPT = String.raw`(() => {
     const selector = ${ SELECTOR_LITERAL };
+    const candidateAttribute = ${ CANDIDATE_ATTRIBUTE_LITERAL };
     const maxElements = ${ MAX_INTERACTIVE_ELEMENTS };
+    const semanticClassPattern = new RegExp([
+        '(?:^|[-_])(?:',
+        'avatar|portrait|',
+        'user[-_](?:avatar|head)|',
+        'profile[-_](?:avatar|icon)|',
+        'account[-_](?:avatar|icon)',
+        ')(?:$|[-_])'
+    ].join(''), 'iu');
     const cleanText = (value) => {
         const normalized = value && value.replace(/\s+/gu, ' ').trim();
         return normalized ? normalized.slice(0, 200) : undefined;
     };
-    const inferRole = (element) => {
+    const isVisible = (element) => {
+        const style = window.getComputedStyle(element);
+        const box = element.getBoundingClientRect();
+        return style.display !== 'none' &&
+            style.visibility !== 'hidden' &&
+            Number(style.opacity) !== 0 &&
+            box.width > 0 && box.height > 0;
+    };
+    const getSemanticClass = (element) => {
+        let current = element;
+        for (let depth = 0; current && depth < 3; depth += 1) {
+            const tokens = String(current.getAttribute('class') || '')
+                .split(/\s+/u)
+                .filter(Boolean);
+            const token = tokens.find((item) => semanticClassPattern.test(item));
+            if (token) {
+                return token.slice(0, 100);
+            }
+            current = current.parentElement;
+        }
+        return undefined;
+    };
+    const hasNativeInteraction = (element) => element.matches([
+        'a[href]',
+        'button',
+        'input:not([type="hidden"])',
+        'select',
+        'textarea',
+        '[contenteditable="true"]',
+        '[role]',
+        '[tabindex]:not([tabindex="-1"])'
+    ].join(','));
+    const isLikelyInteractive = (element) => {
+        if (!isVisible(element)) {
+            return false;
+        }
+        if (hasNativeInteraction(element)) {
+            return true;
+        }
+        if (
+            element.hasAttribute('onclick') ||
+            element.hasAttribute('aria-haspopup') ||
+            element.hasAttribute('aria-controls')
+        ) {
+            return true;
+        }
+        const style = window.getComputedStyle(element);
+        return style.cursor === 'pointer' || Boolean(getSemanticClass(element));
+    };
+    const inferRole = (element, likelyInteractive) => {
         const explicitRole = element.getAttribute('role');
         if (explicitRole) {
             return explicitRole;
@@ -51,7 +122,7 @@ export const INTERACTIVE_ELEMENT_SCRIPT = String.raw`(() => {
             return 'textbox';
         }
         if (tag !== 'input') {
-            return undefined;
+            return likelyInteractive ? 'button' : undefined;
         }
         const type = (element.getAttribute('type') || 'text').toLowerCase();
         if (type === 'checkbox' || type === 'radio') {
@@ -81,8 +152,28 @@ export const INTERACTIVE_ELEMENT_SCRIPT = String.raw`(() => {
         }
         return type.toLowerCase() === 'password' ? 'masked' : 'filled';
     };
-    const getLocatorHints = (testId, label, placeholder, role, name, text) => {
+    const getLocatorHints = (
+        id,
+        semanticClass,
+        tag,
+        testId,
+        label,
+        placeholder,
+        role,
+        name,
+        text
+    ) => {
         const hints = [];
+        hints.push({ strategy: 'css', value: tag });
+        if (id) {
+            hints.push({ strategy: 'css', value: '#' + CSS.escape(id) });
+        }
+        if (semanticClass) {
+            hints.push({
+                strategy: 'css',
+                value: '.' + CSS.escape(semanticClass)
+            });
+        }
         if (testId) {
             hints.push({ strategy: 'test-id', value: testId });
         }
@@ -100,40 +191,59 @@ export const INTERACTIVE_ELEMENT_SCRIPT = String.raw`(() => {
         }
         return hints;
     };
-    const serializeElement = (element, sourceIndex) => {
-        const style = window.getComputedStyle(element);
+    const getRelatedName = (element) => {
+        const descendant = element.querySelector(
+            '[aria-label], img[alt], [title]'
+        );
+        const ancestor = element.parentElement?.closest(
+            '[aria-label], [title]'
+        );
+        return cleanText(
+            descendant?.getAttribute('aria-label') ||
+            descendant?.getAttribute('alt') ||
+            descendant?.getAttribute('title') ||
+            ancestor?.getAttribute('aria-label') ||
+            ancestor?.getAttribute('title')
+        );
+    };
+    const serializeElement = (element, candidateIndex) => {
         const box = element.getBoundingClientRect();
-        const visible = style.display !== 'none' &&
-            style.visibility !== 'hidden' &&
-            Number(style.opacity) !== 0 &&
-            box.width > 0 && box.height > 0;
+        const visible = isVisible(element);
         if (!visible) {
             return undefined;
         }
         const label = getLabels(element);
         const placeholder = cleanText(element.getAttribute('placeholder'));
         const text = cleanText(element.innerText);
+        const semanticClass = getSemanticClass(element);
+        const semanticName = semanticClass
+            ? semanticClass.replace(/[-_]+/gu, ' ')
+            : undefined;
         const name = cleanText(
             element.getAttribute('aria-label') || label ||
             element.getAttribute('alt') || element.getAttribute('title') ||
-            placeholder || text
+            placeholder || text || getRelatedName(element) || semanticName
         );
-        const role = inferRole(element);
+        const role = inferRole(element, true);
         const tag = element.tagName.toLowerCase();
         const type = element.getAttribute('type') || '';
         const valueState = getValueState(element, tag, type);
         const testId = element.getAttribute('data-testid') || '';
         const parentText = cleanText(element.parentElement?.innerText);
+        const candidateId = 'e' + (candidateIndex + 1);
+        element.setAttribute(candidateAttribute, candidateId);
         const attributes = Object.fromEntries([
             ['id', element.id],
             ['name', element.getAttribute('name') || ''],
             ['type', type],
             ['data-testid', testId],
-            ['autocomplete', element.getAttribute('autocomplete') || '']
+            ['autocomplete', element.getAttribute('autocomplete') || ''],
+            ['aria-haspopup', element.getAttribute('aria-haspopup') || ''],
+            ['aria-expanded', element.getAttribute('aria-expanded') || ''],
+            ['class', semanticClass || '']
         ].filter((entry) => entry[1]));
         return {
-            sourceIndex,
-            candidateId: 'e' + (sourceIndex + 1),
+            candidateId,
             tag,
             ...(role ? { role } : {}),
             ...(name ? { name } : {}),
@@ -159,6 +269,9 @@ export const INTERACTIVE_ELEMENT_SCRIPT = String.raw`(() => {
                 height: box.height
             },
             locatorHints: getLocatorHints(
+                element.id,
+                semanticClass,
+                tag,
                 testId,
                 label,
                 placeholder,
@@ -168,7 +281,21 @@ export const INTERACTIVE_ELEMENT_SCRIPT = String.raw`(() => {
             )
         };
     };
-    return Array.from(document.querySelectorAll(selector))
+
+    document.querySelectorAll('[' + candidateAttribute + ']')
+        .forEach((element) => element.removeAttribute(candidateAttribute));
+    const interactiveElements = Array.from(document.querySelectorAll(selector))
+        .filter(isLikelyInteractive);
+    const interactiveSet = new Set(interactiveElements);
+    return interactiveElements
+        .filter((element) => {
+            const tag = element.tagName.toLowerCase();
+            if (tag !== 'img' && tag !== 'svg') {
+                return true;
+            }
+            const ancestor = element.parentElement?.closest(selector);
+            return !ancestor || !interactiveSet.has(ancestor);
+        })
         .slice(0, maxElements)
         .map(serializeElement)
         .filter(Boolean);

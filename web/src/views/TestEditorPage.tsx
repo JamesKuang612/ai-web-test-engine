@@ -25,16 +25,41 @@ const inspectorTabs: Array<{ id: InspectorTab; label: string }> = [
     { id: 'html', label: 'HTML' }
 ];
 
-const initialSteps = [
-    '使用环境变量中的账号和密码登录简道云，并等待工作台加载完成。'
-];
-const DEFAULT_ACTION = initialSteps[0];
+interface TestScenario {
+    action: string;
+    steps: string[];
+}
+
+const DEFAULT_SCENARIO: TestScenario = {
+    action: '使用环境变量中的账号和密码登录简道云，并等待工作台加载完成。',
+    steps: [
+        '使用环境变量中的账号和密码登录简道云，并等待工作台加载完成。'
+    ]
+};
+const TEST_SCENARIOS: Record<string, TestScenario> = {
+    'avatar-account-menu': {
+        action: [
+            '使用环境变量中的账号和密码登录简道云，等待工作台加载完成；',
+            '点击页面右上角用户头像，确认账号菜单成功展开，',
+            '并验证菜单中显示“退出登录”。'
+        ].join(''),
+        steps: [
+            '使用环境变量中的账号和密码登录简道云，并等待工作台加载完成。',
+            '点击页面右上角用户头像，验证账号菜单已展开且显示“退出登录”。'
+        ]
+    }
+};
 const PLAN_REFERENCE_STORAGE_KEY = 'ai-web-test-engine.last-plan-ref';
+
+function getTestScenario(testId?: string): TestScenario {
+    return testId ? TEST_SCENARIOS[testId] ?? DEFAULT_SCENARIO : DEFAULT_SCENARIO;
+}
 
 export function TestEditorPage() {
     const { testId } = useParams();
+    const initialScenario = getTestScenario(testId);
     const [activeTab, setActiveTab] = useState<InspectorTab>('context');
-    const [action, setAction] = useState(DEFAULT_ACTION);
+    const [action, setAction] = useState(initialScenario.action);
     const [elapsedSeconds, setElapsedSeconds] = useState(0);
     const [mode, setMode] = useState<DebugRunMode>('ai-explore');
     const [planRef, setPlanRef] = useState(() => (
@@ -43,7 +68,7 @@ export function TestEditorPage() {
     const [result, setResult] = useState<DebugRunResult>();
     const [runError, setRunError] = useState('');
     const [runState, setRunState] = useState<RunState>('idle');
-    const [steps, setSteps] = useState(initialSteps);
+    const [steps, setSteps] = useState(initialScenario.steps);
     const [url, setUrl] = useState(
         'https://test.jdydevelop.com/portal/signin'
     );
@@ -56,6 +81,12 @@ export function TestEditorPage() {
     const fileName = currentTest?.name ?? (
         testId === 'new' ? '未命名测试.test.yaml' : `${testId}.test.yaml`
     );
+
+    useEffect(() => {
+        const scenario = getTestScenario(testId);
+        setAction(scenario.action);
+        setSteps([...scenario.steps]);
+    }, [testId]);
 
     useEffect(() => {
         if (runState !== 'running') {

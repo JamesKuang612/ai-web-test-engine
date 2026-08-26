@@ -46,10 +46,12 @@ export function createLoginPocBuildInput(
             rules: [
                 '如果当前已经登录，不要退出或重复登录。',
                 '不得访问 allowedHosts 以外的页面。',
-                '不得在测试意图中写入账号、密码或令牌。'
+                '不得在测试意图中写入账号、密码或令牌。',
+                '验证账号菜单时只允许展开和观察，不得执行退出登录或修改账号配置。'
             ],
             terms: {
-                workspace: '简道云登录后展示的工作台页面'
+                workspace: '简道云登录后展示的工作台页面',
+                accountMenu: '点击工作台右上角用户头像后展开的账号菜单'
             }
         }
     };
@@ -77,9 +79,9 @@ export function createLoginPocStartInput(
         },
         mode,
         budgets: {
-            maxActions: 10,
+            maxActions: 12,
             maxDurationMs: 300_000,
-            maxModelCalls: mode === 'structured-replay' ? 1 : 7,
+            maxModelCalls: mode === 'structured-replay' ? 1 : 9,
             maxRepeatedStateActions: 1
         }
     };

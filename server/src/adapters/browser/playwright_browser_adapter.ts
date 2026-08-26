@@ -30,6 +30,7 @@ import {
     INTERACTIVE_ELEMENT_SCRIPT,
     INTERACTIVE_SELECTOR,
     MAX_INTERACTIVE_ELEMENTS,
+    RUNTIME_CANDIDATE_ATTRIBUTE,
 } from './interactive_element_script';
 import type {
     CapturedInteractiveElement,
@@ -70,7 +71,8 @@ const DEFAULT_PAGE_CONTENT_WAIT_MS = 30_000;
 const OBSERVATION_ATTEMPTS = 5;
 const OBSERVATION_RETRY_DELAY_MS = 250;
 const CLICK_NAVIGATION_WAIT_MS = 15_000;
-const CLICK_SETTLE_DELAY_MS = 250;
+const CLICK_SETTLE_DELAY_MS = 500;
+const CLICK_DOM_CHANGE_WAIT_MS = 2_000;
 const SCREENSHOT_TIMEOUT_MS = 15_000;
 const SCREENSHOT_ATTEMPTS = 2;
 const SCREENSHOT_RETRY_DELAY_MS = 250;
@@ -504,11 +506,15 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
                     }
                 );
             }
+            const previousDomState = await this.captureDomChangeState(
+                session.page
+            );
             await locator.click();
             await this.waitForClickSettlement(
                 session.page,
                 previousUrl,
-                navigationExpected
+                navigationExpected,
+                previousDomState
             );
             return this.createActionResult(
                 startedAt,
@@ -542,9 +548,36 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
     private async waitForClickSettlement(
         page: Page,
         previousUrl: string,
-        navigationExpected: boolean
+        navigationExpected: boolean,
+        previousDomState: string
     ): Promise<void> {
         if (!navigationExpected) {
+            try {
+                await page.waitForFunction(
+                    [
+                        '(previousState) => {',
+                        'const body = document.body;',
+                        'const expanded = Array.from(document.querySelectorAll(',
+                        '"[aria-expanded]"',
+                        ')).map((element) => element.getAttribute("aria-expanded"));',
+                        'const currentState = JSON.stringify({',
+                        'text: body?.innerText ?? "",',
+                        'childCount: body?.querySelectorAll("*").length ?? 0,',
+                        'expanded',
+                        '});',
+                        'return currentState !== previousState;',
+                        '}'
+                    ].join(''),
+                    previousDomState,
+                    {
+                        timeout: CLICK_DOM_CHANGE_WAIT_MS
+                    }
+                );
+            } catch (error) {
+                if (!(error instanceof errors.TimeoutError)) {
+                    throw error;
+                }
+            }
             await page.waitForTimeout(CLICK_SETTLE_DELAY_MS);
             return;
         }
@@ -564,6 +597,23 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
         }
     }
 
+    /** 生成用于等待菜单、弹层等局部 DOM 变化的轻量状态。 */
+    private captureDomChangeState(page: Page): Promise<string> {
+        return page.evaluate<string>([
+            '(() => {',
+            'const body = document.body;',
+            'const expanded = Array.from(document.querySelectorAll(',
+            '"[aria-expanded]"',
+            ')).map((element) => element.getAttribute("aria-expanded"));',
+            'return JSON.stringify({',
+            'text: body?.innerText ?? "",',
+            'childCount: body?.querySelectorAll("*").length ?? 0,',
+            'expanded',
+            '});',
+            '})()'
+        ].join(''));
+    }
+
     /** 根据 Planner 描述判断点击是否预期进入另一个页面。 */
     private isNavigationExpected(command: ActionCommand): boolean {
         return /跳转|进入.+页面|导航|打开.+页面|URL|地址/iu.test([
@@ -580,20 +630,22 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
         elements: ObservedElement[],
         truncated: boolean
     }> {
-        const baseLocator = session.page.locator(INTERACTIVE_SELECTOR);
         const captured = await session.page.evaluate<
             CapturedInteractiveElement[]
         >(INTERACTIVE_ELEMENT_SCRIPT);
         const locators = new Map<string, Locator>();
-        const observed = captured.map(({ sourceIndex, ...element }) => {
+        const observed = captured.map((element) => {
             locators.set(
                 element.candidateId,
-                baseLocator.nth(sourceIndex)
+                session.page.locator(
+                    `[${ RUNTIME_CANDIDATE_ATTRIBUTE }="${
+                        element.candidateId
+                    }"]`
+                )
             );
             return element;
         });
-        const totalCount = await baseLocator.count();
-        const truncated = totalCount > MAX_INTERACTIVE_ELEMENTS;
+        const truncated = observed.length >= MAX_INTERACTIVE_ELEMENTS;
 
         session.elementIndex = {
             observationId,

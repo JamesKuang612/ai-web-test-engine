@@ -6,6 +6,7 @@ import type {
     BrowserSession,
     BrowserStartOptions,
     CompiledPlan,
+    CompiledTarget,
     EnvironmentDefinition,
     EnvironmentValueResolver,
     ObservedElement,
@@ -100,6 +101,63 @@ describe('DeterministicPlanReplayer', () => {
 });
 
 describe('CompiledTargetResolver', () => {
+    it('用稳定语义提示重新绑定非标准头像控件', () => {
+        const resolver = new CompiledTargetResolver();
+        const target: CompiledTarget = {
+            description: '页面右上角用户头像',
+            locatorHints: [
+                {
+                    strategy: 'css',
+                    value: '.topbar-user-avatar'
+                },
+                {
+                    strategy: 'role-name',
+                    value: 'button|topbar user avatar'
+                }
+            ],
+            identity: {
+                tag: 'div',
+                role: 'button',
+                name: 'topbar user avatar'
+            }
+        };
+        const avatar: ObservedElement = {
+            candidateId: 'avatar-from-fresh-dom',
+            tag: 'div',
+            role: 'button',
+            name: 'topbar user avatar',
+            disabled: false,
+            visible: true,
+            inViewport: true,
+            attributes: {
+                class: 'topbar-user-avatar',
+                'aria-haspopup': 'menu'
+            },
+            nearbyText: [],
+            locatorHints: [
+                {
+                    strategy: 'css',
+                    value: 'div'
+                },
+                {
+                    strategy: 'css',
+                    value: '.topbar-user-avatar'
+                },
+                {
+                    strategy: 'role-name',
+                    value: 'button|topbar user avatar'
+                }
+            ]
+        };
+
+        const resolved = resolver.resolve(
+            target,
+            createObservation('workspace-avatar', workspaceUrl, [ avatar ])
+        );
+
+        assert.equal(resolved.candidateId, 'avatar-from-fresh-dom');
+    });
+
     it('拒绝多个同分候选元素，避免回放时误操作', () => {
         const resolver = new CompiledTargetResolver();
         const duplicate = createUsernameElement('username-2', 'empty');

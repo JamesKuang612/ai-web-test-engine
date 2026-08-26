@@ -56,8 +56,18 @@ describe('RunDebugService', () => {
                 'test.frjdy.com'
             ]
         );
-        assert.equal(engine.lastInput?.budgets.maxActions, 10);
-        assert.equal(engine.lastInput?.budgets.maxModelCalls, 7);
+        assert.equal(engine.lastInput?.budgets.maxActions, 12);
+        assert.equal(engine.lastInput?.budgets.maxModelCalls, 9);
+        assert.equal(
+            engine.lastInput?.projectContext.terms.accountMenu,
+            '点击工作台右上角用户头像后展开的账号菜单'
+        );
+        assert.equal(
+            engine.lastInput?.projectContext.rules.some(
+                (rule) => rule.includes('不得执行退出登录')
+            ),
+            true
+        );
         assert.equal(engine.lastSignal, controller.signal);
     });
 
