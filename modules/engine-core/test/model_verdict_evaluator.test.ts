@@ -250,6 +250,93 @@ describe('ModelVerdictEvaluator exact text assertions', () => {
     });
 });
 
+describe('ModelVerdictEvaluator unfinished exact text assertions', () => {
+    it('执行中途无法继续时不会把尚未出现的最终文本判为失败', async () => {
+        const exactSuccessId = 'engine-exact-text-1';
+        const exactFailureId = 'engine-exact-text-1-mismatch';
+        const exactInput: EvaluateVerdictInput = {
+            ...input,
+            testIntent: {
+                ...input.testIntent,
+                successCriteria: [
+                    ...input.testIntent.successCriteria,
+                    {
+                        id: exactSuccessId,
+                        description: '最终工作台逐字显示“2026.8.27”。',
+                        preferredEvidence: ['dom'],
+                        required: true
+                    }
+                ],
+                failureCriteria: [
+                    ...input.testIntent.failureCriteria,
+                    {
+                        id: exactFailureId,
+                        description: '最终应用名称文字不完全一致。'
+                    }
+                ],
+                exactTextAssertions: [{
+                    successCriterionId: exactSuccessId,
+                    failureCriterionId: exactFailureId,
+                    ordered: false,
+                    values: ['2026.8.27']
+                }]
+            },
+            observation: {
+                ...input.observation,
+                visibleText: [
+                    '新建应用',
+                    '创建空白应用'
+                ]
+            },
+            stopCommand: {
+                type: 'UNCERTAIN',
+                reasonSummary: '当前页面没有可唯一定位的创建空白应用候选元素。',
+                risk: 'read-only'
+            }
+        };
+        const prematurePass: VerdictDecision = {
+            ...passDecision,
+            successCriteria: [
+                ...passDecision.successCriteria,
+                {
+                    criterionId: exactSuccessId,
+                    status: 'MATCHED',
+                    summary: '模型错误地提前放行。'
+                }
+            ],
+            failureCriteria: [
+                ...passDecision.failureCriteria,
+                {
+                    criterionId: exactFailureId,
+                    status: 'NOT_MATCHED',
+                    summary: '模型尚未发现文字差异。'
+                }
+            ]
+        };
+        const evaluator = new ModelVerdictEvaluator(
+            new FakeModelAdapter(prematurePass),
+            verdictDecisionSchema
+        );
+
+        const decision = await evaluator.evaluate(
+            exactInput,
+            new AbortController().signal
+        );
+
+        assert.equal(decision.result, 'UNCERTAIN');
+        assert.equal(
+            decision.successCriteria.at(-1)?.status,
+            'UNKNOWN'
+        );
+        assert.equal(
+            decision.failureCriteria.at(-1)?.status,
+            'UNKNOWN'
+        );
+        assert.match(decision.summary, /暂不可判定/u);
+        assert.match(decision.summary, /2026\.8\.27/u);
+    });
+});
+
 /** 返回固定结构化输出并记录模型请求。 */
 class FakeModelAdapter implements ModelAdapter {
     public lastRequest?: ModelRequest;

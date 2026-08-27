@@ -96,6 +96,7 @@ export class ModelVerdictEvaluator implements VerdictEvaluator {
             (assessment) => ({ ...assessment })
         );
         const failures: string[] = [];
+        const deferred: string[] = [];
 
         assertions.forEach((assertion) => {
             const match = matchExactVisibleText(
@@ -125,6 +126,14 @@ export class ModelVerdictEvaluator implements VerdictEvaluator {
             const detail = match.missing.length > 0
                 ? `缺失精确文本：${ match.missing.join('、') }`
                 : '精确文本的显示顺序不符合要求。';
+            if (input.stopCommand.type === 'UNCERTAIN') {
+                success.status = 'UNKNOWN';
+                success.summary = `执行尚未到达可判定终态；${ detail }`;
+                failure.status = 'UNKNOWN';
+                failure.summary = `执行尚未到达可判定终态；${ detail }`;
+                deferred.push(detail);
+                return;
+            }
             success.status = 'NOT_MATCHED';
             success.summary = detail;
             failure.status = 'MATCHED';
@@ -142,7 +151,9 @@ export class ModelVerdictEvaluator implements VerdictEvaluator {
             result,
             summary: failures.length > 0
                 ? `严格文本断言失败：${ failures.join('；') }`
-                : decision.summary,
+                : deferred.length > 0
+                    ? `严格文本断言暂不可判定：${ deferred.join('；') }`
+                    : decision.summary,
             successCriteria,
             failureCriteria
         };
