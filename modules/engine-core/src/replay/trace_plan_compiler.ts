@@ -7,6 +7,7 @@ import type {
     CompiledActionType,
     CompiledPlan,
     CompiledStep,
+    CompiledTarget,
     EffectVerification,
     LocatorHint,
     ObservedElement,
@@ -131,9 +132,10 @@ export class TracePlanCompiler {
             return compiled;
         }
 
-        compiled.target = this.compileTarget(step);
+        const target = this.compileTarget(step);
+        compiled.target = target;
         if (type === 'TYPE') {
-            compiled.value = this.compileTypeValue(step);
+            compiled.value = this.compileTypeValue(step, target);
         }
         if (type === 'SELECT') {
             compiled.value = this.compileSelectValue(step);
@@ -190,11 +192,25 @@ export class TracePlanCompiler {
         return structuredClone(value);
     }
 
-    private compileTypeValue(step: CompilableTraceStep): CompiledStep['value'] {
+    private compileTypeValue(
+        step: CompilableTraceStep,
+        target: CompiledTarget
+    ): CompiledStep['value'] {
         const value = step.command.value;
-        if (value?.source !== 'environment' && value?.source !== 'generated') {
+        if (value?.source === 'environment' || value?.source === 'generated') {
+            return structuredClone(value);
+        }
+        if (
+            value?.source !== 'literal'
+            || typeof value.value !== 'string'
+        ) {
             throw new TracePlanCompileError(
-                `第 ${ step.sequence } 步 TYPE 必须保留环境变量或生成值引用。`
+                `第 ${ step.sequence } 步 TYPE 必须提供字符串输入值。`
+            );
+        }
+        if (isSensitiveTypeTarget(target)) {
+            throw new TracePlanCompileError(
+                `第 ${ step.sequence } 步敏感 TYPE 必须使用环境变量或生成值引用。`
             );
         }
 
@@ -249,7 +265,7 @@ export class TracePlanCompiler {
         return structuredClone(value);
     }
 
-    private compileTarget(step: CompilableTraceStep): CompiledStep['target'] {
+    private compileTarget(step: CompilableTraceStep): CompiledTarget {
         const candidateId = step.command.target?.candidateId;
         if (!candidateId) {
             throw new TracePlanCompileError(
@@ -323,4 +339,17 @@ export class TracePlanCompiler {
 
         return structuredClone(uniqueHints);
     }
+}
+
+/** 密码、令牌等敏感字段不得把实际输入值固化进可复用计划。 */
+function isSensitiveTypeTarget(target: CompiledTarget): boolean {
+    if (target.identity.inputType?.toLowerCase() === 'password') {
+        return true;
+    }
+    return /密码|口令|令牌|token|secret|password/iu.test([
+        target.description,
+        target.identity.name,
+        target.identity.label,
+        target.identity.placeholder
+    ].filter(Boolean).join(' '));
 }

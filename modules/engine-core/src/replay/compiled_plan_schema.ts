@@ -360,7 +360,7 @@ function requireStepShape(
         );
     }
     requireClickShape(type, value, path);
-    requireTypeShape(type, value, path);
+    requireTypeShape(type, target, value, path);
     requireSelectShape(type, value, path);
     requireCheckShape(type, value, path);
 }
@@ -377,19 +377,43 @@ function requireClickShape(
 
 function requireTypeShape(
     type: CompiledActionType,
+    target: CompiledTarget | undefined,
     value: ValueReference | undefined,
     path: string
 ): void {
-    if (
-        type === 'TYPE'
-        && value?.source !== 'environment'
-        && value?.source !== 'generated'
-    ) {
-        throw new CompiledPlanSchemaError(
-            `${ path }.value`,
-            'TYPE 必须保留环境变量或生成值引用'
-        );
+    if (type !== 'TYPE') {
+        return;
     }
+    if (value?.source === 'environment' || value?.source === 'generated') {
+        return;
+    }
+    if (
+        value?.source === 'literal'
+        && typeof value.value === 'string'
+        && target
+        && !isSensitiveTypeTarget(target)
+    ) {
+        return;
+    }
+    throw new CompiledPlanSchemaError(
+        `${ path }.value`,
+        target && isSensitiveTypeTarget(target)
+            ? '敏感 TYPE 必须使用环境变量或生成值引用'
+            : 'TYPE 必须提供字符串输入值'
+    );
+}
+
+/** 防止外部计划绕过编译器，将密码或令牌字面量写入持久化计划。 */
+function isSensitiveTypeTarget(target: CompiledTarget): boolean {
+    if (target.identity.inputType?.toLowerCase() === 'password') {
+        return true;
+    }
+    return /密码|口令|令牌|token|secret|password/iu.test([
+        target.description,
+        target.identity.name,
+        target.identity.label,
+        target.identity.placeholder
+    ].filter(Boolean).join(' '));
 }
 
 function requireSelectShape(

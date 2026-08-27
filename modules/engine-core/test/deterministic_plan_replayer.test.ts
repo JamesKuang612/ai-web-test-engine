@@ -75,7 +75,67 @@ describe('DeterministicPlanReplayer', () => {
             false
         );
     });
+});
 
+describe('DeterministicPlanReplayer literal inputs', () => {
+    it('结构化回放直接复用非敏感 TYPE 字面量', async () => {
+        const browser = new FakeReplayBrowser([
+            createObservation('blank', 'about:blank', []),
+            createObservation('form-1', loginUrl, [
+                createApplicationNameElement('name-current', 'empty')
+            ]),
+            createObservation('form-2', loginUrl, [
+                createApplicationNameElement('name-current', 'empty')
+            ]),
+            createObservation('form-3', loginUrl, [
+                createApplicationNameElement('name-current', 'filled')
+            ])
+        ]);
+        const plan = createPlan();
+        plan.steps = plan.steps.slice(0, 2);
+        plan.steps[1] = {
+            ...plan.steps[1],
+            target: {
+                description: '应用名称输入框',
+                locatorHints: [{
+                    strategy: 'label',
+                    value: '名称'
+                }],
+                identity: {
+                    tag: 'input',
+                    label: '名称',
+                    inputType: 'text'
+                }
+            },
+            value: {
+                source: 'literal',
+                value: '2026.8.27'
+            }
+        };
+        const replayer = new DeterministicPlanReplayer(
+            browser,
+            new FakeValueResolver()
+        );
+
+        const execution = await replayer.replay({
+            plan,
+            environment,
+            signal: new AbortController().signal
+        });
+
+        assert.equal(execution.actionCount, 2);
+        assert.deepEqual(browser.commands[1]?.value, {
+            source: 'literal',
+            value: '2026.8.27'
+        });
+        assert.deepEqual(execution.steps[1]?.command.value, {
+            source: 'literal',
+            value: '2026.8.27'
+        });
+    });
+});
+
+describe('DeterministicPlanReplayer failures and advanced actions', () => {
     it('动作效果没有确认时中止回放并仍然关闭会话', async () => {
         const browser = new FakeReplayBrowser([
             createObservation('blank', 'about:blank', []),
@@ -448,6 +508,29 @@ function createUsernameElement(
         locatorHints: [{
             strategy: 'label',
             value: '账号'
+        }]
+    };
+}
+
+function createApplicationNameElement(
+    candidateId: string,
+    valueState: ObservedElement['valueState']
+): ObservedElement {
+    return {
+        candidateId,
+        tag: 'input',
+        label: '名称',
+        valueState,
+        disabled: false,
+        visible: true,
+        inViewport: true,
+        attributes: {
+            type: 'text'
+        },
+        nearbyText: [],
+        locatorHints: [{
+            strategy: 'label',
+            value: '名称'
         }]
     };
 }

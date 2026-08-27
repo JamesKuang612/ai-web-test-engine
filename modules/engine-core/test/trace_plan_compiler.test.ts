@@ -59,7 +59,7 @@ describe('TracePlanCompiler', () => {
 });
 
 describe('TracePlanCompiler 安全约束', () => {
-    it('拒绝把 TYPE 的字面量值写入可复用计划', () => {
+    it('保留非敏感业务字段的 TYPE 字面量值', () => {
         const compiler = new TracePlanCompiler();
         const steps = [
             createStep(1, {
@@ -76,16 +76,58 @@ describe('TracePlanCompiler 安全约束', () => {
                 type: 'TYPE',
                 target: {
                     candidateId: 'runtime-username',
-                    description: '账号输入框'
+                    description: '应用名称输入框'
                 },
                 value: {
                     source: 'literal',
-                    value: 'tester@example.com'
+                    value: '2026.8.27'
                 },
-                expectedEffect: '账号输入框变为已填写',
-                reasonSummary: '填写账号',
+                expectedEffect: '应用名称输入框变为已填写',
+                reasonSummary: '填写应用名称',
                 risk: 'reversible'
-            }, [ createUsernameElement() ])
+            }, [ createApplicationNameElement() ])
+        ];
+
+        const plan = compiler.compile({
+            runId: 'run-1',
+            testId: 'create-application',
+            testIntent: intent,
+            steps
+        });
+
+        assert.deepEqual(plan.steps[1]?.value, {
+            source: 'literal',
+            value: '2026.8.27'
+        });
+    });
+
+    it('拒绝把密码 TYPE 字面量写入可复用计划', () => {
+        const compiler = new TracePlanCompiler();
+        const steps = [
+            createStep(1, {
+                type: 'NAVIGATE',
+                value: {
+                    source: 'literal',
+                    value: 'https://test.jdydevelop.com/portal/signin'
+                },
+                expectedEffect: '打开登录页',
+                reasonSummary: '进入登录页',
+                risk: 'read-only'
+            }, []),
+            createStep(2, {
+                type: 'TYPE',
+                target: {
+                    candidateId: 'runtime-password',
+                    description: '密码输入框'
+                },
+                value: {
+                    source: 'literal',
+                    value: 'should-not-be-persisted'
+                },
+                expectedEffect: '密码输入框变为已填写',
+                reasonSummary: '填写密码',
+                risk: 'reversible'
+            }, [ createPasswordElement() ])
         ];
 
         assert.throws(() => compiler.compile({
@@ -93,7 +135,7 @@ describe('TracePlanCompiler 安全约束', () => {
             testId: 'login-jiandaoyun',
             testIntent: intent,
             steps
-        }), TracePlanCompileError);
+        }), /敏感 TYPE 必须使用环境变量/u);
     });
 
     it('拒绝效果未经确认或缺少唯一定位提示的轨迹', () => {
@@ -281,6 +323,35 @@ function createUsernameElement(): ObservedElement {
         locatorHints: [{
             strategy: 'label',
             value: '账号'
+        }]
+    };
+}
+
+function createApplicationNameElement(): ObservedElement {
+    return {
+        ...createUsernameElement(),
+        candidateId: 'runtime-username',
+        label: '名称',
+        placeholder: '给应用命名',
+        locatorHints: [{
+            strategy: 'label',
+            value: '名称'
+        }]
+    };
+}
+
+function createPasswordElement(): ObservedElement {
+    return {
+        ...createUsernameElement(),
+        candidateId: 'runtime-password',
+        label: '密码',
+        placeholder: '请输入密码',
+        attributes: {
+            type: 'password'
+        },
+        locatorHints: [{
+            strategy: 'label',
+            value: '密码'
         }]
     };
 }

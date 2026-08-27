@@ -64,6 +64,20 @@ describe('CompiledPlan Schema', () => {
 
         assert.deepEqual(parseCompiledPlan(plan), plan);
     });
+
+    it('解析非敏感业务字段的 TYPE 字面量', () => {
+        const plan = createPlan();
+        plan.steps[1] = {
+            ...plan.steps[1],
+            target: createTarget('应用名称', 'input'),
+            value: {
+                source: 'literal',
+                value: '2026.8.27'
+            }
+        };
+
+        assert.deepEqual(parseCompiledPlan(plan), plan);
+    });
 });
 
 describe('CompiledPlan Schema 安全边界', () => {
@@ -97,6 +111,30 @@ describe('CompiledPlan Schema 安全边界', () => {
         assert.throws(
             () => parseCompiledPlan(plan),
             /不能包含连续 WAIT/u
+        );
+    });
+
+    it('拒绝密码字段使用 TYPE 字面量', () => {
+        const plan = createPlan();
+        plan.steps[1] = {
+            ...plan.steps[1],
+            target: {
+                ...createTarget('密码', 'input'),
+                identity: {
+                    tag: 'input',
+                    label: '密码',
+                    inputType: 'password'
+                }
+            },
+            value: {
+                source: 'literal',
+                value: 'should-not-be-persisted'
+            }
+        };
+
+        assert.throws(
+            () => parseCompiledPlan(plan),
+            /敏感 TYPE 必须使用环境变量/u
         );
     });
 });
