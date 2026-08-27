@@ -1,0 +1,6 @@
+schemaVersion: 1
+id: test-6db28452
+name: 提交一条数据
+environmentId: jiandaoyun-test
+startUrl: https://test.jdydevelop.com/dashboard#/
+action: 登录后，在当前页面选择应用名为“2026.8.27.1028”的应用，进去后选择“表单2”，在当前页面提交一条数据，数据信息随意编造。提交后点击“数据管理”验证刚刚提交的数据是否存在
