@@ -72,17 +72,6 @@ const startInput: StartRunInput = {
         maxRepeatedStateActions: 2
     }
 };
-const FAST_RETRY_OPTIONS = {
-    browserStartOptions: {
-        headless: true,
-        viewport: {
-            width: 1280,
-            height: 720
-        }
-    },
-    uncertainRetryDelayMs: 0
-};
-
 const testIntent: TestIntent = {
     schemaVersion: 1,
     objective: '登录简道云并进入工作台',
@@ -254,8 +243,7 @@ describe('RunCoordinator', () => {
                 actionPlanner,
                 verdictEvaluator: new FakeVerdictEvaluator(uncertainVerdict)
             },
-            new FakeEnvironmentValueResolver(),
-            FAST_RETRY_OPTIONS
+            new FakeEnvironmentValueResolver()
         );
 
         const result = await coordinator.start(

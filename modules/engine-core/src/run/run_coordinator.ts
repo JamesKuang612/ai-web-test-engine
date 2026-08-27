@@ -71,7 +71,6 @@ const EXECUTABLE_PLANNED_ACTIONS = new Set<ActionCommand['type']>([
 /** RunCoordinator 启动浏览器时使用的可覆盖参数。 */
 export interface RunCoordinatorOptions {
     browserStartOptions: BrowserStartOptions;
-    uncertainRetryDelayMs: number;
 }
 
 /** RunCoordinator 使用的规划与独立判定能力。 */
@@ -159,8 +158,7 @@ const DEFAULT_OPTIONS: RunCoordinatorOptions = {
             width: 1280,
             height: 720
         }
-    },
-    uncertainRetryDelayMs: 10_000
+    }
 };
 
 /**
@@ -546,29 +544,20 @@ export class RunCoordinator implements ExecutionEngine {
         return undefined;
     }
 
-    /** Planner 首次证据不足时，等待页面稳定并重采集一次 DOM 与截图。 */
+    /** Planner 首次证据不足时，立即重采集一次 DOM 与截图后再次规划。 */
     private async retryAfterUncertain(
         context: RunExecutionContext,
         runtime: RunContext,
         sequence: number
     ): Promise<ObservationEvidence | undefined> {
         const remaining = this.getRemainingBudgets(context);
-        if (
-            remaining.maxModelCalls <= 1
-            || remaining.maxDurationMs <= this.options.uncertainRetryDelayMs
-        ) {
+        if (remaining.maxModelCalls <= 1 || remaining.maxDurationMs <= 0) {
             return undefined;
         }
         await this.transition(
             context,
             'OBSERVING',
-            `当前页面证据不足，等待 ${
-                this.options.uncertainRetryDelayMs / 1_000
-            } 秒后重新观察`
-        );
-        await waitForDelay(
-            this.options.uncertainRetryDelayMs,
-            context.signal
+            '当前页面证据不足，正在重新采集页面状态与截图'
         );
         const evidence = await this.captureObservationEvidence(
             context,
@@ -2146,31 +2135,6 @@ export class RunCoordinator implements ExecutionEngine {
             payload,
         });
     }
-}
-
-/** 支持 AbortSignal 的有限等待，运行被主动终止时立即释放定时器。 */
-function waitForDelay(
-    durationMs: number,
-    signal: AbortSignal
-): Promise<void> {
-    signal.throwIfAborted();
-    if (durationMs <= 0) {
-        return Promise.resolve();
-    }
-    return new Promise<void>((resolve, reject) => {
-        const onAbort = () => {
-            clearTimeout(timeout);
-            reject(signal.reason ?? new DOMException(
-                '运行已取消。',
-                'AbortError'
-            ));
-        };
-        const timeout = setTimeout(() => {
-            signal.removeEventListener('abort', onAbort);
-            resolve();
-        }, durationMs);
-        signal.addEventListener('abort', onAbort, { once: true });
-    });
 }
 
 /** 将 TestIntent 显式转换为可以安全持久化的 JSON 数据。 */
