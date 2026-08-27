@@ -638,6 +638,14 @@
                 "disabled": {
                     "type": "boolean"
                 },
+                "discoverySource": {
+                    "description": "元素由常规 DOM 采集发现，或由视觉定位后反查 DOM 补充。",
+                    "enum": [
+                        "dom",
+                        "vision-assisted"
+                    ],
+                    "type": "string"
+                },
                 "inViewport": {
                     "type": "boolean"
                 },
@@ -682,6 +690,10 @@
                 },
                 "visible": {
                     "type": "boolean"
+                },
+                "visualDescription": {
+                    "description": "视觉定位使用的业务语义，不替代页面本身的可访问名称。",
+                    "type": "string"
                 }
             },
             "required": [

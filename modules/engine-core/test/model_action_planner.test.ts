@@ -144,6 +144,39 @@ describe('ModelActionPlanner', () => {
             /未知 candidateId/u
         );
     });
+
+    it('提示模型在无法定位时保留业务语义目标供视觉恢复', async () => {
+        const adapter = new FakeModelAdapter({
+            type: 'UNCERTAIN',
+            target: {
+                candidateId: null,
+                description: '当前页面内能够返回工作台的控件'
+            },
+            value: null,
+            expectedEffect: '返回工作台',
+            reasonSummary: '没有对应的 DOM 候选元素',
+            risk: 'read-only'
+        });
+        const planner = new ModelActionPlanner(adapter, actionCommandSchema);
+
+        const command = await planner.plan(
+            planInput,
+            new AbortController().signal
+        );
+
+        assert.equal(
+            command.target?.description,
+            '当前页面内能够返回工作台的控件'
+        );
+        assert.match(
+            adapter.lastRequest?.systemPrompt ?? '',
+            /业务语义目标/u
+        );
+        assert.match(
+            adapter.lastRequest?.systemPrompt ?? '',
+            /不得猜测目标的外观、位置/u
+        );
+    });
 });
 
 /** 用固定输出模拟结构化模型调用。 */

@@ -132,6 +132,12 @@ interface ObservationEvidence {
     screenshotReference: EvidenceRef;
 }
 
+/** 视觉恢复可能生成增强观察，也可能给出可解释的停止原因。 */
+interface VisualRetryOutcome {
+    evidence?: ObservationEvidence;
+    failureSummary?: string;
+}
+
 /** 初始空白页只保存观察，不额外截取无业务价值的截图。 */
 interface InitialObservationEvidence {
     observation: PageObservation;
@@ -433,7 +439,7 @@ export class RunCoordinator implements ExecutionEngine {
         const plannedActions: PlannedActionExecution[] = [];
         let beforeObservationReference =
             navigation.afterObservationReference;
-        let uncertainRetryUsed = false;
+        let uncertainRecoveryStage: 0 | 1 | 2 = 0;
         let uncertainRetrySequence = 0;
 
         while (true) {
@@ -446,9 +452,9 @@ export class RunCoordinator implements ExecutionEngine {
                 };
             }
 
-            const command = await this.planNextAction(context, runtime);
+            let command = await this.planNextAction(context, runtime);
             const retryObservation =
-                command.type === 'UNCERTAIN' && !uncertainRetryUsed
+                command.type === 'UNCERTAIN' && uncertainRecoveryStage === 0
                     ? await this.retryAfterUncertain(
                         context,
                         runtime,
@@ -456,11 +462,32 @@ export class RunCoordinator implements ExecutionEngine {
                     )
                     : undefined;
             if (retryObservation) {
-                uncertainRetryUsed = true;
+                uncertainRecoveryStage = 1;
                 uncertainRetrySequence += 1;
                 beforeObservationReference =
                     retryObservation.observationReference;
                 continue;
+            }
+            const visualRetry =
+                command.type === 'UNCERTAIN' && uncertainRecoveryStage === 1
+                    ? await this.retryWithVision(
+                        context,
+                        runtime,
+                        command,
+                        uncertainRetrySequence
+                    )
+                    : undefined;
+            if (visualRetry?.evidence) {
+                uncertainRecoveryStage = 2;
+                beforeObservationReference =
+                    visualRetry.evidence.observationReference;
+                continue;
+            }
+            if (visualRetry?.failureSummary) {
+                command = this.createStopCommand(
+                    'UNCERTAIN',
+                    visualRetry.failureSummary
+                );
             }
             const plannerStop = this.createPlannerStopCommand(
                 command,
@@ -483,7 +510,7 @@ export class RunCoordinator implements ExecutionEngine {
                 beforeObservationReference
             );
             plannedActions.push(execution);
-            uncertainRetryUsed = false;
+            uncertainRecoveryStage = 0;
             if (command.type !== 'WAIT') {
                 this.updateRepeatedStateCount(
                     context,
@@ -492,33 +519,43 @@ export class RunCoordinator implements ExecutionEngine {
                     execution.afterObservation.stateFingerprint
                 );
             }
-
-            if (execution.result.status !== 'executed') {
+            const executionStop = this.createExecutionStopCommand(
+                context,
+                execution
+            );
+            if (executionStop) {
                 return {
                     navigation,
                     plannedActions,
-                    stopCommand: this.createStopCommand(
-                        'FAIL',
-                        execution.result.error?.message ?? '浏览器动作执行失败。'
-                    )
-                };
-            }
-            if (
-                context.repeatedStateActionCount >
-                context.input.budgets.maxRepeatedStateActions
-            ) {
-                return {
-                    navigation,
-                    plannedActions,
-                    stopCommand: this.createStopCommand(
-                        'UNCERTAIN',
-                        '连续动作没有产生可观察的页面变化，已停止运行。'
-                    )
+                    stopCommand: executionStop
                 };
             }
 
             beforeObservationReference = execution.afterObservationReference;
         }
+    }
+
+    /** 把动作失败与重复状态预算统一转换成停止命令。 */
+    private createExecutionStopCommand(
+        context: RunExecutionContext,
+        execution: PlannedActionExecution
+    ): ActionCommand | undefined {
+        if (execution.result.status !== 'executed') {
+            return this.createStopCommand(
+                'FAIL',
+                execution.result.error?.message ?? '浏览器动作执行失败。'
+            );
+        }
+        if (
+            context.repeatedStateActionCount >
+            context.input.budgets.maxRepeatedStateActions
+        ) {
+            return this.createStopCommand(
+                'UNCERTAIN',
+                '连续动作没有产生可观察的页面变化，已停止运行。'
+            );
+        }
+        return undefined;
     }
 
     /** 把 Planner 终止建议和当前不支持的动作统一转换成停止命令。 */
@@ -567,6 +604,81 @@ export class RunCoordinator implements ExecutionEngine {
         );
         runtime.latestObservation = evidence.observation;
         return evidence;
+    }
+
+    /** 第二次证据不足时用视觉发现语义目标，并补充为新的页面候选。 */
+    private async retryWithVision(
+        context: RunExecutionContext,
+        runtime: RunContext,
+        command: ActionCommand,
+        sequence: number
+    ): Promise<VisualRetryOutcome> {
+        const targetDescription = command.target?.description.trim();
+        if (!targetDescription) {
+            return {
+                failureSummary: '普通重试后仍无法规划，且 Planner 未提供可供视觉定位的语义目标。'
+            };
+        }
+        const enhance = this.browserAdapter.enhanceObservationWithVision;
+        if (!enhance) {
+            return {
+                failureSummary: '普通重试后仍无法规划，当前浏览器未接入视觉定位能力。'
+            };
+        }
+        const remaining = this.getRemainingBudgets(context);
+        if (remaining.maxModelCalls <= 2 || remaining.maxDurationMs <= 0) {
+            return {
+                failureSummary: '普通重试后仍无法规划，剩余预算不足以完成视觉定位、再次规划和最终判定。'
+            };
+        }
+        await this.transition(
+            context,
+            'OBSERVING',
+            '普通重试仍缺少目标，正在使用视觉定位增强页面观察'
+        );
+        context.modelCallCount += 1;
+        runtime.counters.modelCallCount = context.modelCallCount;
+        const request = {
+            targetDescription,
+            ...command.expectedEffect
+                ? {
+                    expectedEffect: command.expectedEffect
+                }
+                : {}
+        };
+        const result = await enhance(
+            runtime.browserSession,
+            request,
+            context.signal
+        );
+        context.signal.throwIfAborted();
+        const groundingReference = await this.artifactStore.saveJson(
+            context.runId,
+            `visual-grounding-retry-${ sequence }`,
+            toJsonValue({
+                request,
+                status: result.status,
+                summary: result.summary,
+                candidateId: result.candidateId
+            })
+        );
+        context.evidence.push(groundingReference);
+        if (result.status !== 'grounded' || !result.observation) {
+            return {
+                failureSummary: result.summary
+            };
+        }
+        const evidence = await this.persistObservationEvidence(
+            context,
+            runtime.browserSession,
+            result.observation,
+            `observation-after-visual-retry-${ sequence }`,
+            `screenshot-after-visual-retry-${ sequence }.png`
+        );
+        runtime.latestObservation = evidence.observation;
+        return {
+            evidence
+        };
     }
 
     /** 记录浏览器执行导航前的空白页状态。 */
@@ -1557,6 +1669,23 @@ export class RunCoordinator implements ExecutionEngine {
         screenshotName: string
     ): Promise<ObservationEvidence> {
         const observation = await this.browserAdapter.observe(session);
+        return await this.persistObservationEvidence(
+            context,
+            session,
+            observation,
+            observationName,
+            screenshotName
+        );
+    }
+
+    /** 持久化已经由普通观察或视觉增强生成的页面状态及其当前截图。 */
+    private async persistObservationEvidence(
+        context: RunExecutionContext,
+        session: BrowserSession,
+        observation: PageObservation,
+        observationName: string,
+        screenshotName: string
+    ): Promise<ObservationEvidence> {
         const screenshot = await this.browserAdapter.captureScreenshot(session);
         const screenshotReference = await this.artifactStore.saveArtifact(
             context.runId,

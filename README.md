@@ -118,7 +118,7 @@ components:
 
 每次模型调用都会创建一个不持久化的临时线程，并禁用工具、网络和环境访问。需要回退到 FineOneAPI 时，将 `provider` 改为 `fine_one`；API Key 只写入本机的 `~/.ai-web-test-engine/config.yml`，不要提交到 Git。
 
-视觉定位的预备能力使用 `@midscene/web`，并通过同一个 Codex App Server 调用 `gpt-5.6-terra`：
+视觉定位使用 `@midscene/web`，并通过同一个 Codex App Server 调用 `gpt-5.6-terra`：
 
 ```yaml
 components:
@@ -132,7 +132,7 @@ components:
     timeout_ms: 120000
 ```
 
-该配置通过 Midscene Agent 的 `modelConfig` 注入，不修改全局环境变量。当前阶段只完成依赖、配置转换和 Agent 工厂，尚未接入运行时的 DOM 重试或视觉兜底链路。
+该配置通过 Midscene Agent 的 `modelConfig` 注入，不修改全局环境变量。Planner 首次返回 `UNCERTAIN` 时，引擎立即重新采集一次 DOM 和截图；再次 `UNCERTAIN` 时，使用 Planner 提供的业务语义目标调用 Midscene。Midscene 返回的坐标会先通过 `document.elementsFromPoint()` 反查可见 DOM，再补充为 `PageObservation` 候选交回原 Planner 决策，不会绕过 DOM 直接按坐标点击。若坐标无法映射到 DOM，则保守结束为 `UNCERTAIN`。
 
 * 更新 JSON Schema
 

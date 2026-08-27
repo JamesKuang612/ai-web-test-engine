@@ -49,6 +49,42 @@ describe('ActionCommand Schema', () => {
         }), ActionCommandSchemaError);
     });
 
+    it('允许 UNCERTAIN 携带不臆测候选编号的业务语义目标', () => {
+        const command = actionCommandSchema.parse({
+            type: 'UNCERTAIN',
+            target: {
+                candidateId: null,
+                description: '当前页面内能够返回工作台的控件'
+            },
+            value: null,
+            expectedEffect: '返回工作台并显示应用列表',
+            reasonSummary: '观察中缺少可识别的返回控件',
+            risk: 'read-only'
+        });
+
+        assert.deepEqual(command.target, {
+            description: '当前页面内能够返回工作台的控件'
+        });
+        assert.equal(command.expectedEffect, '返回工作台并显示应用列表');
+    });
+
+    it('拒绝 UNCERTAIN 携带伪造 candidateId', () => {
+        assert.throws(() => actionCommandSchema.parse({
+            type: 'UNCERTAIN',
+            target: {
+                candidateId: 'guessed-element',
+                description: '返回工作台控件'
+            },
+            value: null,
+            expectedEffect: null,
+            reasonSummary: '猜测一个页面候选',
+            risk: 'read-only'
+        }), /UNCERTAIN 只能携带/u);
+    });
+
+});
+
+describe('ActionCommand Schema 严格输出', () => {
     it('接受严格结构化输出用 null 表示可选字段缺省', () => {
         const command = actionCommandSchema.parse({
             type: 'UNCERTAIN',

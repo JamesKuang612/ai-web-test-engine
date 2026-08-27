@@ -69,6 +69,7 @@ export class ModelActionPlanner implements ActionPlanner {
             '操作页面元素时只能引用 observation 中真实存在的 candidateId。',
             '不得输出 Playwright API、CSS、XPath 或 JavaScript。',
             '无法唯一确定目标时返回 UNCERTAIN，禁止猜测 candidateId。',
+            '如果 UNCERTAIN 的原因是 observation 缺少下一步所需元素，应在 target.description 中只描述业务语义目标，并令 candidateId 为 null；不得猜测目标的外观、位置、CSS 或 XPath。',
             '环境变量只能引用 availableEnvironmentVariables 中的逻辑名称。',
             '不得输出账号、密码、令牌等敏感值。',
             '页面已经满足目标时返回 FINISH；出现明确失败证据时返回 FAIL；证据不足且无法继续时返回 UNCERTAIN。',
@@ -149,6 +150,8 @@ function toSafeElement(element: ObservedElement) {
         text: element.text,
         label: element.label,
         placeholder: element.placeholder,
+        discoverySource: element.discoverySource,
+        visualDescription: element.visualDescription,
         valueState: element.valueState,
         disabled: element.disabled,
         checked: element.checked,
@@ -177,7 +180,7 @@ function redactCommandValue(command: ActionCommand): JsonValue {
         ...(command.target
             ? {
                 target: {
-                    candidateId: command.target.candidateId ?? '',
+                    candidateId: command.target.candidateId ?? null,
                     description: command.target.description
                 }
             }

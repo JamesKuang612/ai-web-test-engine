@@ -16,6 +16,7 @@ import { PlaywrightBrowserAdapter } from '../adapters/browser';
 import { LocalEnvironmentValueResolver } from '../adapters/environment';
 import { LoggingRunEventPublisher } from '../adapters/events';
 import { LocalArtifactStore } from '../adapters/storage/local_artifact_store';
+import { MidsceneVisualTargetLocator } from '../adapters/visual';
 import { config } from '../config';
 import {
     createConfiguredIntentBuilder,
@@ -58,11 +59,19 @@ function createConfiguredExecutionEngine(
 ): ExecutionEngine {
     const browserConfig = config.components.browser;
     const modelAdapter = createConfiguredModelAdapter();
+    const visualGroundingEnabled =
+        config.components.visual_grounding?.enabled !== false;
     return new RunCoordinator(
         new LocalArtifactStore(config.storage.artifact_root),
         eventPublisher,
         createConfiguredIntentBuilder(modelAdapter),
-        new PlaywrightBrowserAdapter(),
+        new PlaywrightBrowserAdapter({
+            ...visualGroundingEnabled
+                ? {
+                    visualTargetLocator: new MidsceneVisualTargetLocator()
+                }
+                : {}
+        }),
         {
             actionPlanner: new ModelActionPlanner(
                 modelAdapter,

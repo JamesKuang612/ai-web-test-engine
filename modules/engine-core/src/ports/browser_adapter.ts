@@ -25,6 +25,20 @@ export interface BrowserScreenshot {
     mediaType: 'image/png';
 }
 
+/** 普通 DOM 观察无法给出候选元素时发起的定向视觉定位请求。 */
+export interface VisualGroundingRequest {
+    targetDescription: string;
+    expectedEffect?: string;
+}
+
+/** 视觉定位只增强页面观察，不绕过 Planner 直接执行页面动作。 */
+export interface VisualGroundingResult {
+    status: 'grounded' | 'not-found' | 'unsupported';
+    summary: string;
+    candidateId?: string;
+    observation?: PageObservation;
+}
+
 /** 隔离 Playwright、CDP 和具体 Chromium 生命周期。 */
 export interface BrowserAdapter {
     /** 根据启动参数创建一段独立的浏览器会话。 */
@@ -41,6 +55,12 @@ export interface BrowserAdapter {
     captureScreenshot: (
         session: BrowserSession
     ) => Promise<BrowserScreenshot>;
+    /** 使用视觉定位补充一个候选元素；未接入视觉的适配器可以省略。 */
+    enhanceObservationWithVision?: (
+        session: BrowserSession,
+        request: VisualGroundingRequest,
+        signal: AbortSignal
+    ) => Promise<VisualGroundingResult>;
     /** 将浏览器会话恢复到本次测试约定的初始状态。 */
     reset: (session: BrowserSession) => Promise<void>;
     /** 关闭浏览器会话并释放对应资源。 */

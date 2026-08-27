@@ -69,10 +69,7 @@ export function createConfiguredMidsceneAgentOptions(): AgentOpt {
     );
 }
 
-/**
- * 为未来的视觉兜底创建绑定现有 Playwright Page 的 Midscene Agent。
- * 当前执行链路尚未调用此工厂。
- */
+/** 为视觉兜底创建绑定现有 Playwright Page 的 Midscene Agent。 */
 export function createConfiguredMidsceneVisualAgent(
     page: Page
 ): PlaywrightAgent {

@@ -322,6 +322,108 @@ describe('RunCoordinator 扩展动作', () => {
     });
 });
 
+describe('RunCoordinator 视觉恢复', () => {
+    it('普通重试仍不确定时用视觉候选增强观察并交回 Planner', async () => {
+        const unresolvedCommand: ActionCommand = {
+            type: 'UNCERTAIN',
+            target: {
+                description: '当前页面内能够返回工作台的控件'
+            },
+            expectedEffect: '返回工作台并显示应用列表',
+            reasonSummary: '当前观察缺少返回工作台的候选元素',
+            risk: 'read-only'
+        };
+        const visualObservation = createObservation(
+            startInput.test.startUrl ?? ''
+        );
+        visualObservation.interactiveElements.push({
+            candidateId: 'v4',
+            discoverySource: 'vision-assisted',
+            visualDescription: '当前页面内能够返回工作台的控件',
+            tag: 'div',
+            role: 'button',
+            disabled: false,
+            visible: true,
+            inViewport: true,
+            attributes: {
+                class: 'workspace-back'
+            },
+            nearbyText: [
+                '当前页面内能够返回工作台的控件'
+            ],
+            locatorHints: [{
+                strategy: 'css',
+                value: '.workspace-back'
+            }]
+        });
+        const browserAdapter = new FakeBrowserAdapter(
+            false,
+            false,
+            visualObservation
+        );
+        const actionPlanner = new FakeActionPlanner([
+            unresolvedCommand,
+            unresolvedCommand,
+            {
+                type: 'CLICK',
+                target: {
+                    candidateId: 'v4',
+                    description: '返回工作台控件'
+                },
+                expectedEffect: '返回工作台并显示应用列表',
+                reasonSummary: '选择视觉补充的返回控件',
+                risk: 'read-only'
+            },
+            finishCommand
+        ]);
+        const artifactStore = new FakeArtifactStore();
+        const coordinator = new RunCoordinator(
+            artifactStore,
+            new FakeRunEventPublisher(),
+            new FakeIntentBuilder(testIntent),
+            browserAdapter,
+            {
+                actionPlanner,
+                verdictEvaluator: new FakeVerdictEvaluator(uncertainVerdict)
+            },
+            new FakeEnvironmentValueResolver()
+        );
+
+        const result = await coordinator.start(
+            startInput,
+            new AbortController().signal
+        );
+
+        assert.equal(result.lifecycle, 'COMPLETED');
+        assert.equal(result.result, 'UNCERTAIN');
+        assert.equal(result.metrics.modelCallCount, 7);
+        assert.equal(browserAdapter.visualGroundingCount, 1);
+        assert.equal(
+            browserAdapter.lastVisualRequest?.targetDescription,
+            '当前页面内能够返回工作台的控件'
+        );
+        assert.equal(
+            actionPlanner.inputs[2]?.observation.interactiveElements.some(
+                (element) => element.candidateId === 'v4' &&
+                    element.discoverySource === 'vision-assisted'
+            ),
+            true
+        );
+        assert.equal(
+            browserAdapter.commands.some(
+                (command) => command.target?.candidateId === 'v4'
+            ),
+            true
+        );
+        assert.equal(
+            artifactStore.savedJson.some(
+                ({ name }) => name === 'visual-grounding-retry-1'
+            ),
+            true
+        );
+    });
+});
+
 interface CompletedRunState {
     actionPlanner: FakeActionPlanner;
     artifactStore: FakeArtifactStore;
@@ -930,6 +1032,7 @@ class FakeIntentBuilder implements IntentBuilder {
 class FakeActionPlanner implements ActionPlanner {
     public callCount = 0;
     public lastInput?: PlanActionInput;
+    public readonly inputs: PlanActionInput[] = [];
 
     private readonly commands: ActionCommand[];
 
@@ -947,6 +1050,7 @@ class FakeActionPlanner implements ActionPlanner {
         signal.throwIfAborted();
         this.callCount += 1;
         this.lastInput = input;
+        this.inputs.push(input);
         const command = this.commands[this.callCount - 1] ??
             this.commands.at(-1);
         if (!command) {
@@ -999,13 +1103,42 @@ class FakeBrowserAdapter implements BrowserAdapter {
     public executeCount = 0;
     public closeCount = 0;
     public captureScreenshotCount = 0;
+    public visualGroundingCount = 0;
+    public lastVisualRequest?: Parameters<
+        NonNullable<BrowserAdapter['enhanceObservationWithVision']>
+    >[1];
+    public enhanceObservationWithVision?:
+        BrowserAdapter['enhanceObservationWithVision'];
     public readonly commands: ActionCommand[] = [];
     private readonly sessionCommands = new Map<string, ActionCommand[]>();
 
     constructor(
         private readonly failReplay = false,
-        private readonly unreadyAfterLogin = false
-    ) {}
+        private readonly unreadyAfterLogin = false,
+        visualObservation?: PageObservation
+    ) {
+        if (visualObservation) {
+            this.enhanceObservationWithVision = (
+                _session,
+                request,
+                signal
+            ) => {
+                signal.throwIfAborted();
+                this.visualGroundingCount += 1;
+                this.observeCount += 1;
+                this.lastVisualRequest = request;
+                const candidate = visualObservation.interactiveElements.find(
+                    (element) => element.discoverySource === 'vision-assisted'
+                );
+                return Promise.resolve({
+                    status: 'grounded',
+                    summary: '视觉定位已补充测试候选。',
+                    candidateId: candidate?.candidateId,
+                    observation: structuredClone(visualObservation)
+                });
+            };
+        }
+    }
 
     /** 返回一段固定的浏览器会话。 */
     public start = (): Promise<BrowserSession> => {

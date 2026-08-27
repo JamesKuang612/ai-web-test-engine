@@ -66,7 +66,10 @@ const ACTION_COMMAND_JSON_SCHEMA: Record<string, JsonValue> = {
                     ],
                     properties: {
                         candidateId: {
-                            type: 'string',
+                            type: [
+                                'string',
+                                'null'
+                            ],
                             minLength: 1
                         },
                         description: {
@@ -236,13 +239,16 @@ function requireActionFields(
     }
     requireCheckValue(type, value);
     requireWaitShape(type, target, value);
-    if (
-        (type === 'FINISH' || type === 'FAIL' || type === 'UNCERTAIN') &&
-        (target || value)
-    ) {
+    if ((type === 'FINISH' || type === 'FAIL') && (target || value)) {
         throw new ActionCommandSchemaError(
             'ActionCommand',
             `${ type } 不能携带 target 或 value`
+        );
+    }
+    if (type === 'UNCERTAIN' && (target?.candidateId || value)) {
+        throw new ActionCommandSchemaError(
+            'ActionCommand',
+            'UNCERTAIN 只能携带不含 candidateId 的语义目标，且不能携带 value'
         );
     }
 }
@@ -297,7 +303,9 @@ function parseTarget(value: unknown): TargetDescription {
     ], path);
 
     return {
-        ...(object.candidateId === undefined
+        ...(
+            object.candidateId === undefined ||
+            object.candidateId === null
             ? {}
             : {
                 candidateId: requireNonEmptyString(

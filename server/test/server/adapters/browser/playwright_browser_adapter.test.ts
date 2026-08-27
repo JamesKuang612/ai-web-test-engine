@@ -787,6 +787,84 @@ describe('PlaywrightBrowserAdapter', () => {
         }
     }).timeout(15_000);
 
+    it('把视觉坐标反查为 PageObservation 候选并继续使用 DOM 点击', async () => {
+        const adapter = new PlaywrightBrowserAdapter({
+            visualTargetLocator: {
+                locate: () => Promise.resolve({
+                    center: [
+                        45,
+                        45
+                    ],
+                    rect: {
+                        left: 20,
+                        top: 20,
+                        width: 50,
+                        height: 50
+                    }
+                })
+            }
+        });
+        const session = await adapter.start(START_OPTIONS);
+
+        try {
+            const page = requireManagedPage(adapter, session);
+            await page.setContent([
+                '<!doctype html><body>',
+                '<div id="visual-back" style="position:fixed;left:20px;',
+                'top:20px;width:50px;height:50px">返回</div>',
+                '<script>',
+                'document.querySelector("#visual-back").addEventListener(',
+                '"click", () => { document.body.dataset.clicked = "true"; });',
+                '</script>',
+                '</body>'
+            ].join(''));
+            const ordinary = await adapter.observe(session);
+            assert.equal(
+                ordinary.interactiveElements.some(
+                    (element) => element.attributes.id === 'visual-back'
+                ),
+                false
+            );
+
+            const result = await adapter.enhanceObservationWithVision(
+                session,
+                {
+                    targetDescription: '当前页面内能够返回工作台的控件',
+                    expectedEffect: '返回工作台'
+                },
+                new AbortController().signal
+            );
+
+            assert.equal(result.status, 'grounded', result.summary);
+            const candidate = result.observation?.interactiveElements.find(
+                (element) => element.candidateId === result.candidateId
+            );
+            assert.equal(candidate?.discoverySource, 'vision-assisted');
+            assert.equal(
+                candidate?.visualDescription,
+                '当前页面内能够返回工作台的控件'
+            );
+            assert.equal(candidate?.attributes.id, 'visual-back');
+            const clickResult = await adapter.execute(session, {
+                type: 'CLICK',
+                target: {
+                    candidateId: result.candidateId,
+                    description: '返回工作台控件'
+                },
+                expectedEffect: '返回工作台',
+                reasonSummary: '选择视觉增强候选',
+                risk: 'read-only'
+            });
+            assert.equal(clickResult.status, 'executed');
+            assert.equal(
+                await page.locator('body').getAttribute('data-clicked'),
+                'true'
+            );
+        } finally {
+            await adapter.close(session);
+        }
+    }).timeout(15_000);
+
     it('拒绝尚未支持的动作和不安全的导航地址', async () => {
         const adapter = new PlaywrightBrowserAdapter();
         const session = await adapter.start(START_OPTIONS);

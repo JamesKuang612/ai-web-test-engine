@@ -11,6 +11,10 @@ export interface LocatorHint {
 /** 页面上一个可观察元素的语义、状态和位置摘要。 */
 export interface ObservedElement {
     candidateId: string;
+    /** 元素由常规 DOM 采集发现，或由视觉定位后反查 DOM 补充。 */
+    discoverySource?: 'dom' | 'vision-assisted';
+    /** 视觉定位使用的业务语义，不替代页面本身的可访问名称。 */
+    visualDescription?: string;
     tag: string;
     role?: string;
     name?: string;
