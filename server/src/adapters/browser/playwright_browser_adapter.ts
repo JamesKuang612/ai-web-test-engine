@@ -73,6 +73,8 @@ const OBSERVATION_RETRY_DELAY_MS = 250;
 const CLICK_NAVIGATION_WAIT_MS = 15_000;
 const CLICK_SETTLE_DELAY_MS = 500;
 const CLICK_DOM_CHANGE_WAIT_MS = 2_000;
+const MIN_WAIT_ACTION_MS = 100;
+const MAX_WAIT_ACTION_MS = 5_000;
 const SCREENSHOT_TIMEOUT_MS = 15_000;
 const SCREENSHOT_ATTEMPTS = 2;
 const SCREENSHOT_RETRY_DELAY_MS = 250;
@@ -216,7 +218,7 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
     /**
      * 执行导航、点击、输入等受控浏览器动作。
      *
-     * 当前支持 NAVIGATE、TYPE 和 CLICK；其他动作会返回 UNSUPPORTED_ACTION。
+     * 当前支持导航、输入、点击、选择、勾选和受限等待动作。
      */
     public execute = async (
         session: BrowserSession,
@@ -236,6 +238,30 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
 
         if (command.type === 'CLICK') {
             return await this.executeClick(
+                managedSession,
+                command,
+                startedAt
+            );
+        }
+
+        if (command.type === 'SELECT') {
+            return await this.executeSelect(
+                managedSession,
+                command,
+                startedAt
+            );
+        }
+
+        if (command.type === 'CHECK') {
+            return await this.executeCheck(
+                managedSession,
+                command,
+                startedAt
+            );
+        }
+
+        if (command.type === 'WAIT') {
+            return await this.executeWait(
                 managedSession,
                 command,
                 startedAt
@@ -542,6 +568,173 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
             // 点击可能触发 DOM 更新或页面跳转，旧候选元素不能继续复用。
             session.elementIndex = undefined;
         }
+    }
+
+    /** 按页面显示文本或 option value 精确选择原生下拉框选项。 */
+    private async executeSelect(
+        session: ManagedBrowserSession,
+        command: ActionCommand,
+        startedAt: string
+    ): Promise<ActionResult> {
+        const candidateId = command.target?.candidateId;
+        const value = command.value?.source === 'literal'
+            ? command.value.value
+            : undefined;
+        if (!candidateId || typeof value !== 'string') {
+            return this.createActionResult(startedAt, 'rejected', false, {
+                code: 'INVALID_SELECT_COMMAND',
+                message: 'SELECT 必须提供 candidateId 和字符串选项值。'
+            });
+        }
+        const locator = session.elementIndex?.locators.get(candidateId);
+        if (!locator) {
+            return this.createActionResult(startedAt, 'rejected', false, {
+                code: 'TARGET_NOT_FOUND',
+                message: `当前页面观察中不存在候选元素：${ candidateId }`
+            });
+        }
+        try {
+            if (
+                await locator.count() !== 1
+                || !await locator.isVisible()
+                || !await locator.isEnabled()
+            ) {
+                return this.createActionResult(startedAt, 'rejected', false, {
+                    code: 'TARGET_NOT_ACTIONABLE',
+                    message: `候选元素当前不可唯一操作：${ candidateId }`
+                });
+            }
+            const matches = await this.findSelectOptionMatches(
+                locator,
+                value
+            );
+            if (matches.length !== 1) {
+                return this.createActionResult(startedAt, 'rejected', false, {
+                    code: 'SELECT_OPTION_NOT_UNIQUE',
+                    message: `下拉框中无法唯一匹配选项：${ value }`
+                });
+            }
+            await locator.selectOption(matches[0]);
+            return this.createActionResult(startedAt, 'executed', false);
+        } catch (error) {
+            const timedOut = error instanceof errors.TimeoutError;
+            return this.createActionResult(
+                startedAt,
+                timedOut ? 'timed-out' : 'failed',
+                false,
+                {
+                    code: timedOut ? 'SELECT_TIMEOUT' : 'SELECT_FAILED',
+                    message: timedOut
+                        ? '下拉选择动作执行超时。'
+                        : 'Playwright 无法完成下拉选择动作。'
+                }
+            );
+        } finally {
+            session.elementIndex = undefined;
+        }
+    }
+
+    /** 不执行页面脚本，逐项读取 option，避免测试覆盖插桩污染浏览器上下文。 */
+    private async findSelectOptionMatches(
+        locator: Locator,
+        expected: string
+    ): Promise<Array<{ label?: string, value?: string }>> {
+        const optionLocator = locator.locator('option');
+        const optionCount = await optionLocator.count();
+        const matches: Array<{ label?: string, value?: string }> = [];
+        for (let index = 0; index < optionCount; index += 1) {
+            const option = optionLocator.nth(index);
+            const label = (
+                await option.getAttribute('label')
+                ?? await option.textContent()
+                ?? ''
+            ).trim();
+            const value = await option.getAttribute('value');
+            if (label === expected) {
+                matches.push({ label: expected });
+            } else if (value === expected) {
+                matches.push({ value: expected });
+            }
+        }
+        return matches;
+    }
+
+    /** 将复选框或单选框设置为 Planner 明确指定的布尔状态。 */
+    private async executeCheck(
+        session: ManagedBrowserSession,
+        command: ActionCommand,
+        startedAt: string
+    ): Promise<ActionResult> {
+        const candidateId = command.target?.candidateId;
+        const checked = command.value?.source === 'literal'
+            ? command.value.value
+            : undefined;
+        if (!candidateId || typeof checked !== 'boolean') {
+            return this.createActionResult(startedAt, 'rejected', false, {
+                code: 'INVALID_CHECK_COMMAND',
+                message: 'CHECK 必须提供 candidateId 和布尔字面量。'
+            });
+        }
+        const locator = session.elementIndex?.locators.get(candidateId);
+        if (!locator) {
+            return this.createActionResult(startedAt, 'rejected', false, {
+                code: 'TARGET_NOT_FOUND',
+                message: `当前页面观察中不存在候选元素：${ candidateId }`
+            });
+        }
+        try {
+            if (
+                await locator.count() !== 1
+                || !await locator.isVisible()
+                || !await locator.isEnabled()
+            ) {
+                return this.createActionResult(startedAt, 'rejected', false, {
+                    code: 'TARGET_NOT_ACTIONABLE',
+                    message: `候选元素当前不可唯一操作：${ candidateId }`
+                });
+            }
+            await locator.setChecked(checked);
+            return this.createActionResult(startedAt, 'executed', false);
+        } catch (error) {
+            const timedOut = error instanceof errors.TimeoutError;
+            return this.createActionResult(
+                startedAt,
+                timedOut ? 'timed-out' : 'failed',
+                false,
+                {
+                    code: timedOut ? 'CHECK_TIMEOUT' : 'CHECK_FAILED',
+                    message: timedOut
+                        ? '勾选动作执行超时。'
+                        : 'Playwright 无法完成勾选动作。'
+                }
+            );
+        } finally {
+            session.elementIndex = undefined;
+        }
+    }
+
+    /** 执行有严格上下限的等待，避免模型生成无限或超长暂停。 */
+    private async executeWait(
+        session: ManagedBrowserSession,
+        command: ActionCommand,
+        startedAt: string
+    ): Promise<ActionResult> {
+        const durationMs = command.value?.source === 'literal'
+            ? command.value.value
+            : undefined;
+        if (
+            typeof durationMs !== 'number'
+            || !Number.isInteger(durationMs)
+            || durationMs < MIN_WAIT_ACTION_MS
+            || durationMs > MAX_WAIT_ACTION_MS
+        ) {
+            return this.createActionResult(startedAt, 'rejected', false, {
+                code: 'INVALID_WAIT_COMMAND',
+                message: 'WAIT 必须提供 100～5000 毫秒的整数字面量。'
+            });
+        }
+        await session.page.waitForTimeout(durationMs);
+        return this.createActionResult(startedAt, 'executed', false);
     }
 
     /** 为可能触发异步跳转的点击保留观察窗口，避免过早重复操作。 */

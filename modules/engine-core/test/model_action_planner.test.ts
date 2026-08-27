@@ -115,6 +115,10 @@ describe('ModelActionPlanner', () => {
             adapter.lastRequest?.userPrompt ?? '',
             /locatorHints/u
         );
+        assert.match(
+            adapter.lastRequest?.systemPrompt ?? '',
+            /TYPE、CLICK、SELECT、CHECK 和 WAIT/u
+        );
     });
 
     it('拒绝模型虚构 candidateId', async () => {

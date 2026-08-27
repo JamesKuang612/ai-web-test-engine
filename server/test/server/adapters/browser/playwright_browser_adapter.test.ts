@@ -576,15 +576,113 @@ describe('PlaywrightBrowserAdapter', () => {
         }
     }).timeout(15_000);
 
+    it('执行 SELECT、CHECK 和受限 WAIT 动作', async () => {
+        const testServer = await startTestHttpServer([
+            '<!doctype html><title>表单控件</title><body>',
+            '<label>语言<select aria-label="语言">',
+            '<option value="zh-CN">简体中文</option>',
+            '<option value="en-US" selected>English</option>',
+            '</select></label>',
+            '<label><input type="checkbox">接收通知</label>',
+            '</body>'
+        ].join(''));
+        const adapter = new PlaywrightBrowserAdapter();
+        let session: BrowserSession | undefined;
+
+        try {
+            session = await adapter.start(START_OPTIONS);
+            await adapter.execute(session, createNavigateCommand(testServer.url));
+            const before = await adapter.observe(session);
+            const language = before.interactiveElements.find(
+                (element) => element.name === '语言'
+            );
+            assert.ok(language);
+            const selectResult = await adapter.execute(session, {
+                type: 'SELECT',
+                target: {
+                    candidateId: language.candidateId,
+                    description: '语言下拉框'
+                },
+                value: {
+                    source: 'literal',
+                    value: '简体中文'
+                },
+                reasonSummary: '选择简体中文',
+                risk: 'reversible'
+            });
+            const afterSelect = await adapter.observe(session);
+            const notification = afterSelect.interactiveElements.find(
+                (element) => element.name === '接收通知'
+            );
+            assert.ok(notification);
+            const checkResult = await adapter.execute(session, {
+                type: 'CHECK',
+                target: {
+                    candidateId: notification.candidateId,
+                    description: '接收通知复选框'
+                },
+                value: {
+                    source: 'literal',
+                    value: true
+                },
+                reasonSummary: '勾选接收通知',
+                risk: 'reversible'
+            });
+            const afterCheck = await adapter.observe(session);
+            const waitResult = await adapter.execute(session, {
+                type: 'WAIT',
+                value: {
+                    source: 'literal',
+                    value: 100
+                },
+                reasonSummary: '等待异步内容',
+                risk: 'read-only'
+            });
+
+            assert.equal(
+                selectResult.status,
+                'executed',
+                JSON.stringify(selectResult)
+            );
+            assert.equal(
+                afterSelect.interactiveElements.find(
+                    (element) => element.name === '语言'
+                )?.valueState,
+                'filled'
+            );
+            assert.equal(
+                checkResult.status,
+                'executed',
+                JSON.stringify(checkResult)
+            );
+            assert.equal(
+                afterCheck.interactiveElements.find(
+                    (element) => element.name === '接收通知'
+                )?.checked,
+                true
+            );
+            assert.equal(
+                waitResult.status,
+                'executed',
+                JSON.stringify(waitResult)
+            );
+        } finally {
+            if (session) {
+                await adapter.close(session);
+            }
+            await testServer.close();
+        }
+    }).timeout(15_000);
+
     it('拒绝尚未支持的动作和不安全的导航地址', async () => {
         const adapter = new PlaywrightBrowserAdapter();
         const session = await adapter.start(START_OPTIONS);
 
         try {
             const unsupportedResult = await adapter.execute(session, {
-                type: 'SELECT',
-                reasonSummary: '选择工作区',
-                risk: 'reversible'
+                type: 'BACK',
+                reasonSummary: '返回上一页',
+                risk: 'read-only'
             });
             assert.equal(unsupportedResult.status, 'rejected');
             assert.equal(

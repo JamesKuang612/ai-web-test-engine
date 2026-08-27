@@ -13,9 +13,12 @@ import type {
 
 /** 可由确定性回放器执行的动作集合。 */
 export type CompiledActionType =
+    | 'CHECK'
     | 'CLICK'
     | 'NAVIGATE'
-    | 'TYPE';
+    | 'SELECT'
+    | 'TYPE'
+    | 'WAIT';
 
 /** 不依赖单次页面采集 candidateId 的元素语义身份。 */
 export interface CompiledTargetIdentity {

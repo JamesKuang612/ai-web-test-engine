@@ -86,3 +86,69 @@ describe('ActionCommand Schema', () => {
         );
     });
 });
+
+describe('ActionCommand Schema 扩展动作', () => {
+    it('解析下拉选择、复选框和受限等待动作', () => {
+        const select = actionCommandSchema.parse({
+            type: 'SELECT',
+            target: {
+                candidateId: 'select-1',
+                description: '语言下拉框'
+            },
+            value: {
+                source: 'literal',
+                value: '简体中文'
+            },
+            reasonSummary: '选择页面语言',
+            risk: 'reversible'
+        });
+        const check = actionCommandSchema.parse({
+            type: 'CHECK',
+            target: {
+                candidateId: 'checkbox-1',
+                description: '记住我'
+            },
+            value: {
+                source: 'literal',
+                value: true
+            },
+            reasonSummary: '勾选记住我',
+            risk: 'reversible'
+        });
+        const wait = actionCommandSchema.parse({
+            type: 'WAIT',
+            value: {
+                source: 'literal',
+                value: 1_000
+            },
+            reasonSummary: '等待异步内容渲染',
+            risk: 'read-only'
+        });
+
+        assert.equal(select.type, 'SELECT');
+        assert.equal(check.value?.source, 'literal');
+        assert.equal(wait.type, 'WAIT');
+    });
+
+    it('拒绝模糊勾选状态和越界等待时间', () => {
+        assert.throws(() => actionCommandSchema.parse({
+            type: 'CHECK',
+            target: {
+                candidateId: 'checkbox-1',
+                description: '记住我'
+            },
+            value: null,
+            reasonSummary: '切换记住我',
+            risk: 'reversible'
+        }), /CHECK 必须提供输入值引用/u);
+        assert.throws(() => actionCommandSchema.parse({
+            type: 'WAIT',
+            value: {
+                source: 'literal',
+                value: 30_000
+            },
+            reasonSummary: '长时间等待',
+            risk: 'read-only'
+        }), /100～5000/u);
+    });
+});

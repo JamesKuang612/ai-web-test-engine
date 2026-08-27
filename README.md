@@ -48,6 +48,10 @@
   → 本地 Run、Observation、Screenshot、Trace、Result
 ```
 
+通用交互目前支持 `NAVIGATE`、`TYPE`、`CLICK`、`SELECT`、`CHECK`
+和 100～5000 毫秒的受限 `WAIT`。这些动作均可进入成功轨迹并参与结构化回放；
+连续 `WAIT` 会被执行引擎主动终止，避免无效长时间等待。
+
 服务启动后，可以在 PowerShell 中执行：
 
 ```powershell

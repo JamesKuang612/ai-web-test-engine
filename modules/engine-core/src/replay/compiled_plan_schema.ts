@@ -46,9 +46,12 @@ const IDENTITY_FIELDS: Array<keyof CompiledTargetIdentity> = [
     'inputType'
 ];
 const COMPILED_ACTION_TYPES = new Set<CompiledActionType>([
+    'CHECK',
     'CLICK',
     'NAVIGATE',
-    'TYPE'
+    'SELECT',
+    'TYPE',
+    'WAIT'
 ]);
 const LOCATOR_STRATEGIES = new Set<LocatorHint['strategy']>([
     'css',
@@ -134,6 +137,7 @@ export function parseCompiledPlan(value: unknown): CompiledPlan {
         );
     }
     requireUniqueStepIds(steps);
+    requireNoConsecutiveWaits(steps);
 
     return {
         schemaVersion: 1,
@@ -146,6 +150,18 @@ export function parseCompiledPlan(value: unknown): CompiledPlan {
         testIntent,
         steps
     };
+}
+
+function requireNoConsecutiveWaits(steps: CompiledStep[]): void {
+    const consecutiveWaitIndex = steps.findIndex((step, index) => (
+        step.type === 'WAIT' && steps[index - 1]?.type === 'WAIT'
+    ));
+    if (consecutiveWaitIndex >= 0) {
+        throw new CompiledPlanSchemaError(
+            `CompiledPlan.steps[${ consecutiveWaitIndex }]`,
+            '不能包含连续 WAIT 步骤'
+        );
+    }
 }
 
 /** 解析并执行动作类型相关的目标和值约束。 */
@@ -271,10 +287,14 @@ function parseValue(value: unknown, path: string): ValueReference {
     const source = requireString(object.source, `${ path }.source`);
     if (source === 'literal') {
         requireExactFields(object, [ 'source', 'value' ], path);
-        if (typeof object.value !== 'string') {
+        if (
+            typeof object.value !== 'string'
+            && typeof object.value !== 'number'
+            && typeof object.value !== 'boolean'
+        ) {
             throw new CompiledPlanSchemaError(
                 `${ path }.value`,
-                '计划中的字面量只允许用于字符串 URL'
+                '计划中的字面量只允许字符串、数字或布尔值'
             );
         }
         return {
@@ -317,15 +337,49 @@ function requireStepShape(
         requireAllowedUrl(value.value, allowedHosts, `${ path }.value.value`);
         return;
     }
+    if (type === 'WAIT') {
+        if (
+            target
+            || value?.source !== 'literal'
+            || typeof value.value !== 'number'
+            || !Number.isInteger(value.value)
+            || value.value < 100
+            || value.value > 5_000
+        ) {
+            throw new CompiledPlanSchemaError(
+                path,
+                'WAIT 只能携带 100～5000 毫秒的整数字面量'
+            );
+        }
+        return;
+    }
     if (!target) {
         throw new CompiledPlanSchemaError(
             `${ path }.target`,
             `${ type } 必须提供稳定元素目标`
         );
     }
+    requireClickShape(type, value, path);
+    requireTypeShape(type, value, path);
+    requireSelectShape(type, value, path);
+    requireCheckShape(type, value, path);
+}
+
+function requireClickShape(
+    type: CompiledActionType,
+    value: ValueReference | undefined,
+    path: string
+): void {
     if (type === 'CLICK' && value) {
         throw new CompiledPlanSchemaError(path, 'CLICK 不能携带输入值');
     }
+}
+
+function requireTypeShape(
+    type: CompiledActionType,
+    value: ValueReference | undefined,
+    path: string
+): void {
     if (
         type === 'TYPE'
         && value?.source !== 'environment'
@@ -334,6 +388,48 @@ function requireStepShape(
         throw new CompiledPlanSchemaError(
             `${ path }.value`,
             'TYPE 必须保留环境变量或生成值引用'
+        );
+    }
+}
+
+function requireSelectShape(
+    type: CompiledActionType,
+    value: ValueReference | undefined,
+    path: string
+): void {
+    if (
+        type === 'SELECT'
+        && !(
+            value?.source === 'environment'
+            || value?.source === 'generated'
+            || (
+                value?.source === 'literal'
+                && typeof value.value === 'string'
+            )
+        )
+    ) {
+        throw new CompiledPlanSchemaError(
+            `${ path }.value`,
+            'SELECT 必须提供字符串选项值引用'
+        );
+    }
+}
+
+function requireCheckShape(
+    type: CompiledActionType,
+    value: ValueReference | undefined,
+    path: string
+): void {
+    if (
+        type === 'CHECK'
+        && (
+            value?.source !== 'literal'
+            || typeof value.value !== 'boolean'
+        )
+    ) {
+        throw new CompiledPlanSchemaError(
+            `${ path }.value`,
+            'CHECK 必须提供布尔字面量'
         );
     }
 }

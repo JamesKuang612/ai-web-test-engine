@@ -60,6 +60,13 @@ const ANSI_ESCAPE_PATTERN = new RegExp(
     `${ String.fromCharCode(27) }\\[[0-?]*[ -/]*[@-~]`,
     'gu'
 );
+const EXECUTABLE_PLANNED_ACTIONS = new Set<ActionCommand['type']>([
+    'CHECK',
+    'CLICK',
+    'SELECT',
+    'TYPE',
+    'WAIT'
+]);
 
 /** RunCoordinator 启动浏览器时使用的可覆盖参数。 */
 export interface RunCoordinatorOptions {
@@ -445,13 +452,26 @@ export class RunCoordinator implements ExecutionEngine {
                     stopCommand: command
                 };
             }
-            if (command.type !== 'TYPE' && command.type !== 'CLICK') {
+            if (!EXECUTABLE_PLANNED_ACTIONS.has(command.type)) {
                 return {
                     navigation,
                     plannedActions,
                     stopCommand: this.createStopCommand(
                         'UNCERTAIN',
                         `当前执行阶段不支持 Planner 返回的 ${ command.type } 动作。`
+                    )
+                };
+            }
+            if (
+                command.type === 'WAIT'
+                && plannedActions.at(-1)?.command.type === 'WAIT'
+            ) {
+                return {
+                    navigation,
+                    plannedActions,
+                    stopCommand: this.createStopCommand(
+                        'UNCERTAIN',
+                        'Planner 连续返回 WAIT，已停止无效等待。'
                     )
                 };
             }
@@ -465,12 +485,14 @@ export class RunCoordinator implements ExecutionEngine {
                 beforeObservationReference
             );
             plannedActions.push(execution);
-            this.updateRepeatedStateCount(
-                context,
-                runtime,
-                previousFingerprint,
-                execution.afterObservation.stateFingerprint
-            );
+            if (command.type !== 'WAIT') {
+                this.updateRepeatedStateCount(
+                    context,
+                    runtime,
+                    previousFingerprint,
+                    execution.afterObservation.stateFingerprint
+                );
+            }
 
             if (execution.result.status !== 'executed') {
                 return {
@@ -1301,6 +1323,26 @@ export class RunCoordinator implements ExecutionEngine {
         if (command.type === 'TYPE') {
             return this.createTypeEffect(command, result, after);
         }
+        if (command.type === 'SELECT') {
+            return this.createSelectEffect(command, result, after);
+        }
+        if (command.type === 'CHECK') {
+            return this.createCheckEffect(command, result, after);
+        }
+        if (command.type === 'WAIT') {
+            const confirmed = result.status === 'executed';
+            return {
+                status: confirmed ? 'confirmed' : 'contradicted',
+                expectedEffect: command.expectedEffect ?? '等待异步页面内容',
+                evidence: [
+                    after.observationReference,
+                    after.screenshotReference
+                ],
+                summary: confirmed
+                    ? '等待动作已经完成。'
+                    : '浏览器没有成功完成等待动作。'
+            };
+        }
         const changed = before?.stateFingerprint !==
             after.observation.stateFingerprint;
         const pageReady = this.isObservationReady(after.observation);
@@ -1355,6 +1397,62 @@ export class RunCoordinator implements ExecutionEngine {
                 : result.status === 'executed'
                     ? '输入动作已执行，但页面观察未确认填写状态。'
                     : '浏览器没有成功执行输入动作。'
+        };
+    }
+
+    /** 根据目标下拉框的值状态验证 SELECT 是否产生预期效果。 */
+    private createSelectEffect(
+        command: ActionCommand,
+        result: ActionResult,
+        after: ObservationEvidence
+    ): EffectVerification {
+        const valueState = after.observation.interactiveElements.find(
+            (element) => element.candidateId === command.target?.candidateId
+        )?.valueState;
+        const confirmed = result.status === 'executed'
+            && valueState === 'filled';
+        return {
+            status: result.status !== 'executed'
+                ? 'contradicted'
+                : confirmed ? 'confirmed' : 'not-observed',
+            expectedEffect: command.expectedEffect ?? '目标下拉框完成选择',
+            evidence: [
+                after.observationReference,
+                after.screenshotReference
+            ],
+            summary: confirmed
+                ? '目标下拉框已显示为选中状态。'
+                : '选择动作后没有确认目标下拉框的选中状态。'
+        };
+    }
+
+    /** 根据目标元素的 checked 状态验证 CHECK 是否达到指定布尔值。 */
+    private createCheckEffect(
+        command: ActionCommand,
+        result: ActionResult,
+        after: ObservationEvidence
+    ): EffectVerification {
+        const checked = after.observation.interactiveElements.find(
+            (element) => element.candidateId === command.target?.candidateId
+        )?.checked;
+        const expected = command.value?.source === 'literal'
+            ? command.value.value
+            : undefined;
+        const confirmed = result.status === 'executed'
+            && typeof expected === 'boolean'
+            && checked === expected;
+        return {
+            status: result.status !== 'executed'
+                ? 'contradicted'
+                : confirmed ? 'confirmed' : 'not-observed',
+            expectedEffect: command.expectedEffect ?? '目标复选框状态正确',
+            evidence: [
+                after.observationReference,
+                after.screenshotReference
+            ],
+            summary: confirmed
+                ? `目标复选框已${ expected ? '勾选' : '取消勾选' }。`
+                : '操作后没有确认目标复选框的勾选状态。'
         };
     }
 

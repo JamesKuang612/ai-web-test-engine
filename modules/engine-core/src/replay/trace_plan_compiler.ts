@@ -125,9 +125,21 @@ export class TracePlanCompiler {
             return compiled;
         }
 
+        if (type === 'WAIT') {
+            compiled.value = this.compileWaitValue(step);
+
+            return compiled;
+        }
+
         compiled.target = this.compileTarget(step);
         if (type === 'TYPE') {
             compiled.value = this.compileTypeValue(step);
+        }
+        if (type === 'SELECT') {
+            compiled.value = this.compileSelectValue(step);
+        }
+        if (type === 'CHECK') {
+            compiled.value = this.compileCheckValue(step);
         }
 
         return compiled;
@@ -137,7 +149,14 @@ export class TracePlanCompiler {
         type: ActionCommand['type'],
         sequence: number
     ): CompiledActionType {
-        if (type === 'CLICK' || type === 'NAVIGATE' || type === 'TYPE') {
+        if (
+            type === 'CHECK'
+            || type === 'CLICK'
+            || type === 'NAVIGATE'
+            || type === 'SELECT'
+            || type === 'TYPE'
+            || type === 'WAIT'
+        ) {
             return type;
         }
 
@@ -179,6 +198,54 @@ export class TracePlanCompiler {
             );
         }
 
+        return structuredClone(value);
+    }
+
+    private compileSelectValue(
+        step: CompilableTraceStep
+    ): CompiledStep['value'] {
+        const value = step.command.value;
+        if (
+            !value
+            || (
+                value.source === 'literal'
+                && typeof value.value !== 'string'
+            )
+        ) {
+            throw new TracePlanCompileError(
+                `第 ${ step.sequence } 步 SELECT 必须提供字符串选项值。`
+            );
+        }
+        return structuredClone(value);
+    }
+
+    private compileCheckValue(
+        step: CompilableTraceStep
+    ): CompiledStep['value'] {
+        const value = step.command.value;
+        if (value?.source !== 'literal' || typeof value.value !== 'boolean') {
+            throw new TracePlanCompileError(
+                `第 ${ step.sequence } 步 CHECK 必须提供布尔字面量。`
+            );
+        }
+        return structuredClone(value);
+    }
+
+    private compileWaitValue(
+        step: CompilableTraceStep
+    ): CompiledStep['value'] {
+        const value = step.command.value;
+        if (
+            value?.source !== 'literal'
+            || typeof value.value !== 'number'
+            || !Number.isInteger(value.value)
+            || value.value < 100
+            || value.value > 5_000
+        ) {
+            throw new TracePlanCompileError(
+                `第 ${ step.sequence } 步 WAIT 必须提供 100～5000 毫秒整数。`
+            );
+        }
         return structuredClone(value);
     }
 

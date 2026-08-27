@@ -240,6 +240,22 @@ export class DeterministicPlanReplayer {
         if (command.type === 'TYPE') {
             return this.verifyTypeEffect(command, result, after);
         }
+        if (command.type === 'SELECT') {
+            return this.verifySelectEffect(command, result, after);
+        }
+        if (command.type === 'CHECK') {
+            return this.verifyCheckEffect(command, result, after);
+        }
+        if (command.type === 'WAIT') {
+            return this.createEffect(
+                command,
+                result.status === 'executed',
+                result.status,
+                result.status === 'executed'
+                    ? '等待动作已经按计划完成。'
+                    : '等待动作未能正常完成。'
+            );
+        }
 
         const changed = result.browserSignals.urlChanged
             || before.stateFingerprint !== after.stateFingerprint;
@@ -302,6 +318,52 @@ export class DeterministicPlanReplayer {
             confirmed
                 ? '目标输入框已显示为填写状态。'
                 : '输入后没有确认目标输入框的填写状态。'
+        );
+    }
+
+    private verifySelectEffect(
+        command: ActionCommand,
+        result: ActionResult,
+        after: PageObservation
+    ): EffectVerification {
+        const valueState = after.interactiveElements.find(
+            (element) => element.candidateId === command.target?.candidateId
+        )?.valueState;
+        const confirmed = result.status === 'executed'
+            && valueState === 'filled';
+
+        return this.createEffect(
+            command,
+            confirmed,
+            result.status,
+            confirmed
+                ? '目标下拉框已显示为选中状态。'
+                : '选择后没有确认目标下拉框的选中状态。'
+        );
+    }
+
+    private verifyCheckEffect(
+        command: ActionCommand,
+        result: ActionResult,
+        after: PageObservation
+    ): EffectVerification {
+        const checked = after.interactiveElements.find(
+            (element) => element.candidateId === command.target?.candidateId
+        )?.checked;
+        const expected = command.value?.source === 'literal'
+            ? command.value.value
+            : undefined;
+        const confirmed = result.status === 'executed'
+            && typeof expected === 'boolean'
+            && checked === expected;
+
+        return this.createEffect(
+            command,
+            confirmed,
+            result.status,
+            confirmed
+                ? `目标复选框已${ expected ? '勾选' : '取消勾选' }。`
+                : '操作后没有确认目标复选框的勾选状态。'
         );
     }
 

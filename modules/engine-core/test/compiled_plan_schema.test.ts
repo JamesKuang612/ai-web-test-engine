@@ -25,6 +25,45 @@ describe('CompiledPlan Schema', () => {
             CompiledPlanSchemaError
         );
     });
+
+    it('解析可回放的 SELECT、CHECK 和 WAIT 步骤', () => {
+        const plan = createPlan();
+        plan.steps.push({
+            id: 'step-3',
+            sequence: 3,
+            type: 'SELECT',
+            target: createTarget('语言', 'select'),
+            value: {
+                source: 'literal',
+                value: '简体中文'
+            },
+            expectedEffect: '语言下拉框显示简体中文',
+            risk: 'reversible'
+        }, {
+            id: 'step-4',
+            sequence: 4,
+            type: 'CHECK',
+            target: createTarget('记住我', 'input'),
+            value: {
+                source: 'literal',
+                value: true
+            },
+            expectedEffect: '记住我复选框已勾选',
+            risk: 'reversible'
+        }, {
+            id: 'step-5',
+            sequence: 5,
+            type: 'WAIT',
+            value: {
+                source: 'literal',
+                value: 500
+            },
+            expectedEffect: '等待异步内容渲染',
+            risk: 'read-only'
+        });
+
+        assert.deepEqual(parseCompiledPlan(plan), plan);
+    });
 });
 
 describe('CompiledPlan Schema 安全边界', () => {
@@ -50,7 +89,45 @@ describe('CompiledPlan Schema 安全边界', () => {
             /必须与 testIntent.allowedHosts 一致/u
         );
     });
+
+    it('拒绝连续 WAIT 造成无效长时间阻塞', () => {
+        const plan = createPlan();
+        plan.steps.push(createWaitStep(3), createWaitStep(4));
+
+        assert.throws(
+            () => parseCompiledPlan(plan),
+            /不能包含连续 WAIT/u
+        );
+    });
 });
+
+function createTarget(label: string, tag: string) {
+    return {
+        description: label,
+        locatorHints: [{
+            strategy: 'label' as const,
+            value: label
+        }],
+        identity: {
+            tag,
+            label
+        }
+    };
+}
+
+function createWaitStep(sequence: number): CompiledPlan['steps'][number] {
+    return {
+        id: `step-${ sequence }`,
+        sequence,
+        type: 'WAIT',
+        value: {
+            source: 'literal',
+            value: 500
+        },
+        expectedEffect: '等待异步内容稳定',
+        risk: 'read-only'
+    };
+}
 
 function createPlan(): CompiledPlan {
     return {

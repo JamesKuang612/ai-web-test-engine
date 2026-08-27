@@ -126,9 +126,12 @@
         "CompiledActionType": {
             "description": "可由确定性回放器执行的动作集合。",
             "enum": [
+                "CHECK",
                 "CLICK",
                 "NAVIGATE",
-                "TYPE"
+                "SELECT",
+                "TYPE",
+                "WAIT"
             ],
             "type": "string"
         },

@@ -261,6 +261,58 @@ describe('RunCoordinator', () => {
     });
 });
 
+describe('RunCoordinator 扩展动作', () => {
+    it('允许受限 WAIT 进入成功轨迹并完成确定性回放', async () => {
+        const artifactStore = new FakeArtifactStore();
+        const verdictEvaluator = new FakeVerdictEvaluator(passVerdict);
+        const waitCommand: ActionCommand = {
+            type: 'WAIT',
+            value: {
+                source: 'literal',
+                value: 500
+            },
+            expectedEffect: '等待登录页异步内容稳定',
+            reasonSummary: '页面仍在加载提示内容',
+            risk: 'read-only'
+        };
+        const actionPlanner = new FakeActionPlanner([
+            waitCommand,
+            waitCommand
+        ]);
+        const coordinator = new RunCoordinator(
+            artifactStore,
+            new FakeRunEventPublisher(),
+            new FakeIntentBuilder(testIntent),
+            new FakeBrowserAdapter(),
+            {
+                actionPlanner,
+                verdictEvaluator
+            },
+            new FakeEnvironmentValueResolver()
+        );
+
+        const result = await coordinator.start(
+            startInput,
+            new AbortController().signal
+        );
+        const compiledPlan = artifactStore.savedJson.find(
+            ({ name }) => name === 'compiled-plan'
+        )?.value as unknown as CompiledPlan;
+
+        assert.equal(result.result, 'PASS');
+        assert.deepEqual(
+            artifactStore.traces.map((trace) => trace.command.type),
+            [ 'NAVIGATE', 'WAIT' ]
+        );
+        assert.deepEqual(
+            compiledPlan.steps.map((step) => step.type),
+            [ 'NAVIGATE', 'WAIT' ]
+        );
+        assert.equal(result.metrics.repeatedStateActionCount, 0);
+        assert.equal(actionPlanner.callCount, 2);
+    });
+});
+
 interface CompletedRunState {
     actionPlanner: FakeActionPlanner;
     artifactStore: FakeArtifactStore;

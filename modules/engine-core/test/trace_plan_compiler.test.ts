@@ -39,42 +39,7 @@ describe('TracePlanCompiler', () => {
             runId: 'run-1',
             testId: 'login-jiandaoyun',
             testIntent: intent,
-            steps: [
-                createStep(1, {
-                    type: 'NAVIGATE',
-                    value: {
-                        source: 'literal',
-                        value: 'https://test.jdydevelop.com/portal/signin'
-                    },
-                    expectedEffect: '打开登录页',
-                    reasonSummary: '进入登录页',
-                    risk: 'read-only'
-                }, []),
-                createStep(2, {
-                    type: 'TYPE',
-                    target: {
-                        candidateId: 'runtime-username',
-                        description: '账号输入框'
-                    },
-                    value: {
-                        source: 'environment',
-                        key: 'username'
-                    },
-                    expectedEffect: '账号输入框变为已填写',
-                    reasonSummary: '填写账号',
-                    risk: 'reversible'
-                }, [ createUsernameElement() ]),
-                createStep(3, {
-                    type: 'CLICK',
-                    target: {
-                        candidateId: 'runtime-submit',
-                        description: '登录按钮'
-                    },
-                    expectedEffect: '页面进入工作台',
-                    reasonSummary: '提交登录',
-                    risk: 'side-effect'
-                }, [ createSubmitElement() ])
-            ]
+            steps: createFullTraceSteps()
         });
 
         assert.equal(plan.planId, 'plan-1');
@@ -86,6 +51,9 @@ describe('TracePlanCompiler', () => {
         }]);
         assert.equal(JSON.stringify(plan).includes('candidateId'), false);
         assert.equal(JSON.stringify(plan).includes('runtime-username'), false);
+        assert.equal(plan.steps[3]?.value?.source, 'literal');
+        assert.equal(plan.steps[4]?.value?.source, 'literal');
+        assert.equal(plan.steps[5]?.type, 'WAIT');
     });
 
 });
@@ -150,6 +118,95 @@ describe('TracePlanCompiler 安全约束', () => {
         }), TracePlanCompileError);
     });
 });
+
+function createFullTraceSteps(): CompilableTraceStep[] {
+    return [
+        createStep(1, {
+            type: 'NAVIGATE',
+            value: {
+                source: 'literal',
+                value: 'https://test.jdydevelop.com/portal/signin'
+            },
+            expectedEffect: '打开登录页',
+            reasonSummary: '进入登录页',
+            risk: 'read-only'
+        }, []),
+        createStep(2, {
+            type: 'TYPE',
+            target: {
+                candidateId: 'runtime-username',
+                description: '账号输入框'
+            },
+            value: {
+                source: 'environment',
+                key: 'username'
+            },
+            expectedEffect: '账号输入框变为已填写',
+            reasonSummary: '填写账号',
+            risk: 'reversible'
+        }, [ createUsernameElement() ]),
+        createStep(3, {
+            type: 'CLICK',
+            target: {
+                candidateId: 'runtime-submit',
+                description: '登录按钮'
+            },
+            expectedEffect: '页面进入工作台',
+            reasonSummary: '提交登录',
+            risk: 'side-effect'
+        }, [ createSubmitElement() ]),
+        createStep(4, createSelectCommand(), [
+            createControlElement('runtime-language', 'select', '语言')
+        ]),
+        createStep(5, createCheckCommand(), [
+            createControlElement('runtime-remember', 'input', '记住我')
+        ]),
+        createStep(6, {
+            type: 'WAIT',
+            value: {
+                source: 'literal',
+                value: 500
+            },
+            expectedEffect: '等待异步内容渲染',
+            reasonSummary: '短暂等待页面',
+            risk: 'read-only'
+        }, [])
+    ];
+}
+
+function createSelectCommand(): ActionCommand {
+    return {
+        type: 'SELECT',
+        target: {
+            candidateId: 'runtime-language',
+            description: '语言下拉框'
+        },
+        value: {
+            source: 'literal',
+            value: '简体中文'
+        },
+        expectedEffect: '语言下拉框显示简体中文',
+        reasonSummary: '选择页面语言',
+        risk: 'reversible'
+    };
+}
+
+function createCheckCommand(): ActionCommand {
+    return {
+        type: 'CHECK',
+        target: {
+            candidateId: 'runtime-remember',
+            description: '记住我复选框'
+        },
+        value: {
+            source: 'literal',
+            value: true
+        },
+        expectedEffect: '记住我复选框已勾选',
+        reasonSummary: '勾选记住我',
+        risk: 'reversible'
+    };
+}
 
 function createStep(
     sequence: number,
@@ -224,6 +281,29 @@ function createUsernameElement(): ObservedElement {
         locatorHints: [{
             strategy: 'label',
             value: '账号'
+        }]
+    };
+}
+
+function createControlElement(
+    candidateId: string,
+    tag: string,
+    label: string
+): ObservedElement {
+    return {
+        candidateId,
+        tag,
+        label,
+        valueState: tag === 'select' ? 'filled' : undefined,
+        checked: tag === 'input' ? true : undefined,
+        disabled: false,
+        visible: true,
+        inViewport: true,
+        attributes: {},
+        nearbyText: [],
+        locatorHints: [{
+            strategy: 'label',
+            value: label
         }]
     };
 }

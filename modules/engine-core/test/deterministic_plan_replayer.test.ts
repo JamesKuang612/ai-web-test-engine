@@ -98,6 +98,38 @@ describe('DeterministicPlanReplayer', () => {
         ));
         assert.equal(browser.closeCount, 1);
     });
+
+    it('确定性回放 SELECT、CHECK 和 WAIT 计划步骤', async () => {
+        const browser = new FakeReplayBrowser([
+            createObservation('blank', 'about:blank', []),
+            createObservation('form-1', loginUrl, formElements('empty', false)),
+            createObservation('form-2', loginUrl, formElements('empty', false)),
+            createObservation('form-3', loginUrl, formElements('filled', false)),
+            createObservation('form-4', loginUrl, formElements('filled', false)),
+            createObservation('form-5', loginUrl, formElements('filled', true)),
+            createObservation('form-6', loginUrl, formElements('filled', true)),
+            createObservation('form-7', loginUrl, formElements('filled', true))
+        ]);
+        const replayer = new DeterministicPlanReplayer(
+            browser,
+            new FakeValueResolver()
+        );
+
+        const execution = await replayer.replay({
+            plan: createAdvancedPlan(),
+            environment,
+            signal: new AbortController().signal
+        });
+
+        assert.deepEqual(
+            browser.commands.map((command) => command.type),
+            [ 'NAVIGATE', 'SELECT', 'CHECK', 'WAIT' ]
+        );
+        assert.equal(execution.actionCount, 4);
+        assert.equal(execution.steps.every(
+            (step) => step.effect.status === 'confirmed'
+        ), true);
+    });
 });
 
 describe('CompiledTargetResolver', () => {
@@ -252,6 +284,62 @@ function createPlan(): CompiledPlan {
     };
 }
 
+function createAdvancedPlan(): CompiledPlan {
+    const plan = createPlan();
+    return {
+        ...plan,
+        steps: [{
+            ...plan.steps[0]
+        }, {
+            id: 'step-2',
+            sequence: 2,
+            type: 'SELECT',
+            target: createCompiledControl('语言', 'select'),
+            value: {
+                source: 'literal',
+                value: '简体中文'
+            },
+            expectedEffect: '语言下拉框显示简体中文',
+            risk: 'reversible'
+        }, {
+            id: 'step-3',
+            sequence: 3,
+            type: 'CHECK',
+            target: createCompiledControl('接收通知', 'input'),
+            value: {
+                source: 'literal',
+                value: true
+            },
+            expectedEffect: '接收通知复选框已勾选',
+            risk: 'reversible'
+        }, {
+            id: 'step-4',
+            sequence: 4,
+            type: 'WAIT',
+            value: {
+                source: 'literal',
+                value: 500
+            },
+            expectedEffect: '等待异步内容稳定',
+            risk: 'read-only'
+        }]
+    };
+}
+
+function createCompiledControl(label: string, tag: string): CompiledTarget {
+    return {
+        description: label,
+        locatorHints: [{
+            strategy: 'label',
+            value: label
+        }],
+        identity: {
+            tag,
+            label
+        }
+    };
+}
+
 function createObservation(
     observationId: string,
     url: string,
@@ -302,6 +390,43 @@ function loginElements(
             }]
         }
     ];
+}
+
+function formElements(
+    selectState: ObservedElement['valueState'],
+    checked: boolean
+): ObservedElement[] {
+    return [{
+        candidateId: 'language-current',
+        tag: 'select',
+        label: '语言',
+        valueState: selectState,
+        disabled: false,
+        visible: true,
+        inViewport: true,
+        attributes: {},
+        nearbyText: [],
+        locatorHints: [{
+            strategy: 'label',
+            value: '语言'
+        }]
+    }, {
+        candidateId: 'notification-current',
+        tag: 'input',
+        label: '接收通知',
+        checked,
+        disabled: false,
+        visible: true,
+        inViewport: true,
+        attributes: {
+            type: 'checkbox'
+        },
+        nearbyText: [],
+        locatorHints: [{
+            strategy: 'label',
+            value: '接收通知'
+        }]
+    }];
 }
 
 function createUsernameElement(

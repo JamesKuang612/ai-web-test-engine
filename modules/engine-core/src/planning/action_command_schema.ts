@@ -23,6 +23,19 @@ const ACTION_TYPES = new Set<ActionType>([
     'UNCERTAIN',
     'WAIT'
 ]);
+const TARGET_ACTIONS = new Set<ActionType>([
+    'CHECK',
+    'CLICK',
+    'INSPECT',
+    'SCROLL',
+    'SELECT',
+    'TYPE'
+]);
+const VALUE_ACTIONS = new Set<ActionType>([
+    'CHECK',
+    'SELECT',
+    'TYPE'
+]);
 
 const ACTION_COMMAND_FIELDS = [
     'type',
@@ -209,26 +222,20 @@ function requireActionFields(
     target: TargetDescription | undefined,
     value: ValueReference | undefined
 ): void {
-    const targetActions = new Set<ActionType>([
-        'CHECK',
-        'CLICK',
-        'INSPECT',
-        'SCROLL',
-        'SELECT',
-        'TYPE'
-    ]);
-    if (targetActions.has(type) && !target?.candidateId) {
+    if (TARGET_ACTIONS.has(type) && !target?.candidateId) {
         throw new ActionCommandSchemaError(
             'ActionCommand.target.candidateId',
             `${ type } 必须引用 PageObservation 中的 candidateId`
         );
     }
-    if ((type === 'TYPE' || type === 'SELECT') && !value) {
+    if (VALUE_ACTIONS.has(type) && !value) {
         throw new ActionCommandSchemaError(
             'ActionCommand.value',
             `${ type } 必须提供输入值引用`
         );
     }
+    requireCheckValue(type, value);
+    requireWaitShape(type, target, value);
     if (
         (type === 'FINISH' || type === 'FAIL' || type === 'UNCERTAIN') &&
         (target || value)
@@ -236,6 +243,46 @@ function requireActionFields(
         throw new ActionCommandSchemaError(
             'ActionCommand',
             `${ type } 不能携带 target 或 value`
+        );
+    }
+}
+
+function requireCheckValue(
+    type: ActionType,
+    value: ValueReference | undefined
+): void {
+    if (
+        type === 'CHECK'
+        && (value?.source !== 'literal' || typeof value.value !== 'boolean')
+    ) {
+        throw new ActionCommandSchemaError(
+            'ActionCommand.value',
+            'CHECK 必须提供布尔字面量表示期望勾选状态'
+        );
+    }
+}
+
+function requireWaitShape(
+    type: ActionType,
+    target: TargetDescription | undefined,
+    value: ValueReference | undefined
+): void {
+    if (type !== 'WAIT') {
+        return;
+    }
+    const durationMs = value?.source === 'literal'
+        ? value.value
+        : undefined;
+    if (
+        target
+        || typeof durationMs !== 'number'
+        || !Number.isInteger(durationMs)
+        || durationMs < 100
+        || durationMs > 5_000
+    ) {
+        throw new ActionCommandSchemaError(
+            'ActionCommand.value',
+            'WAIT 必须提供 100～5000 毫秒的整数字面量且不能携带目标'
         );
     }
 }
