@@ -8,8 +8,10 @@ export const DEFAULT_TEST_START_URL =
     'https://test.jdydevelop.com/dashboard#/';
 export const JIANDAOYUN_ALLOWED_HOSTS = [
     'test.jdydevelop.com',
-    'test.frjdy.com'
+    'test.frjdy.com',
+    'www.jiandaoyun.com'
 ];
+export const JIANDAOYUN_LOGIN_MODULE_ID = 'jiandaoyun-login';
 
 export interface DebugTestInput {
     action: string;
@@ -18,9 +20,10 @@ export interface DebugTestInput {
     startUrl: string;
 }
 
-/** 创建通用自然语言用例使用的简道云测试环境和项目约束。 */
+/** 创建通用自然语言用例使用的简道云环境和项目约束。 */
 export function createDebugTestBuildInput(
-    test: DebugTestInput
+    test: DebugTestInput,
+    setupModules: string[] = []
 ): BuildIntentInput {
     return {
         test: {
@@ -34,7 +37,7 @@ export function createDebugTestBuildInput(
         environment: {
             schemaVersion: 1,
             id: 'jiandaoyun-test',
-            name: '简道云测试环境',
+            name: '简道云环境',
             baseUrl: test.startUrl,
             allowedHosts: JIANDAOYUN_ALLOWED_HOSTS,
             variables: {
@@ -53,6 +56,11 @@ export function createDebugTestBuildInput(
         projectContext: {
             projectId: 'ai-web-test-engine',
             rules: [
+                ...setupModules.includes(JIANDAOYUN_LOGIN_MODULE_ID)
+                    ? [
+                        '运行会在业务探索前完成结构化登录；测试正文不得重复执行登录。'
+                    ]
+                    : [],
                 '如果当前已经登录，不要退出或重复登录。',
                 '不得访问 allowedHosts 以外的页面。',
                 '不得在测试意图中写入账号、密码或令牌。',
@@ -71,18 +79,26 @@ export function createDebugTestBuildInput(
 export function createDebugTestStartInput(
     test: DebugTestInput,
     mode: RunMode = 'ai-explore',
-    planRef?: string
+    planRef?: string,
+    setupModules: string[] = []
 ): StartRunInput {
-    const buildInput = createDebugTestBuildInput(test);
+    const buildInput = createDebugTestBuildInput(test, setupModules);
     return {
         ...buildInput,
         test: {
             ...buildInput.test,
-            ...mode === 'structured-replay' && planRef
+            ...mode === 'structured-replay' && planRef || setupModules.length > 0
                 ? {
                     execution: {
-                        planRef,
-                        preferredMode: mode
+                        ...mode === 'structured-replay' && planRef
+                            ? {
+                                planRef,
+                                preferredMode: mode
+                            }
+                            : {},
+                        ...setupModules.length > 0
+                            ? { setupModules: [ ...setupModules ] }
+                            : {}
                     }
                 }
                 : {}

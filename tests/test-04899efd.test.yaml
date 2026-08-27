@@ -1,0 +1,9 @@
+schemaVersion: 1
+id: test-04899efd
+name: 验证创建应用是否有效
+environmentId: jiandaoyun-test
+startUrl: https://www.jiandaoyun.com/dashboard#/
+action: 登录后，点击右上角头像，验证是否有“退出”的字样
+execution:
+  planRef: 78770e91-1e6f-4c5e-be72-c109a5d7a96e/json/compiled-plan.json
+  preferredMode: structured-replay

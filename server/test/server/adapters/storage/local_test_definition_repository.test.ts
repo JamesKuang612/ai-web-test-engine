@@ -76,6 +76,20 @@ describe('LocalTestDefinitionRepository', () => {
         ]);
     });
 
+    it('允许持久化尚未添加步骤的空 action', async () => {
+        const definition = {
+            schemaVersion: 1 as const,
+            id: 'empty-test',
+            name: '空白测试',
+            environmentId: 'jiandaoyun-test',
+            action: ''
+        };
+
+        await repository.save(definition);
+
+        assert.equal((await repository.load('empty-test'))?.action, '');
+    });
+
     it('拒绝目录穿越和额外 YAML 字段', async () => {
         await assert.rejects(
             repository.load('../escape'),

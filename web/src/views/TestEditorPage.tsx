@@ -59,11 +59,12 @@ export function TestEditorPage() {
     const activeTestId = testId ?? 'new';
     const isNewTest = activeTestId === 'new';
     const [activeTab, setActiveTab] = useState<InspectorTab>('context');
-    const [action, setAction] = useState('');
+    const [steps, setSteps] = useState<string[]>([]);
     const [definitionState, setDefinitionState] = useState<LoadState>('loading');
     const [elapsedSeconds, setElapsedSeconds] = useState(0);
     const [loadError, setLoadError] = useState('');
     const [mode, setMode] = useState<DebugRunMode>('ai-explore');
+    const [loginModuleEnabled, setLoginModuleEnabled] = useState(true);
     const [planRef, setPlanRef] = useState('');
     const [planGeneration, setPlanGeneration] = useState<
         DebugPlanGenerationResult | undefined
@@ -80,6 +81,13 @@ export function TestEditorPage() {
     const [saveState, setSaveState] = useState<SaveState>('dirty');
     const [testName, setTestName] = useState('');
     const [url, setUrl] = useState(DEFAULT_START_URL);
+    const [optionsOpen, setOptionsOpen] = useState(false);
+    const [optionsName, setOptionsName] = useState('');
+    const [optionsUrl, setOptionsUrl] = useState(DEFAULT_START_URL);
+    const [optionsMode, setOptionsMode] = useState<DebugRunMode>('ai-explore');
+    const [optionsLoginModuleEnabled, setOptionsLoginModuleEnabled] =
+        useState(true);
+    const [optionsError, setOptionsError] = useState('');
     const abortControllerRef = useRef<AbortController | undefined>(undefined);
     const finalizedSessionRef = useRef('');
     const runSubscriptionCleanupRef = useRef<(() => void) | undefined>(
@@ -91,10 +99,7 @@ export function TestEditorPage() {
     const fileName = isNewTest
         ? '未命名测试.test.yaml'
         : `${ activeTestId }.test.yaml`;
-    const steps = useMemo(() => action
-        .split(/[；;\n]+/u)
-        .map((step) => step.trim())
-        .filter(Boolean), [action]);
+    const action = useMemo(() => serializeActionSteps(steps), [steps]);
 
     useEffect(() => {
         const controller = new AbortController();
@@ -115,12 +120,13 @@ export function TestEditorPage() {
         setStopRequested(false);
         setElapsedSeconds(0);
         setMode('ai-explore');
+        setLoginModuleEnabled(true);
         setPlanRef(readStoredPlanRef(activeTestId));
         setSaveError('');
         setLoadError('');
         if (isNewTest) {
             setTestName('');
-            setAction('');
+            setSteps([]);
             setUrl(DEFAULT_START_URL);
             setDefinitionState('ready');
             setSaveState('dirty');
@@ -133,9 +139,14 @@ export function TestEditorPage() {
                 const savedPlanRef = definition.execution?.planRef
                     ?? readStoredPlanRef(activeTestId);
                 setTestName(definition.name);
-                setAction(definition.action);
+                setSteps(parseActionSteps(definition.action));
                 setUrl(definition.startUrl ?? DEFAULT_START_URL);
                 setPlanRef(savedPlanRef);
+                setLoginModuleEnabled(
+                    definition.execution?.setupModules?.includes(
+                        'jiandaoyun-login'
+                    ) ?? false
+                );
                 setMode(
                     savedPlanRef
                     && definition.execution?.preferredMode
@@ -188,13 +199,16 @@ export function TestEditorPage() {
 
     const saveTest = async () => {
         const draft = {
-            action: action.trim(),
+            action,
             name: testName.trim(),
             planRef: planRef.trim() || null,
+            setupModules: loginModuleEnabled
+                ? [ 'jiandaoyun-login' as const ]
+                : [],
             startUrl: url.trim()
         };
-        if (!draft.name || !draft.action || !draft.startUrl) {
-            setSaveError('用例名称、起始地址和测试动作均不能为空。');
+        if (!draft.name || !draft.startUrl) {
+            setSaveError('用例名称和起始地址均不能为空。');
             return;
         }
         setSaveState('saving');
@@ -238,6 +252,9 @@ export function TestEditorPage() {
             action: normalizedAction,
             name: testName.trim(),
             planRef: compiledPlanRef,
+            setupModules: loginModuleEnabled
+                ? [ 'jiandaoyun-login' as const ]
+                : [],
             startUrl: url.trim()
         }).then((record) => {
             setTestName(record.definition.name);
@@ -297,7 +314,7 @@ export function TestEditorPage() {
     };
 
     const runTest = async () => {
-        const normalizedAction = action.trim();
+        const normalizedAction = action;
         const normalizedPlanRef = planRef.trim();
         if (!normalizedAction) {
             showInputError('请输入要执行的测试动作。');
@@ -345,6 +362,9 @@ export function TestEditorPage() {
                 startUrl: url.trim(),
                 testId: activeTestId,
                 testName: testName.trim(),
+                setupModules: loginModuleEnabled
+                    ? [ 'jiandaoyun-login' ]
+                    : [],
                 ...mode === 'structured-replay'
                     ? { planRef: normalizedPlanRef }
                     : {}
@@ -433,7 +453,7 @@ export function TestEditorPage() {
             ) {
                 persistCompiledPlan(
                     nextPlanGeneration.compiledPlanRef,
-                    action.trim()
+                    action
                 );
             }
         } catch (error) {
@@ -486,11 +506,52 @@ export function TestEditorPage() {
     };
 
     const addStep = () => {
-        setAction((currentAction) => [
-            currentAction.trim(),
-            '点击此处描述下一个测试步骤。'
-        ].filter(Boolean).join('\n'));
+        setSteps((currentSteps) => [ ...currentSteps, '' ]);
         markDefinitionEdited();
+    };
+
+    const updateStep = (index: number, value: string) => {
+        setSteps((currentSteps) => currentSteps.map(
+            (step, stepIndex) => stepIndex === index ? value : step
+        ));
+        markDefinitionEdited();
+    };
+
+    const removeStep = (index: number) => {
+        setSteps((currentSteps) => currentSteps.filter(
+            (_step, stepIndex) => stepIndex !== index
+        ));
+        markDefinitionEdited();
+    };
+
+    const openOptions = () => {
+        setOptionsName(testName);
+        setOptionsUrl(url);
+        setOptionsMode(mode);
+        setOptionsLoginModuleEnabled(loginModuleEnabled);
+        setOptionsError('');
+        setOptionsOpen(true);
+    };
+
+    const applyOptions = () => {
+        const normalizedName = optionsName.trim();
+        const normalizedUrl = optionsUrl.trim();
+        if (!normalizedName || !normalizedUrl) {
+            setOptionsError('用例名称和起始地址均不能为空。');
+            return;
+        }
+        const definitionChanged = normalizedName !== testName.trim()
+            || normalizedUrl !== url.trim()
+            || optionsLoginModuleEnabled !== loginModuleEnabled;
+        setTestName(normalizedName);
+        setUrl(normalizedUrl);
+        setLoginModuleEnabled(optionsLoginModuleEnabled);
+        if (definitionChanged) {
+            markDefinitionEdited();
+        } else {
+            setMode(optionsMode);
+        }
+        setOptionsOpen(false);
     };
 
     const editorDisabled = runState === 'running'
@@ -515,12 +576,16 @@ export function TestEditorPage() {
                     <label className="environment-select">
                         <span>默认环境：</span>
                         <select aria-label="默认环境" defaultValue="jiandaoyun-test">
-                            <option value="jiandaoyun-test">简道云测试环境</option>
+                            <option value="jiandaoyun-test">简道云环境</option>
                             <option value="local">本地环境</option>
                         </select>
                         <Icon name="chevron-down" size={15} />
                     </label>
-                    <button className="options-button" type="button">
+                    <button
+                        className="options-button"
+                        onClick={openOptions}
+                        type="button"
+                    >
                         <Icon name="sliders" size={17} />
                         选项
                     </button>
@@ -591,121 +656,53 @@ export function TestEditorPage() {
 
             <div className="workbench-body">
                 <aside className="steps-panel">
-                    <section className="debug-run-card" aria-label="运行调试">
-                        <div className="debug-run-heading">
-                            <div>
-                                <strong>运行调试</strong>
-                                <span>连接本地执行引擎</span>
-                            </div>
-                            <i className={runState === 'running' ? 'busy' : ''} />
-                        </div>
-
-                        <label className="debug-field">
-                            <span>用例名称</span>
-                            <input
-                                aria-label="用例名称"
-                                disabled={editorDisabled}
-                                onChange={(event) => {
-                                    setTestName(event.target.value);
-                                    markDefinitionEdited();
-                                }}
-                                placeholder="例如：验证我的待办"
-                                value={testName}
-                            />
-                        </label>
-
-                        <label className="debug-field">
-                            <span>起始地址</span>
-                            <input
-                                aria-label="起始地址"
-                                disabled={editorDisabled}
-                                onChange={(event) => {
-                                    setUrl(event.target.value);
-                                    markDefinitionEdited();
-                                }}
-                                spellCheck="false"
-                                value={url}
-                            />
-                        </label>
-
-                        <label className="debug-field">
-                            <span>运行模式</span>
-                            <select
-                                aria-label="运行模式"
-                                disabled={editorDisabled}
-                                onChange={(event) => setMode(
-                                    event.target.value as DebugRunMode
-                                )}
-                                value={mode}
-                            >
-                                <option value="ai-explore">AI 探索</option>
-                                <option value="structured-replay">结构化回放</option>
-                            </select>
-                        </label>
-
-                        <label className="debug-field">
-                            <span>测试动作</span>
-                            <textarea
-                                aria-label="测试动作"
-                                disabled={editorDisabled}
-                                onChange={(event) => {
-                                    setAction(event.target.value);
-                                    markDefinitionEdited();
-                                }}
-                                placeholder="用自然语言描述操作和需要严格验证的结果。"
-                                rows={5}
-                                value={action}
-                            />
-                        </label>
-
-                        {mode === 'structured-replay' && (
-                            <label className="debug-field">
-                                <span>compiledPlanRef</span>
-                                <input
-                                    aria-label="计划引用"
-                                    disabled={editorDisabled}
-                                    onChange={(event) => setPlanRef(
-                                        event.target.value
-                                    )}
-                                    placeholder="runId/json/compiled-plan.json"
-                                    spellCheck="false"
-                                    value={planRef}
-                                />
-                            </label>
-                        )}
-
-                        <p className="debug-run-hint">
-                            {mode === 'ai-explore'
-                                ? '先完成一次独立探索；通过后可手动生成结构化计划。'
-                                : '预计 20～40 秒；跳过意图构建和动作规划。'}
-                        </p>
-                        {(saveError || loadError) && (
-                            <p className="debug-run-form-error" role="alert">
-                                {saveError || loadError}
-                            </p>
-                        )}
-                    </section>
-
                     <div className="steps-list">
                         {steps.map((step, index) => (
-                            <article className="ai-step-card" key={`${step}-${index}`}>
+                            <article className="ai-step-card" key={index}>
+                                <span className="step-index">{index}</span>
                                 <div className="step-type-icon">
                                     <Icon name="sparkles" size={18} />
                                 </div>
                                 <div className="step-content">
                                     <p>AI 操作</p>
-                                    <button type="button">{step}</button>
+                                    <textarea
+                                        aria-label={`操作步骤 ${ index + 1 }`}
+                                        disabled={editorDisabled}
+                                        onChange={(event) => updateStep(
+                                            index,
+                                            event.target.value
+                                        )}
+                                        placeholder="用自然语言描述这个操作和需要验证的结果。"
+                                        rows={3}
+                                        value={step}
+                                    />
                                 </div>
                                 <button
-                                    aria-label={`步骤 ${index + 1} 的更多操作`}
+                                    aria-label={`删除操作步骤 ${index + 1}`}
                                     className="step-more-button"
+                                    disabled={editorDisabled}
+                                    onClick={() => removeStep(index)}
                                     type="button"
                                 >
-                                    <Icon name="more-horizontal" size={18} />
+                                    <Icon name="trash" size={16} />
                                 </button>
                             </article>
                         ))}
                     </div>
+
+                    {steps.length === 0 && (
+                        <div className="steps-empty-state">
+                            <Icon name="sparkles" size={20} />
+                            <strong>还没有操作步骤</strong>
+                            <span>从一条自然语言操作开始创建测试。</span>
+                        </div>
+                    )}
+
+                    {(saveError || loadError) && (
+                        <p className="steps-panel-error" role="alert">
+                            {saveError || loadError}
+                        </p>
+                    )}
 
                     <button
                         className="add-step-button"
@@ -727,11 +724,7 @@ export function TestEditorPage() {
                             <Icon name="monitor" size={16} />
                             <input
                                 aria-label="浏览器地址"
-                                disabled={editorDisabled}
-                                onChange={(event) => {
-                                    setUrl(event.target.value);
-                                    markDefinitionEdited();
-                                }}
+                                readOnly
                                 spellCheck="false"
                                 value={url}
                             />
@@ -965,8 +958,138 @@ export function TestEditorPage() {
                     </section>
                 </section>
             </div>
+
+            {optionsOpen && (
+                <div className="dialog-backdrop" role="presentation">
+                    <form
+                        aria-labelledby="test-options-title"
+                        aria-modal="true"
+                        className="test-settings-dialog"
+                        onSubmit={(event) => {
+                            event.preventDefault();
+                            applyOptions();
+                        }}
+                        role="dialog"
+                    >
+                        <header>
+                            <div>
+                                <h2 id="test-options-title">测试选项</h2>
+                                <p>基础信息不会占用步骤编辑区域。</p>
+                            </div>
+                            <button
+                                aria-label="关闭测试选项"
+                                onClick={() => setOptionsOpen(false)}
+                                type="button"
+                            >
+                                <Icon name="x" size={18} />
+                            </button>
+                        </header>
+                        <div className="dialog-fields">
+                            <label>
+                                <span>用例名称</span>
+                                <input
+                                    aria-label="用例名称"
+                                    onChange={(event) => {
+                                        setOptionsName(event.target.value);
+                                        setOptionsError('');
+                                    }}
+                                    value={optionsName}
+                                />
+                            </label>
+                            <label>
+                                <span>起始地址</span>
+                                <input
+                                    aria-label="起始地址"
+                                    onChange={(event) => {
+                                        setOptionsUrl(event.target.value);
+                                        setOptionsError('');
+                                    }}
+                                    spellCheck="false"
+                                    value={optionsUrl}
+                                />
+                            </label>
+                            <label>
+                                <span>本次运行方式</span>
+                                <select
+                                    aria-label="运行模式"
+                                    onChange={(event) => setOptionsMode(
+                                        event.target.value as DebugRunMode
+                                    )}
+                                    value={optionsMode}
+                                >
+                                    <option value="ai-explore">AI 探索</option>
+                                    <option
+                                        disabled={!planRef}
+                                        value="structured-replay"
+                                    >
+                                        结构化回放
+                                    </option>
+                                </select>
+                            </label>
+                            <label className="setup-module-option">
+                                <input
+                                    aria-label="使用简道云登录模块"
+                                    checked={optionsLoginModuleEnabled}
+                                    onChange={(event) => {
+                                        setOptionsLoginModuleEnabled(
+                                            event.target.checked
+                                        );
+                                        setOptionsError('');
+                                    }}
+                                    type="checkbox"
+                                />
+                                <span>
+                                    <strong>使用简道云登录模块</strong>
+                                    <small>
+                                        优先恢复本机登录态，失效后自动结构化重登。
+                                    </small>
+                                </span>
+                            </label>
+                            <p className="dialog-field-hint">
+                                {planRef
+                                    ? '此测试已有可用的结构化计划。'
+                                    : '探索通过并生成计划后，才可选择结构化回放。'}
+                            </p>
+                            {optionsError && (
+                                <p className="dialog-error" role="alert">
+                                    {optionsError}
+                                </p>
+                            )}
+                        </div>
+                        <footer>
+                            <button
+                                className="dialog-secondary-button"
+                                onClick={() => setOptionsOpen(false)}
+                                type="button"
+                            >
+                                取消
+                            </button>
+                            <button
+                                className="dialog-primary-button"
+                                type="submit"
+                            >
+                                应用
+                            </button>
+                        </footer>
+                    </form>
+                </div>
+            )}
         </main>
     );
+}
+
+function parseActionSteps(action: string): string[] {
+    return action
+        .split(/[；;\n]+/u)
+        .map((step) => step.trim())
+        .filter(Boolean);
+}
+
+function serializeActionSteps(steps: string[]): string {
+    return steps
+        .map((step) => step.trim())
+        .filter(Boolean)
+        .join('；\n');
 }
 
 interface RunTimelineProps {

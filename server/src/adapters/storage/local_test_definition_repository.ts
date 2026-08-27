@@ -158,16 +158,25 @@ export function parseTestDefinition(value: unknown): TestDefinition {
             'TestDefinition.environmentId'
         ),
         ...startUrl ? { startUrl } : {},
-        action: requireString(object.action, 'TestDefinition.action'),
+        action: requireAction(object.action),
         ...execution ? { execution } : {}
     };
+}
+
+/** 测试刚创建时允许没有步骤；运行入口仍会拒绝空 action。 */
+function requireAction(value: unknown): string {
+    if (typeof value !== 'string') {
+        throw new Error('TestDefinition.action 必须是字符串。');
+    }
+    return value.trim();
 }
 
 function parseExecution(value: unknown): TestDefinition['execution'] {
     const object = requireObject(value, 'TestDefinition.execution');
     requireAllowedFields(object, [
         'planRef',
-        'preferredMode'
+        'preferredMode',
+        'setupModules'
     ], 'TestDefinition.execution');
     const planRef = object.planRef === undefined
         ? undefined
@@ -175,10 +184,33 @@ function parseExecution(value: unknown): TestDefinition['execution'] {
     const preferredMode = object.preferredMode === undefined
         ? undefined
         : requireRunMode(object.preferredMode);
+    const setupModules = object.setupModules === undefined
+        ? undefined
+        : requireSetupModules(object.setupModules);
     return {
         ...planRef ? { planRef } : {},
-        ...preferredMode ? { preferredMode } : {}
+        ...preferredMode ? { preferredMode } : {},
+        ...setupModules ? { setupModules } : {}
     };
+}
+
+function requireSetupModules(value: unknown): string[] {
+    if (!Array.isArray(value)) {
+        throw new Error('TestDefinition.execution.setupModules 必须是数组。');
+    }
+    const modules = value.map((item) => requireString(
+        item,
+        'TestDefinition.execution.setupModules[]'
+    ));
+    if (
+        modules.some((item) => item !== 'jiandaoyun-login')
+        || new Set(modules).size !== modules.length
+    ) {
+        throw new Error(
+            'TestDefinition.execution.setupModules 包含不支持或重复的模块。'
+        );
+    }
+    return modules;
 }
 
 function resolveDefaultTestRoot(): string {

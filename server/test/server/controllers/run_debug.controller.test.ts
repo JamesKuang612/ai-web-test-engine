@@ -115,6 +115,7 @@ describe('RunDebugController structured-replay', () => {
             assert.deepEqual(receivedOptions, {
                 mode: 'structured-replay',
                 planRef: 'source-run/json/compiled-plan.json',
+                setupModules: undefined,
                 startUrl: undefined,
                 testId: undefined,
                 testName: undefined

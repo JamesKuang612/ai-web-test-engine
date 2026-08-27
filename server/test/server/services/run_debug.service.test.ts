@@ -53,7 +53,8 @@ describe('RunDebugService', () => {
             engine.lastInput?.environment.allowedHosts,
             [
                 'test.jdydevelop.com',
-                'test.frjdy.com'
+                'test.frjdy.com',
+                'www.jiandaoyun.com'
             ]
         );
         assert.equal(engine.lastInput?.budgets.maxActions, 20);
@@ -136,6 +137,31 @@ describe('RunDebugService', () => {
             engine.lastInput?.test.startUrl,
             'https://test.jdydevelop.com/dashboard#/todo'
         );
+    });
+
+    it('只接受白名单登录模块并写入运行上下文', async () => {
+        const engine = new FakeExecutionEngine();
+        const service = new RunDebugService(engine);
+
+        await service.run('打开我的待办。', new AbortController().signal, {
+            setupModules: [ 'jiandaoyun-login' ]
+        });
+
+        assert.deepEqual(
+            engine.lastInput?.test.execution?.setupModules,
+            [ 'jiandaoyun-login' ]
+        );
+        assert.equal(
+            engine.lastInput?.projectContext.rules.some(
+                (rule) => rule.includes('结构化登录')
+            ),
+            true
+        );
+        await assert.rejects(() => service.run(
+            '打开页面。',
+            new AbortController().signal,
+            { setupModules: [ 'unknown-module' ] }
+        ), RunDebugInputError);
     });
 
     it('拒绝越过环境 Host 边界的起始地址', async () => {

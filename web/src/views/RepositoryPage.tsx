@@ -3,8 +3,12 @@ import {
     useMemo,
     useState,
 } from 'react';
-import { Link } from 'react-router-dom';
 import {
+    Link,
+    useNavigate,
+} from 'react-router-dom';
+import {
+    createTestDefinition,
     listTestDefinitions,
 } from '../api/test-definitions';
 import { Icon } from '../components/Icon';
@@ -16,7 +20,10 @@ import {
 
 type EntryFilter = 'all' | RepositoryEntryType;
 
+const DEFAULT_START_URL = 'https://test.jdydevelop.com/dashboard#/';
+
 export function RepositoryPage() {
+    const navigate = useNavigate();
     const [entryFilter, setEntryFilter] = useState<EntryFilter>('all');
     const [searchOpen, setSearchOpen] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
@@ -24,6 +31,11 @@ export function RepositoryPage() {
     const [loadError, setLoadError] = useState('');
     const [loading, setLoading] = useState(true);
     const [refreshVersion, setRefreshVersion] = useState(0);
+    const [createOpen, setCreateOpen] = useState(false);
+    const [createName, setCreateName] = useState('');
+    const [createStartUrl, setCreateStartUrl] = useState(DEFAULT_START_URL);
+    const [createError, setCreateError] = useState('');
+    const [createSubmitting, setCreateSubmitting] = useState(false);
 
     useEffect(() => {
         const controller = new AbortController();
@@ -79,6 +91,45 @@ export function RepositoryPage() {
         setEntryFilter('all');
         setSearchQuery('');
         setRefreshVersion((version) => version + 1);
+    };
+
+    const openCreateDialog = () => {
+        setCreateName('');
+        setCreateStartUrl(DEFAULT_START_URL);
+        setCreateError('');
+        setCreateOpen(true);
+    };
+
+    const closeCreateDialog = () => {
+        if (!createSubmitting) {
+            setCreateOpen(false);
+        }
+    };
+
+    const createTest = async () => {
+        const name = createName.trim();
+        const startUrl = createStartUrl.trim();
+        if (!name || !startUrl) {
+            setCreateError('用例名称和起始地址均不能为空。');
+            return;
+        }
+        setCreateSubmitting(true);
+        setCreateError('');
+        try {
+            const record = await createTestDefinition({
+                action: '',
+                name,
+                setupModules: [ 'jiandaoyun-login' ],
+                startUrl
+            });
+            navigate(`/tests/${ record.definition.id }`);
+        } catch (error) {
+            setCreateError(
+                error instanceof Error ? error.message : '创建测试失败。'
+            );
+        } finally {
+            setCreateSubmitting(false);
+        }
     };
 
     return (
@@ -165,10 +216,14 @@ export function RepositoryPage() {
                             <Icon name="check" size={15} />
                             <span>工作区干净</span>
                         </div>
-                        <Link className="create-test-button" to="/tests/new">
+                        <button
+                            className="create-test-button"
+                            onClick={openCreateDialog}
+                            type="button"
+                        >
                             <Icon name="plus" size={17} />
                             新建测试
-                        </Link>
+                        </button>
                     </div>
                 </header>
 
@@ -299,6 +354,92 @@ export function RepositoryPage() {
                     </div>
                 </section>
             </main>
+
+            {createOpen && (
+                <div className="dialog-backdrop" role="presentation">
+                    <form
+                        aria-labelledby="create-test-title"
+                        aria-modal="true"
+                        className="test-settings-dialog create-test-dialog"
+                        onSubmit={(event) => {
+                            event.preventDefault();
+                            void createTest();
+                        }}
+                        role="dialog"
+                    >
+                        <header>
+                            <div>
+                                <h2 id="create-test-title">新建测试</h2>
+                                <p>先创建测试文件，操作步骤稍后在编辑器中添加。</p>
+                            </div>
+                            <button
+                                aria-label="关闭新建测试窗口"
+                                disabled={createSubmitting}
+                                onClick={closeCreateDialog}
+                                type="button"
+                            >
+                                <Icon name="x" size={18} />
+                            </button>
+                        </header>
+
+                        <div className="dialog-fields">
+                            <label>
+                                <span>用例名称</span>
+                                <input
+                                    aria-label="新建用例名称"
+                                    autoFocus
+                                    disabled={createSubmitting}
+                                    onChange={(event) => {
+                                        setCreateName(event.target.value);
+                                        setCreateError('');
+                                    }}
+                                    placeholder="例如：验证我的待办"
+                                    value={createName}
+                                />
+                            </label>
+                            <label>
+                                <span>起始地址</span>
+                                <input
+                                    aria-label="新建测试起始地址"
+                                    disabled={createSubmitting}
+                                    onChange={(event) => {
+                                        setCreateStartUrl(event.target.value);
+                                        setCreateError('');
+                                    }}
+                                    spellCheck="false"
+                                    value={createStartUrl}
+                                />
+                            </label>
+                            <p className="dialog-field-hint">
+                                创建后进入空白编辑器，再从左侧添加自然语言操作。
+                            </p>
+                            {createError && (
+                                <p className="dialog-error" role="alert">
+                                    {createError}
+                                </p>
+                            )}
+                        </div>
+
+                        <footer>
+                            <button
+                                className="dialog-secondary-button"
+                                disabled={createSubmitting}
+                                onClick={closeCreateDialog}
+                                type="button"
+                            >
+                                取消
+                            </button>
+                            <button
+                                className="dialog-primary-button"
+                                disabled={createSubmitting}
+                                type="submit"
+                            >
+                                {createSubmitting ? '创建中…' : '创建测试'}
+                            </button>
+                        </footer>
+                    </form>
+                </div>
+            )}
         </div>
     );
 }

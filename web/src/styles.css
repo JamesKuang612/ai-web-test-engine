@@ -273,16 +273,206 @@ a {
     gap: 7px;
     height: 36px;
     padding: 0 13px;
+    border: 0;
     border-radius: 7px;
     color: #ffffff;
     background: #181a1e;
     font-size: 13px;
     font-weight: 620;
     text-decoration: none;
+    cursor: pointer;
 }
 
 .create-test-button:hover {
     background: #303238;
+}
+
+.dialog-backdrop {
+    position: fixed;
+    z-index: 100;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: rgb(20 22 26 / 42%);
+    backdrop-filter: blur(2px);
+}
+
+.test-settings-dialog {
+    overflow: hidden;
+    width: min(560px, calc(100vw - 48px));
+    border: 1px solid #d8dade;
+    border-radius: 14px;
+    background: #ffffff;
+    box-shadow: 0 24px 70px rgb(22 24 29 / 22%);
+}
+
+.test-settings-dialog.create-test-dialog {
+    width: min(620px, calc(100vw - 48px));
+}
+
+.test-settings-dialog > header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 20px;
+    padding: 20px 22px 16px;
+}
+
+.test-settings-dialog > header h2 {
+    margin: 0;
+    color: #202226;
+    font-size: 18px;
+    font-weight: 650;
+}
+
+.test-settings-dialog > header p {
+    margin: 5px 0 0;
+    color: #85888e;
+    font-size: 12px;
+}
+
+.test-settings-dialog > header > button {
+    display: grid;
+    place-items: center;
+    flex: 0 0 auto;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 0;
+    border-radius: 7px;
+    color: #5e6268;
+    background: transparent;
+}
+
+.test-settings-dialog > header > button:hover {
+    background: #f1f2f4;
+}
+
+.dialog-fields {
+    display: grid;
+    gap: 16px;
+    padding: 4px 22px 22px;
+}
+
+.dialog-fields label {
+    display: grid;
+    gap: 7px;
+}
+
+.dialog-fields label > span {
+    color: #373a3f;
+    font-size: 12px;
+    font-weight: 620;
+}
+
+.dialog-fields input,
+.dialog-fields select {
+    width: 100%;
+    height: 40px;
+    padding: 0 11px;
+    border: 1px solid #d9dce0;
+    border-radius: 8px;
+    outline: none;
+    color: #25282d;
+    background: #ffffff;
+    font-size: 13px;
+}
+
+.dialog-fields input:focus,
+.dialog-fields select:focus {
+    border-color: #737b8b;
+    box-shadow: 0 0 0 3px rgb(38 42 50 / 8%);
+}
+
+.dialog-field-hint {
+    margin: -5px 0 0;
+    color: #85888e;
+    font-size: 11px;
+    line-height: 16px;
+}
+
+.dialog-fields .setup-module-option {
+    align-items: flex-start;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    display: flex;
+    flex-direction: row;
+    gap: 10px;
+    padding: 12px;
+}
+
+.dialog-fields .setup-module-option > input {
+    height: 16px;
+    margin-top: 2px;
+    width: 16px;
+}
+
+.dialog-fields .setup-module-option > span {
+    display: grid;
+    gap: 4px;
+}
+
+.dialog-fields .setup-module-option strong {
+    color: #202124;
+    font-size: 13px;
+}
+
+.dialog-fields .setup-module-option small {
+    color: #7a7f87;
+    font-size: 12px;
+    font-weight: 400;
+}
+
+.dialog-error {
+    margin: -4px 0 0;
+    color: #b9383e;
+    font-size: 11px;
+}
+
+.test-settings-dialog > footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 9px;
+    padding: 14px 20px;
+    border-top: 1px solid #e7e9ec;
+    background: #fafbfc;
+}
+
+.dialog-primary-button,
+.dialog-secondary-button {
+    height: 36px;
+    padding: 0 14px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 620;
+}
+
+.dialog-primary-button {
+    border: 1px solid #191b1f;
+    color: #ffffff;
+    background: #191b1f;
+}
+
+.dialog-primary-button:hover {
+    background: #303238;
+}
+
+.dialog-secondary-button {
+    border: 1px solid #d8dade;
+    color: #44474d;
+    background: #ffffff;
+}
+
+.dialog-secondary-button:hover {
+    background: #f3f4f5;
+}
+
+.dialog-primary-button:disabled,
+.dialog-secondary-button:disabled,
+.test-settings-dialog > header > button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
 }
 
 .repository-content {
@@ -741,7 +931,7 @@ code {
 
 .workbench-body {
     display: grid;
-    grid-template-columns: 330px minmax(0, 1fr);
+    grid-template-columns: clamp(340px, 28vw, 520px) minmax(0, 1fr);
     min-height: 0;
 }
 
@@ -868,11 +1058,18 @@ code {
     position: relative;
     display: grid;
     align-items: start;
-    grid-template-columns: 30px minmax(0, 1fr) 25px;
+    grid-template-columns: 20px 30px minmax(0, 1fr) 25px;
     gap: 7px;
     padding: 12px 8px;
     border: 1px solid transparent;
     border-radius: 8px;
+}
+
+.step-index {
+    padding-top: 7px;
+    color: #9a9da2;
+    font-size: 10px;
+    text-align: center;
 }
 
 .ai-step-card:hover {
@@ -898,19 +1095,28 @@ code {
     letter-spacing: 0.05em;
 }
 
-.step-content button {
-    display: -webkit-box;
-    overflow: hidden;
+.step-content textarea {
     width: 100%;
-    padding: 0;
-    border: 0;
+    min-height: 56px;
+    padding: 8px 9px;
+    border: 1px solid #dfe1e4;
+    border-radius: 7px;
+    outline: none;
     color: #27292e;
-    background: transparent;
+    background: #ffffff;
     font-size: 12px;
     line-height: 18px;
     text-align: left;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 4;
+    resize: vertical;
+}
+
+.step-content textarea:focus {
+    border-color: #727de8;
+    box-shadow: 0 0 0 2px rgb(101 116 224 / 10%);
+}
+
+.step-content textarea::placeholder {
+    color: #a3a6ab;
 }
 
 .step-more-button {
@@ -939,7 +1145,7 @@ code {
     align-items: center;
     gap: 7px;
     height: 36px;
-    margin: 12px 0 0 46px;
+    margin: 12px 0 0 57px;
     padding: 0 12px;
     border: 1px solid #dedfe2;
     border-radius: 8px;
@@ -947,6 +1153,36 @@ code {
     background: #ffffff;
     font-size: 12px;
     font-weight: 580;
+}
+
+.steps-empty-state {
+    display: grid;
+    justify-items: center;
+    gap: 6px;
+    margin: 58px 18px 4px;
+    color: #8b8f95;
+    text-align: center;
+}
+
+.steps-empty-state svg {
+    margin-bottom: 2px;
+    color: #6f737a;
+}
+
+.steps-empty-state strong {
+    color: #46494f;
+    font-size: 12px;
+}
+
+.steps-empty-state span {
+    font-size: 10px;
+}
+
+.steps-panel-error {
+    margin: 12px 8px 0;
+    color: #b9383e;
+    font-size: 10px;
+    line-height: 15px;
 }
 
 .add-step-button:hover {

@@ -10,12 +10,14 @@ import {
 } from '../adapters/storage/local_test_definition_repository';
 import {
     JIANDAOYUN_ALLOWED_HOSTS,
+    JIANDAOYUN_LOGIN_MODULE_ID,
 } from './debug_test_context';
 
 export interface TestDefinitionDraft {
     action?: unknown;
     name?: unknown;
     planRef?: unknown;
+    setupModules?: unknown;
     startUrl?: unknown;
 }
 
@@ -71,11 +73,18 @@ export class TestDefinitionService {
             environmentId: 'jiandaoyun-test',
             startUrl: fields.startUrl,
             action: fields.action,
-            ...fields.planRef
+            ...fields.planRef || fields.setupModules?.length
                 ? {
                     execution: {
-                        planRef: fields.planRef,
-                        preferredMode: 'structured-replay' as const
+                        ...fields.planRef
+                            ? {
+                                planRef: fields.planRef,
+                                preferredMode: 'structured-replay' as const
+                            }
+                            : {},
+                        ...fields.setupModules?.length
+                            ? { setupModules: fields.setupModules }
+                            : {}
                     }
                 }
                 : {}
@@ -92,14 +101,23 @@ export class TestDefinitionService {
             throw new TestDefinitionNotFoundError(normalizedId);
         }
         const fields = this.normalizeDraft(draft);
-        const execution = fields.planRef === undefined
-            ? existing.execution
-            : fields.planRef === null
-                ? undefined
-                : {
-                    planRef: fields.planRef,
-                    preferredMode: 'structured-replay' as const
-                };
+        const planRef = fields.planRef === undefined
+            ? existing.execution?.planRef
+            : fields.planRef ?? undefined;
+        const setupModules = fields.setupModules === undefined
+            ? existing.execution?.setupModules
+            : fields.setupModules;
+        const execution = planRef || setupModules?.length
+            ? {
+                ...planRef
+                    ? {
+                        planRef,
+                        preferredMode: 'structured-replay' as const
+                    }
+                    : {},
+                ...setupModules?.length ? { setupModules } : {}
+            }
+            : undefined;
         return await this.repository.save({
             schemaVersion: 1,
             id: normalizedId,
@@ -115,22 +133,50 @@ export class TestDefinitionService {
         action: string,
         name: string,
         planRef: null | string | undefined,
+        setupModules: string[] | undefined,
         startUrl: string
     } {
         return {
-            action: this.normalizeString(
-                draft.action,
-                'action',
-                10_000
-            ),
+            action: this.normalizeAction(draft.action),
             name: this.normalizeString(
                 draft.name,
                 'name',
                 120
             ),
             planRef: this.normalizePlanRef(draft.planRef),
+            setupModules: this.normalizeSetupModules(draft.setupModules),
             startUrl: this.normalizeStartUrl(draft.startUrl)
         };
+    }
+
+    private normalizeSetupModules(value: unknown): string[] | undefined {
+        if (value === undefined) {
+            return undefined;
+        }
+        if (
+            !Array.isArray(value)
+            || value.some((item) => item !== JIANDAOYUN_LOGIN_MODULE_ID)
+            || new Set(value).size !== value.length
+        ) {
+            throw new TestDefinitionInputError(
+                `setupModules 目前只支持 ${ JIANDAOYUN_LOGIN_MODULE_ID }。`
+            );
+        }
+        return [ ...value ];
+    }
+
+    /** 新建测试可以暂时没有步骤，实际运行前再要求 action 非空。 */
+    private normalizeAction(value: unknown): string {
+        if (typeof value !== 'string') {
+            throw new TestDefinitionInputError('action 必须是字符串。');
+        }
+        const normalized = value.trim();
+        if (normalized.length > 10_000) {
+            throw new TestDefinitionInputError(
+                'action 长度不能超过 10000 个字符。'
+            );
+        }
+        return normalized;
     }
 
     private normalizePlanRef(value: unknown): null | string | undefined {

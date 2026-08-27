@@ -19,7 +19,8 @@ export interface TestDefinition {
     action: string;
     execution?: {
         planRef?: string,
-        preferredMode?: RunMode
+        preferredMode?: RunMode,
+        setupModules?: string[]
     };
 }
 

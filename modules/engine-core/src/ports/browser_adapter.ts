@@ -1,6 +1,7 @@
 import type {
     ActionCommand,
     ActionResult,
+    JsonValue,
     PageObservation,
     ResolvedTarget,
 } from '../contracts';
@@ -13,6 +14,8 @@ export interface BrowserSession {
 /** 启动浏览器会话时由核心层提供的通用参数。 */
 export interface BrowserStartOptions {
     headless: boolean;
+    /** 可选的浏览器登录态；只在内存和本机私有缓存间传递。 */
+    storageState?: JsonValue;
     viewport: {
         height: number,
         width: number
@@ -55,6 +58,8 @@ export interface BrowserAdapter {
     captureScreenshot: (
         session: BrowserSession
     ) => Promise<BrowserScreenshot>;
+    /** 导出当前上下文的 Cookie 与 localStorage，供本机登录态缓存使用。 */
+    captureStorageState?: (session: BrowserSession) => Promise<JsonValue>;
     /** 使用视觉定位补充一个候选元素；未接入视觉的适配器可以省略。 */
     enhanceObservationWithVision?: (
         session: BrowserSession,

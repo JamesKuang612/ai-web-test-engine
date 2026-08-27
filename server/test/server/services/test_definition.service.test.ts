@@ -46,6 +46,55 @@ describe('TestDefinitionService', () => {
         );
     });
 
+    it('允许先创建没有操作步骤的测试', async () => {
+        const record = await service.create({
+            name: 'Empty Test',
+            startUrl: 'https://test.jdydevelop.com/dashboard#/',
+            action: ''
+        });
+
+        assert.equal(record.definition.id, 'empty-test');
+        assert.equal(record.definition.action, '');
+        assert.equal((await service.get('empty-test')).action, '');
+    });
+
+    it('保存并更新白名单前置模块', async () => {
+        await service.create({
+            name: 'Login Module Test',
+            startUrl: 'https://www.jiandaoyun.com/dashboard#/',
+            action: '打开我的待办。',
+            setupModules: [ 'jiandaoyun-login' ]
+        });
+        assert.deepEqual(
+            (await service.get('login-module-test')).execution?.setupModules,
+            [ 'jiandaoyun-login' ]
+        );
+
+        await service.update('login-module-test', {
+            name: 'Login Module Test',
+            startUrl: 'https://www.jiandaoyun.com/dashboard#/',
+            action: '打开我的待办。',
+            setupModules: []
+        });
+        assert.equal(
+            (await service.get('login-module-test')).execution,
+            undefined
+        );
+    });
+
+    it('允许使用简道云生产环境起始地址', async () => {
+        const record = await service.create({
+            name: 'Production Test',
+            startUrl: 'https://www.jiandaoyun.com/dashboard#/',
+            action: ''
+        });
+
+        assert.equal(
+            record.definition.startUrl,
+            'https://www.jiandaoyun.com/dashboard#/'
+        );
+    });
+
     it('拒绝允许 Host 之外或携带凭据的起始地址', async () => {
         await assert.rejects(() => service.create({
             name: '外部页面',

@@ -47,6 +47,7 @@ export class RunDebugSessionController {
                 session: this.sessions.start(action, {
                     mode: req.body?.mode,
                     planRef: req.body?.planRef,
+                    setupModules: req.body?.setupModules,
                     startUrl: req.body?.startUrl,
                     testId: req.body?.testId,
                     testName: req.body?.testName

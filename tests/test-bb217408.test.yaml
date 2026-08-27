@@ -1,0 +1,6 @@
+schemaVersion: 1
+id: test-bb217408
+name: 验证创建应用是否成功
+environmentId: jiandaoyun-test
+startUrl: https://www.jiandaoyun.com/
+action: ""

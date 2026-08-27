@@ -47,6 +47,7 @@ export interface RunDebugRequest {
     action: string;
     mode: DebugRunMode;
     planRef?: string;
+    setupModules?: Array<'jiandaoyun-login'>;
     startUrl: string;
     testId: string;
     testName: string;
@@ -123,6 +124,7 @@ export async function requestDebugRun(
             startUrl: request.startUrl,
             testId: request.testId,
             testName: request.testName,
+            setupModules: request.setupModules ?? [],
             ...request.mode === 'structured-replay'
                 ? { planRef: request.planRef }
                 : {}
@@ -308,6 +310,7 @@ function toRequestBody(request: RunDebugRequest): Record<string, unknown> {
         startUrl: request.startUrl,
         testId: request.testId,
         testName: request.testName,
+        setupModules: request.setupModules ?? [],
         ...request.mode === 'structured-replay'
             ? { planRef: request.planRef }
             : {}

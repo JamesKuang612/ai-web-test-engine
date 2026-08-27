@@ -72,6 +72,7 @@ describe('App routes', () => {
     });
 
     it('loads the selected YAML definition in the editor', async () => {
+        const user = userEvent.setup();
         installApiMock();
         renderApp('/tests/login-and-open-workbench');
 
@@ -79,6 +80,7 @@ describe('App routes', () => {
             .toBeInTheDocument();
         expect(screen.getByText('login-and-open-workbench.test.yaml'))
             .toBeInTheDocument();
+        await user.click(screen.getByRole('button', { name: '选项' }));
         expect(screen.getByLabelText('用例名称'))
             .toHaveValue('登录并打开简道云工作台');
         expect(screen.getByLabelText('起始地址'))
@@ -90,34 +92,37 @@ describe('App routes', () => {
         installApiMock();
         renderApp('/tests/avatar-account-menu');
 
-        expect(await screen.findByDisplayValue(AVATAR_ACTION))
-            .toBeInTheDocument();
+        expect((await screen.findByLabelText(
+            '操作步骤 1'
+        ) as HTMLTextAreaElement).value).toContain('登录简道云');
+        expect((screen.getByLabelText(
+            '操作步骤 3'
+        ) as HTMLTextAreaElement).value).toContain('从上到下逐字严格验证');
         expect(screen.getByText('avatar-account-menu.test.yaml'))
             .toBeInTheDocument();
-        expect(screen.getAllByText(/从上到下逐字严格验证/u))
-            .not.toHaveLength(0);
     });
 
-    it('creates and saves a new real test definition', async () => {
+    it('creates an empty test from the repository dialog', async () => {
         const user = userEvent.setup();
         const api = installApiMock();
-        renderApp('/tests/new');
+        renderApp('/repository');
+        await screen.findByText('login-and-open-workbench.test.yaml');
 
-        await user.type(screen.getByLabelText('用例名称'), 'My Todo Flow');
-        await user.type(
-            screen.getByLabelText('测试动作'),
-            '点击“我的待办”，严格验证页面显示“我的待办”。'
-        );
-        await user.click(screen.getByRole('button', { name: '保存' }));
+        await user.click(screen.getByRole('button', { name: '新建测试' }));
+        await user.type(screen.getByLabelText('新建用例名称'), 'My Todo Flow');
+        await user.click(screen.getByRole('button', { name: '创建测试' }));
 
         expect(await screen.findByText('my-todo-flow.test.yaml'))
             .toBeInTheDocument();
+        expect(screen.getByText('还没有操作步骤')).toBeInTheDocument();
         const createCall = api.mock.calls.find(([input, init]) => (
             String(input) === '/api/tests' && init?.method === 'POST'
         ));
         expect(createCall).toBeDefined();
         expect(JSON.parse(String(createCall?.[1]?.body))).toMatchObject({
+            action: '',
             name: 'My Todo Flow',
+            setupModules: [ 'jiandaoyun-login' ],
             startUrl: DEFAULT_START_URL
         });
     });
@@ -129,8 +134,12 @@ describe('App routes', () => {
         await screen.findByDisplayValue(LOGIN_ACTION);
 
         await user.click(screen.getByRole('button', { name: '添加步骤' }));
-        expect(screen.getByText('点击此处描述下一个测试步骤。'))
-            .toBeInTheDocument();
+        await user.type(
+            screen.getByLabelText('操作步骤 2'),
+            '点击“我的待办”。'
+        );
+        expect(screen.getByLabelText('操作步骤 2'))
+            .toHaveValue('点击“我的待办”。');
         expect(screen.getByText('未保存')).toBeInTheDocument();
 
         await user.click(screen.getByRole('tab', { name: '控制台' }));
@@ -159,6 +168,7 @@ describe('Run debug workbench', () => {
         expect(request).toMatchObject({
             action: LOGIN_ACTION,
             mode: 'ai-explore',
+            setupModules: [ 'jiandaoyun-login' ],
             startUrl: DEFAULT_START_URL,
             testId: 'login-and-open-workbench',
             testName: '登录并打开简道云工作台'
@@ -195,6 +205,7 @@ describe('Run debug workbench', () => {
         await user.click(screen.getByRole('button', {
             name: '使用此计划回放'
         }));
+        await user.click(screen.getByRole('button', { name: '选项' }));
         expect(screen.getByLabelText('运行模式'))
             .toHaveValue('structured-replay');
     });
@@ -316,7 +327,8 @@ function installApiMock(options: ApiMockOptions = {}) {
         ['login-and-open-workbench', createDefinition({
             id: 'login-and-open-workbench',
             name: '登录并打开简道云工作台',
-            action: LOGIN_ACTION
+            action: LOGIN_ACTION,
+            setupModules: [ 'jiandaoyun-login' ]
         })],
         ['avatar-account-menu', createDefinition({
             id: 'avatar-account-menu',
@@ -361,6 +373,7 @@ function installApiMock(options: ApiMockOptions = {}) {
                     action: string,
                     name: string,
                     planRef?: null | string,
+                    setupModules?: Array<'jiandaoyun-login'>,
                     startUrl: string
                 };
                 const updated = createDefinition({
@@ -422,6 +435,7 @@ function createDefinition(input: {
     id: string,
     name: string,
     planRef?: string,
+    setupModules?: Array<'jiandaoyun-login'>,
     startUrl?: string
 }): TestDefinitionDto {
     return {
@@ -431,11 +445,18 @@ function createDefinition(input: {
         environmentId: 'jiandaoyun-test',
         startUrl: input.startUrl ?? DEFAULT_START_URL,
         action: input.action,
-        ...input.planRef
+        ...input.planRef || input.setupModules?.length
             ? {
                 execution: {
-                    planRef: input.planRef,
-                    preferredMode: 'structured-replay'
+                    ...input.planRef
+                        ? {
+                            planRef: input.planRef,
+                            preferredMode: 'structured-replay' as const
+                        }
+                        : {},
+                    ...input.setupModules?.length
+                        ? { setupModules: input.setupModules }
+                        : {}
                 }
             }
             : {}

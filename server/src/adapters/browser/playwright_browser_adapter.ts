@@ -6,6 +6,7 @@ import {
 import type {
     Browser,
     BrowserContext,
+    BrowserContextOptions,
     Locator,
     Page,
 } from 'playwright';
@@ -21,6 +22,7 @@ import type {
     BrowserScreenshot,
     BrowserSession,
     BrowserStartOptions,
+    JsonValue,
     ObservedElement,
     PageObservation,
     ResolvedTarget,
@@ -93,6 +95,18 @@ const SCREENSHOT_RETRY_DELAY_MS = 250;
 const PAGE_NOT_RENDERED_NOTICE =
     '页面在等待窗口内未渲染出可见文本、交互元素或视觉内容。';
 
+/** 仅识别当前 Windows 可视 Chromium 的进程创建失败。 */
+export function shouldUseWindowsBrowserFallback(
+    error: unknown,
+    headless: boolean,
+    platform: typeof process.platform = process.platform
+): boolean {
+    return !headless
+        && platform === 'win32'
+        && error instanceof Error
+        && /browserType\.launch: spawn UNKNOWN/u.test(error.message);
+}
+
 /**
  * 使用 Playwright Chromium 实现浏览器端口。
  *
@@ -117,12 +131,16 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
     public start = async (
         options: BrowserStartOptions
     ): Promise<BrowserSession> => {
-        const browser = await chromium.launch({
-            headless: options.headless
-        });
+        const browser = await this.launchChromium(options.headless);
 
         try {
             const context = await browser.newContext({
+                ...options.storageState
+                    ? {
+                        storageState: options.storageState as
+                            BrowserContextOptions['storageState']
+                    }
+                    : {},
                 viewport: {
                     width: options.viewport.width,
                     height: options.viewport.height
@@ -145,6 +163,34 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
             await browser.close();
             throw error;
         }
+    };
+
+    /**
+     * Windows 可能会阻止未签名的 Playwright Chromium 以可视模式启动。
+     * 只针对 spawn UNKNOWN 依次回退到已安装的 Chrome 和 Edge。
+     */
+    private launchChromium = async (headless: boolean): Promise<Browser> => {
+        try {
+            return await chromium.launch({ headless });
+        } catch (error) {
+            if (!shouldUseWindowsBrowserFallback(error, headless)) {
+                throw error;
+            }
+        }
+
+        let fallbackError: unknown;
+        for (const channel of [ 'chrome', 'msedge' ] as const) {
+            try {
+                return await chromium.launch({
+                    channel,
+                    headless
+                });
+            } catch (error) {
+                fallbackError = error;
+            }
+        }
+
+        throw fallbackError;
     };
 
     /**
@@ -495,6 +541,14 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
         }
 
         return await this.captureScreenshotViaCdp(managedSession);
+    };
+
+    /** 导出当前上下文的登录态，不包含在普通运行证据中。 */
+    public captureStorageState = async (
+        session: BrowserSession
+    ): Promise<JsonValue> => {
+        const state = await this.requireSession(session).context.storageState();
+        return state as JsonValue;
     };
 
     /**

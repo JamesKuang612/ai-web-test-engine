@@ -8,6 +8,7 @@ export interface TestDefinitionDto {
     execution?: {
         planRef?: string;
         preferredMode?: 'ai-explore' | 'auto' | 'structured-replay';
+        setupModules?: Array<'jiandaoyun-login'>;
     };
 }
 
@@ -15,6 +16,7 @@ export interface TestDefinitionDraft {
     action: string;
     name: string;
     planRef?: null | string;
+    setupModules?: Array<'jiandaoyun-login'>;
     startUrl: string;
 }
 
@@ -172,6 +174,11 @@ function parseExecution(
             && object.preferredMode !== 'ai-explore'
             && object.preferredMode !== 'auto'
             && object.preferredMode !== 'structured-replay'
+        || object.setupModules !== undefined
+            && (!Array.isArray(object.setupModules)
+                || object.setupModules.some(
+                    (item) => item !== 'jiandaoyun-login'
+                ))
     ) {
         throw new TestDefinitionRequestError('用例执行配置响应格式不正确。');
     }
@@ -183,6 +190,13 @@ function parseExecution(
             ? { preferredMode: object.preferredMode as NonNullable<
                 TestDefinitionDto['execution']
             >['preferredMode'] }
+            : {},
+        ...Array.isArray(object.setupModules)
+            ? {
+                setupModules: [ ...object.setupModules ] as Array<
+                    'jiandaoyun-login'
+                >
+            }
             : {}
     };
 }

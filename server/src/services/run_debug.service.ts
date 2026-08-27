@@ -4,6 +4,7 @@ import type {
     RunMode,
     RunResult,
 } from '@ai-web-test-engine/core';
+import path from 'node:path';
 import {
     actionCommandSchema,
     ModelActionPlanner,
@@ -12,7 +13,10 @@ import {
     verdictDecisionSchema,
 } from '@ai-web-test-engine/core';
 import { service } from 'nstarter-core';
-import { PlaywrightBrowserAdapter } from '../adapters/browser';
+import {
+    JiandaoyunLoginBrowserAdapter,
+    PlaywrightBrowserAdapter,
+} from '../adapters/browser';
 import { LocalEnvironmentValueResolver } from '../adapters/environment';
 import { LoggingRunEventPublisher } from '../adapters/events';
 import { LocalArtifactStore } from '../adapters/storage/local_artifact_store';
@@ -26,6 +30,7 @@ import {
     createDebugTestStartInput,
     DEFAULT_TEST_START_URL,
     JIANDAOYUN_ALLOWED_HOSTS,
+    JIANDAOYUN_LOGIN_MODULE_ID,
 } from './debug_test_context';
 
 /** 表示完整调试接口收到的自然语言内容不合法。 */
@@ -41,6 +46,7 @@ export class RunDebugInputError extends Error {
 export interface RunDebugOptions {
     mode?: unknown;
     planRef?: unknown;
+    setupModules?: unknown;
     startUrl?: unknown;
     testId?: unknown;
     testName?: unknown;
@@ -55,23 +61,37 @@ const PLAN_REF_PATTERN =
 
 /** 根据本机配置组装真实模型、Playwright 和本地存储。 */
 function createConfiguredExecutionEngine(
-    eventPublisher: RunEventPublisher
+    eventPublisher: RunEventPublisher,
+    startUrl: string,
+    setupModules: string[]
 ): ExecutionEngine {
     const browserConfig = config.components.browser;
     const modelAdapter = createConfiguredModelAdapter();
     const visualGroundingEnabled =
         config.components.visual_grounding?.enabled !== false;
+    const baseBrowserAdapter = new PlaywrightBrowserAdapter({
+        ...visualGroundingEnabled
+            ? {
+                visualTargetLocator: new MidsceneVisualTargetLocator()
+            }
+            : {}
+    });
+    const browserAdapter = setupModules.includes(JIANDAOYUN_LOGIN_MODULE_ID)
+        ? new JiandaoyunLoginBrowserAdapter(baseBrowserAdapter, {
+            cacheRoot: path.join(
+                config.storage.artifact_root,
+                '.auth-cache'
+            ),
+            password: process.env.JIANDAOYUN_PASSWORD,
+            startUrl,
+            username: process.env.JIANDAOYUN_USERNAME
+        })
+        : baseBrowserAdapter;
     return new RunCoordinator(
         new LocalArtifactStore(config.storage.artifact_root),
         eventPublisher,
         createConfiguredIntentBuilder(modelAdapter),
-        new PlaywrightBrowserAdapter({
-            ...visualGroundingEnabled
-                ? {
-                    visualTargetLocator: new MidsceneVisualTargetLocator()
-                }
-                : {}
-        }),
+        browserAdapter,
         {
             actionPlanner: new ModelActionPlanner(
                 modelAdapter,
@@ -133,18 +153,41 @@ export class RunDebugService {
 
         const mode = this.normalizeMode(options.mode);
         const planRef = this.normalizePlanRef(mode, options.planRef);
+        const setupModules = this.normalizeSetupModules(options.setupModules);
+        const test = {
+            action: normalizedAction,
+            id: this.normalizeTestId(options.testId),
+            name: this.normalizeTestName(options.testName),
+            startUrl: this.normalizeStartUrl(options.startUrl)
+        };
 
         const executionEngine = this.executionEngine
-            ?? createConfiguredExecutionEngine(eventPublisher);
+            ?? createConfiguredExecutionEngine(
+                eventPublisher,
+                test.startUrl,
+                setupModules
+            );
         return await executionEngine.start(
-            createDebugTestStartInput({
-                action: normalizedAction,
-                id: this.normalizeTestId(options.testId),
-                name: this.normalizeTestName(options.testName),
-                startUrl: this.normalizeStartUrl(options.startUrl)
-            }, mode, planRef),
+            createDebugTestStartInput(test, mode, planRef, setupModules),
             signal
         );
+    }
+
+    /** 前置模块必须来自服务端白名单，避免请求注入任意执行逻辑。 */
+    private normalizeSetupModules(value: unknown): string[] {
+        if (value === undefined) {
+            return [];
+        }
+        if (
+            !Array.isArray(value)
+            || value.some((item) => item !== JIANDAOYUN_LOGIN_MODULE_ID)
+            || new Set(value).size !== value.length
+        ) {
+            throw new RunDebugInputError(
+                `setupModules 目前只支持 ${ JIANDAOYUN_LOGIN_MODULE_ID }。`
+            );
+        }
+        return [ ...value ];
     }
 
     /** 当前调试入口只开放已实际接入的两种运行模式。 */
@@ -219,7 +262,7 @@ export class RunDebugService {
         return value.trim();
     }
 
-    /** 起始地址只允许位于当前简道云测试环境的 Host 范围内。 */
+    /** 起始地址只允许位于已明确开放的简道云 Host 范围内。 */
     private normalizeStartUrl(value: unknown): string {
         if (value === undefined) {
             return DEFAULT_TEST_START_URL;

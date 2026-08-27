@@ -25,9 +25,11 @@ export type IconName =
     | 'sliders'
     | 'sort'
     | 'sparkles'
+    | 'trash'
     | 'undo'
     | 'video'
-    | 'workflow';
+    | 'workflow'
+    | 'x';
 
 interface IconProps {
     className?: string;
@@ -178,6 +180,15 @@ export function Icon({ className, name, size = 18 }: IconProps) {
                 <path d="m19 14-.6 1.4L17 16l1.4.6L19 18l.6-1.4L21 16l-1.4-.6Z" />
             </>
         ),
+        trash: (
+            <>
+                <path d="M4 7h16" />
+                <path d="M10 11v6" />
+                <path d="M14 11v6" />
+                <path d="m6 7 1 14h10l1-14" />
+                <path d="M9 7V4h6v3" />
+            </>
+        ),
         undo: (
             <>
                 <path d="M9 7 4 12l5 5" />
@@ -197,6 +208,12 @@ export function Icon({ className, name, size = 18 }: IconProps) {
                 <rect height="5" rx="1" width="6" x="16" y="17" />
                 <path d="M12 7v5" />
                 <path d="M5 17v-2a3 3 0 0 1 3-3h8a3 3 0 0 1 3 3v2" />
+            </>
+        ),
+        x: (
+            <>
+                <path d="M6 6 18 18" />
+                <path d="M18 6 6 18" />
             </>
         )
     } satisfies Record<IconName, ReactNode>;

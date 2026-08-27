@@ -19,6 +19,7 @@ import type {
 } from '@ai-web-test-engine/core';
 import {
     PlaywrightBrowserAdapter,
+    shouldUseWindowsBrowserFallback,
 } from '../../../../src/adapters/browser/playwright_browser_adapter';
 
 const START_OPTIONS = {
@@ -32,6 +33,31 @@ const UUID_PATTERN =
     /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 describe('PlaywrightBrowserAdapter', () => {
+    it('只为 Windows 可视浏览器的 spawn UNKNOWN 启用系统浏览器兜底', () => {
+        const spawnError = new Error('browserType.launch: spawn UNKNOWN');
+
+        assert.equal(
+            shouldUseWindowsBrowserFallback(spawnError, false, 'win32'),
+            true
+        );
+        assert.equal(
+            shouldUseWindowsBrowserFallback(spawnError, true, 'win32'),
+            false
+        );
+        assert.equal(
+            shouldUseWindowsBrowserFallback(spawnError, false, 'linux'),
+            false
+        );
+        assert.equal(
+            shouldUseWindowsBrowserFallback(
+                new Error('browserType.launch: executable missing'),
+                false,
+                'win32'
+            ),
+            false
+        );
+    });
+
     it('启动独立 Chromium 会话并在使用后正常关闭', async () => {
         const adapter = new PlaywrightBrowserAdapter();
         let session: BrowserSession | undefined;
