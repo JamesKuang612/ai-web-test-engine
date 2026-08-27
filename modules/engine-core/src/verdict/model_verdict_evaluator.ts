@@ -26,6 +26,8 @@ const DEFAULT_OPTIONS: ModelVerdictEvaluatorOptions = {
     maxOutputTokens: 1_500,
     timeoutMs: 30_000
 };
+const ABSENCE_ONLY_FAILURE_PATTERN =
+    /未找到|未发现|未出现|未显示|不存在|缺失|没有观察到|未见/iu;
 
 /** 根据最终页面证据独立判断业务结果，不接受 Planner 直接指定 PASS。 */
 export class ModelVerdictEvaluator implements VerdictEvaluator {
@@ -54,8 +56,12 @@ export class ModelVerdictEvaluator implements VerdictEvaluator {
             signal
         );
         signal.throwIfAborted();
-        const decision = this.applyExactTextAssertions(
+        const exactDecision = this.applyExactTextAssertions(
             result.value,
+            input
+        );
+        const decision = this.applyUncertainStopBoundary(
+            exactDecision,
             input
         );
         this.requireCompleteCriteria(decision, input);
@@ -74,6 +80,8 @@ export class ModelVerdictEvaluator implements VerdictEvaluator {
             '只有所有 required 成功条件均 MATCHED，且失败条件均 NOT_MATCHED 时才能 PASS。',
             '只有至少一条失败条件 MATCHED 时才能 FAIL；其他情况必须 UNCERTAIN。',
             'Planner 的 FINISH、FAIL 或 UNCERTAIN 只作为停止原因，不决定最终结果。',
+            '当 Planner 以 UNCERTAIN 停止时，表示执行尚未到达最终验证阶段；仅因最终目标尚未出现而描述的“未找到、未出现、不存在、缺失”等条件必须为 UNKNOWN，不能据此 FAIL。',
+            '即使 Planner 以 UNCERTAIN 停止，页面明确显示账号密码错误等正向错误证据时，仍可将对应失败条件判为 MATCHED。',
             '精确文本断言必须逐字匹配，不能把近义词、缩写或扩展文案判为 MATCHED。',
             '输出必须严格符合提供的 JSON Schema。'
         ].join('\n');
@@ -154,6 +162,69 @@ export class ModelVerdictEvaluator implements VerdictEvaluator {
                 : deferred.length > 0
                     ? `严格文本断言暂不可判定：${ deferred.join('；') }`
                     : decision.summary,
+            successCriteria,
+            failureCriteria
+        };
+    }
+
+    /** 中途证据不足时，阻止“最终结果尚未出现”被误当成业务失败。 */
+    private applyUncertainStopBoundary(
+        decision: VerdictDecision,
+        input: EvaluateVerdictInput
+    ): VerdictDecision {
+        if (input.stopCommand.type !== 'UNCERTAIN') {
+            return decision;
+        }
+        let deferred = false;
+        const successCriteria = decision.successCriteria.map((assessment) => {
+            if (assessment.status !== 'NOT_MATCHED') {
+                return { ...assessment };
+            }
+            deferred = true;
+            return {
+                ...assessment,
+                status: 'UNKNOWN' as const,
+                summary: `执行尚未到达最终验证阶段；${ assessment.summary }`
+            };
+        });
+        const failureById = new Map(
+            input.testIntent.failureCriteria.map((criterion) => [
+                criterion.id,
+                criterion
+            ])
+        );
+        const failureCriteria = decision.failureCriteria.map((assessment) => {
+            const criterion = failureById.get(assessment.criterionId);
+            const evidenceText = [
+                criterion?.description ?? '',
+                assessment.summary
+            ].join(' ');
+            if (
+                assessment.status !== 'MATCHED'
+                || !ABSENCE_ONLY_FAILURE_PATTERN.test(evidenceText)
+            ) {
+                return { ...assessment };
+            }
+            deferred = true;
+            return {
+                ...assessment,
+                status: 'UNKNOWN' as const,
+                summary: `执行尚未到达最终验证阶段；${ assessment.summary }`
+            };
+        });
+        if (!deferred) {
+            return decision;
+        }
+        return {
+            ...decision,
+            result: calculateResult(
+                successCriteria,
+                failureCriteria,
+                input
+            ),
+            summary: `执行在证据不足阶段结束，最终业务条件暂不可判定：${
+                input.stopCommand.reasonSummary
+            }`,
             successCriteria,
             failureCriteria
         };

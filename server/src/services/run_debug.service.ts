@@ -89,7 +89,8 @@ function createConfiguredExecutionEngine(
                     width: browserConfig.viewport.width,
                     height: browserConfig.viewport.height
                 }
-            }
+            },
+            uncertainRetryDelayMs: 10_000
         }
     );
 }

@@ -71,6 +71,7 @@ const EXECUTABLE_PLANNED_ACTIONS = new Set<ActionCommand['type']>([
 /** RunCoordinator 启动浏览器时使用的可覆盖参数。 */
 export interface RunCoordinatorOptions {
     browserStartOptions: BrowserStartOptions;
+    uncertainRetryDelayMs: number;
 }
 
 /** RunCoordinator 使用的规划与独立判定能力。 */
@@ -158,7 +159,8 @@ const DEFAULT_OPTIONS: RunCoordinatorOptions = {
             width: 1280,
             height: 720
         }
-    }
+    },
+    uncertainRetryDelayMs: 10_000
 };
 
 /**
@@ -433,6 +435,8 @@ export class RunCoordinator implements ExecutionEngine {
         const plannedActions: PlannedActionExecution[] = [];
         let beforeObservationReference =
             navigation.afterObservationReference;
+        let uncertainRetryUsed = false;
+        let uncertainRetrySequence = 0;
 
         while (true) {
             const budgetStop = this.createBudgetStopCommand(context);
@@ -445,34 +449,30 @@ export class RunCoordinator implements ExecutionEngine {
             }
 
             const command = await this.planNextAction(context, runtime);
-            if (this.isTerminalCommand(command)) {
-                return {
-                    navigation,
-                    plannedActions,
-                    stopCommand: command
-                };
-            }
-            if (!EXECUTABLE_PLANNED_ACTIONS.has(command.type)) {
-                return {
-                    navigation,
-                    plannedActions,
-                    stopCommand: this.createStopCommand(
-                        'UNCERTAIN',
-                        `当前执行阶段不支持 Planner 返回的 ${ command.type } 动作。`
+            const retryObservation =
+                command.type === 'UNCERTAIN' && !uncertainRetryUsed
+                    ? await this.retryAfterUncertain(
+                        context,
+                        runtime,
+                        uncertainRetrySequence + 1
                     )
-                };
+                    : undefined;
+            if (retryObservation) {
+                uncertainRetryUsed = true;
+                uncertainRetrySequence += 1;
+                beforeObservationReference =
+                    retryObservation.observationReference;
+                continue;
             }
-            if (
-                command.type === 'WAIT'
-                && plannedActions.at(-1)?.command.type === 'WAIT'
-            ) {
+            const plannerStop = this.createPlannerStopCommand(
+                command,
+                plannedActions.at(-1)?.command
+            );
+            if (plannerStop) {
                 return {
                     navigation,
                     plannedActions,
-                    stopCommand: this.createStopCommand(
-                        'UNCERTAIN',
-                        'Planner 连续返回 WAIT，已停止无效等待。'
-                    )
+                    stopCommand: plannerStop
                 };
             }
 
@@ -485,6 +485,7 @@ export class RunCoordinator implements ExecutionEngine {
                 beforeObservationReference
             );
             plannedActions.push(execution);
+            uncertainRetryUsed = false;
             if (command.type !== 'WAIT') {
                 this.updateRepeatedStateCount(
                     context,
@@ -520,6 +521,63 @@ export class RunCoordinator implements ExecutionEngine {
 
             beforeObservationReference = execution.afterObservationReference;
         }
+    }
+
+    /** 把 Planner 终止建议和当前不支持的动作统一转换成停止命令。 */
+    private createPlannerStopCommand(
+        command: ActionCommand,
+        previousCommand: ActionCommand | undefined
+    ): ActionCommand | undefined {
+        if (this.isTerminalCommand(command)) {
+            return command;
+        }
+        if (!EXECUTABLE_PLANNED_ACTIONS.has(command.type)) {
+            return this.createStopCommand(
+                'UNCERTAIN',
+                `当前执行阶段不支持 Planner 返回的 ${ command.type } 动作。`
+            );
+        }
+        if (command.type === 'WAIT' && previousCommand?.type === 'WAIT') {
+            return this.createStopCommand(
+                'UNCERTAIN',
+                'Planner 连续返回 WAIT，已停止无效等待。'
+            );
+        }
+        return undefined;
+    }
+
+    /** Planner 首次证据不足时，等待页面稳定并重采集一次 DOM 与截图。 */
+    private async retryAfterUncertain(
+        context: RunExecutionContext,
+        runtime: RunContext,
+        sequence: number
+    ): Promise<ObservationEvidence | undefined> {
+        const remaining = this.getRemainingBudgets(context);
+        if (
+            remaining.maxModelCalls <= 1
+            || remaining.maxDurationMs <= this.options.uncertainRetryDelayMs
+        ) {
+            return undefined;
+        }
+        await this.transition(
+            context,
+            'OBSERVING',
+            `当前页面证据不足，等待 ${
+                this.options.uncertainRetryDelayMs / 1_000
+            } 秒后重新观察`
+        );
+        await waitForDelay(
+            this.options.uncertainRetryDelayMs,
+            context.signal
+        );
+        const evidence = await this.captureObservationEvidence(
+            context,
+            runtime.browserSession,
+            `observation-after-uncertain-retry-${ sequence }`,
+            `screenshot-after-uncertain-retry-${ sequence }.png`
+        );
+        runtime.latestObservation = evidence.observation;
+        return evidence;
     }
 
     /** 记录浏览器执行导航前的空白页状态。 */
@@ -1039,11 +1097,13 @@ export class RunCoordinator implements ExecutionEngine {
         context: RunExecutionContext,
         runtime: RunContext
     ): Promise<ActionCommand> {
-        await this.transition(
-            context,
-            'OBSERVING',
-            '正在准备导航后的最新页面观察'
-        );
+        if (context.lifecycle.current() !== 'OBSERVING') {
+            await this.transition(
+                context,
+                'OBSERVING',
+                '正在准备导航后的最新页面观察'
+            );
+        }
         await this.transition(
             context,
             'PLANNING',
@@ -2086,6 +2146,31 @@ export class RunCoordinator implements ExecutionEngine {
             payload,
         });
     }
+}
+
+/** 支持 AbortSignal 的有限等待，运行被主动终止时立即释放定时器。 */
+function waitForDelay(
+    durationMs: number,
+    signal: AbortSignal
+): Promise<void> {
+    signal.throwIfAborted();
+    if (durationMs <= 0) {
+        return Promise.resolve();
+    }
+    return new Promise<void>((resolve, reject) => {
+        const onAbort = () => {
+            clearTimeout(timeout);
+            reject(signal.reason ?? new DOMException(
+                '运行已取消。',
+                'AbortError'
+            ));
+        };
+        const timeout = setTimeout(() => {
+            signal.removeEventListener('abort', onAbort);
+            resolve();
+        }, durationMs);
+        signal.addEventListener('abort', onAbort, { once: true });
+    });
 }
 
 /** 将 TestIntent 显式转换为可以安全持久化的 JSON 数据。 */

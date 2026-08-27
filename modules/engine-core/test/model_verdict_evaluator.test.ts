@@ -337,6 +337,64 @@ describe('ModelVerdictEvaluator unfinished exact text assertions', () => {
     });
 });
 
+describe('ModelVerdictEvaluator uncertain stop boundary', () => {
+    it('中途停止时不会把最终目标尚未出现判为业务失败', async () => {
+        const absentInput: EvaluateVerdictInput = {
+            ...input,
+            testIntent: {
+                ...input.testIntent,
+                successCriteria: [{
+                    id: 'application-exists',
+                    description: '工作台存在应用“2026.8.27”。',
+                    preferredEvidence: ['dom'],
+                    required: true
+                }],
+                failureCriteria: [{
+                    id: 'application-not-found',
+                    description: '创建完成后未找到应用“2026.8.27”。'
+                }]
+            },
+            observation: {
+                ...input.observation,
+                visibleText: [ '工作台', '新建应用' ]
+            },
+            stopCommand: {
+                type: 'UNCERTAIN',
+                reasonSummary: '当前页面证据不足。',
+                risk: 'read-only'
+            }
+        };
+        const prematureFailure: VerdictDecision = {
+            result: 'FAIL',
+            summary: '没有找到目标应用。',
+            successCriteria: [{
+                criterionId: 'application-exists',
+                status: 'NOT_MATCHED',
+                summary: '页面未出现目标应用。'
+            }],
+            failureCriteria: [{
+                criterionId: 'application-not-found',
+                status: 'MATCHED',
+                summary: '工作台未找到目标应用。'
+            }]
+        };
+        const evaluator = new ModelVerdictEvaluator(
+            new FakeModelAdapter(prematureFailure),
+            verdictDecisionSchema
+        );
+
+        const decision = await evaluator.evaluate(
+            absentInput,
+            new AbortController().signal
+        );
+
+        assert.equal(decision.result, 'UNCERTAIN');
+        assert.equal(decision.successCriteria[0]?.status, 'UNKNOWN');
+        assert.equal(decision.failureCriteria[0]?.status, 'UNKNOWN');
+        assert.match(decision.summary, /证据不足阶段/u);
+    });
+});
+
 /** 返回固定结构化输出并记录模型请求。 */
 class FakeModelAdapter implements ModelAdapter {
     public lastRequest?: ModelRequest;

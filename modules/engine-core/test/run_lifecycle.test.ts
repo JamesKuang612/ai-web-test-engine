@@ -35,6 +35,13 @@ describe('RunLifecycle', () => {
         expect(lifecycle.canTransition('STARTING')).to.equal(false);
     });
 
+    it('允许 Planner 证据不足后回到观察阶段', () => {
+        const lifecycle = new RunLifecycle('PLANNING');
+
+        expect(lifecycle.transition('OBSERVING')).to.equal('OBSERVING');
+        expect(lifecycle.transition('PLANNING')).to.equal('PLANNING');
+    });
+
     it('拒绝跳过观察和规划阶段的非法状态迁移', () => {
         const lifecycle = new RunLifecycle();
 

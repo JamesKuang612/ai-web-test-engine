@@ -72,6 +72,16 @@ const startInput: StartRunInput = {
         maxRepeatedStateActions: 2
     }
 };
+const FAST_RETRY_OPTIONS = {
+    browserStartOptions: {
+        headless: true,
+        viewport: {
+            width: 1280,
+            height: 720
+        }
+    },
+    uncertainRetryDelayMs: 0
+};
 
 const testIntent: TestIntent = {
     schemaVersion: 1,
@@ -230,20 +240,22 @@ describe('RunCoordinator', () => {
     it('Planner 返回 UNCERTAIN 后由独立 Verdict 保守结束', async () => {
         const artifactStore = new FakeArtifactStore();
         const browserAdapter = new FakeBrowserAdapter();
+        const actionPlanner = new FakeActionPlanner({
+            type: 'UNCERTAIN',
+            reasonSummary: '当前页面无法确定下一步',
+            risk: 'read-only'
+        });
         const coordinator = new RunCoordinator(
             artifactStore,
             new FakeRunEventPublisher(),
             new FakeIntentBuilder(testIntent),
             browserAdapter,
             {
-                actionPlanner: new FakeActionPlanner({
-                    type: 'UNCERTAIN',
-                    reasonSummary: '当前页面无法确定下一步',
-                    risk: 'read-only'
-                }),
+                actionPlanner,
                 verdictEvaluator: new FakeVerdictEvaluator(uncertainVerdict)
             },
-            new FakeEnvironmentValueResolver()
+            new FakeEnvironmentValueResolver(),
+            FAST_RETRY_OPTIONS
         );
 
         const result = await coordinator.start(
@@ -254,9 +266,18 @@ describe('RunCoordinator', () => {
         assert.equal(result.lifecycle, 'COMPLETED');
         assert.equal(result.result, 'UNCERTAIN');
         assert.equal(result.metrics.actionCount, 1);
-        assert.equal(result.metrics.modelCallCount, 3);
+        assert.equal(result.metrics.modelCallCount, 4);
         assert.equal(browserAdapter.executeCount, 1);
+        assert.equal(browserAdapter.observeCount, 3);
+        assert.equal(browserAdapter.captureScreenshotCount, 2);
+        assert.equal(actionPlanner.callCount, 2);
         assert.equal(artifactStore.traces.length, 1);
+        assert.equal(artifactStore.savedJson.some(
+            ({ name }) => name === 'observation-after-uncertain-retry-1'
+        ), true);
+        assert.equal(artifactStore.savedArtifacts.some(
+            ({ name }) => name === 'screenshot-after-uncertain-retry-1.png'
+        ), true);
         assert.equal(result.summary, uncertainVerdict.summary);
     });
 });
