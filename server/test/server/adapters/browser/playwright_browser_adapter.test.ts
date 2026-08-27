@@ -351,6 +351,66 @@ describe('PlaywrightBrowserAdapter', () => {
         }
     }).timeout(15_000);
 
+    it('识别仅通过计算样式表达可点击语义的卡片', async () => {
+        const testServer = await startTestHttpServer([
+            '<!doctype html><title>新建应用</title>',
+            '<style>.create-card { cursor: pointer; padding: 24px; }</style>',
+            '<body><div class="create-card">',
+            '<span>+</span><strong>创建空白应用</strong>',
+            '</div><script>',
+            'document.querySelector(".create-card")',
+            '.addEventListener("click", function () {',
+            'this.textContent = "名称";',
+            '});',
+            '</script></body>'
+        ].join(''));
+        const adapter = new PlaywrightBrowserAdapter();
+        let session: BrowserSession | undefined;
+
+        try {
+            session = await adapter.start(START_OPTIONS);
+            await adapter.execute(
+                session,
+                createNavigateCommand(testServer.url)
+            );
+            const before = await adapter.observe(session);
+            const createCard = before.interactiveElements.find(
+                (element) => element.name === '+创建空白应用'
+            );
+
+            assert.ok(createCard);
+            assert.equal(createCard.tag, 'div');
+            assert.equal(createCard.role, 'button');
+            assert.equal(
+                before.interactiveElements.some(
+                    (element) => element.name === '创建空白应用'
+                        && element.tag !== 'div'
+                ),
+                false
+            );
+
+            const result = await adapter.execute(session, {
+                type: 'CLICK',
+                target: {
+                    candidateId: createCard.candidateId,
+                    description: '创建空白应用卡片'
+                },
+                expectedEffect: '打开应用名称输入表单',
+                reasonSummary: '选择创建空白应用',
+                risk: 'reversible'
+            });
+            const after = await adapter.observe(session);
+
+            assert.equal(result.status, 'executed');
+            assert.deepEqual(after.visibleText, [ '名称' ]);
+        } finally {
+            if (session) {
+                await adapter.close(session);
+            }
+            await testServer.close();
+        }
+    }).timeout(15_000);
+
     it('点击预期跳转的按钮时等待异步导航完成', async () => {
         const testServer = await startTestHttpServer([
             '<!doctype html><title>异步登录页</title><body>',
@@ -387,6 +447,59 @@ describe('PlaywrightBrowserAdapter', () => {
             assert.equal(result.status, 'executed');
             assert.equal(result.browserSignals.urlChanged, true);
             assert.equal(after.page.url, `${ testServer.url }/dashboard`);
+        } finally {
+            if (session) {
+                await adapter.close(session);
+            }
+            await testServer.close();
+        }
+    }).timeout(15_000);
+
+    it('登录进入工作台时等待 SPA 主体页面完成切换', async () => {
+        const testServer = await startTestHttpServer([
+            '<!doctype html><title>登录页</title><body>',
+            '<button type="button" onclick="',
+            'document.body.innerHTML = \'<nav>工作台</nav>\';',
+            'setTimeout(() => {',
+            'history.pushState({}, \'\', \'/dashboard\');',
+            'document.body.innerHTML = \'<button>新建应用</button>\';',
+            '}, 800);',
+            '">登录</button></body>'
+        ].join(''));
+        const adapter = new PlaywrightBrowserAdapter();
+        let session: BrowserSession | undefined;
+
+        try {
+            session = await adapter.start(START_OPTIONS);
+            await adapter.execute(
+                session,
+                createNavigateCommand(testServer.url)
+            );
+            const before = await adapter.observe(session);
+            const loginButton = before.interactiveElements.find(
+                (element) => element.name === '登录'
+            );
+            assert.ok(loginButton);
+
+            const result = await adapter.execute(session, {
+                type: 'CLICK',
+                target: {
+                    candidateId: loginButton.candidateId,
+                    description: '登录按钮'
+                },
+                expectedEffect: '提交账号密码并登录进入工作台',
+                reasonSummary: '登录测试环境',
+                risk: 'side-effect'
+            });
+            const after = await adapter.observe(session);
+
+            assert.equal(result.status, 'executed');
+            assert.equal(result.browserSignals.urlChanged, true);
+            assert.equal(after.page.url, `${ testServer.url }/dashboard`);
+            assert.equal(
+                after.interactiveElements[0]?.name,
+                '新建应用'
+            );
         } finally {
             if (session) {
                 await adapter.close(session);

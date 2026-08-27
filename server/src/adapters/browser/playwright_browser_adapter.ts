@@ -809,7 +809,7 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
 
     /** 根据 Planner 描述判断点击是否预期进入另一个页面。 */
     private isNavigationExpected(command: ActionCommand): boolean {
-        return /跳转|进入.+页面|导航|打开.+页面|URL|地址/iu.test([
+        return /跳转|进入.+页面|导航|打开.+页面|登录(?:成功)?(?:后|进入|跳转|完成)|URL|地址/iu.test([
             command.expectedEffect ?? '',
             command.reasonSummary
         ].join(' '));

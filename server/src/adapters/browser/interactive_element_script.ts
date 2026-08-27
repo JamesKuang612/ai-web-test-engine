@@ -103,6 +103,17 @@ export const INTERACTIVE_ELEMENT_SCRIPT = String.raw`(() => {
         const style = window.getComputedStyle(element);
         return style.cursor === 'pointer' || Boolean(getSemanticClass(element));
     };
+    const isPointerCursorRoot = (element) => {
+        if (!isVisible(element)) {
+            return false;
+        }
+        const style = window.getComputedStyle(element);
+        if (style.cursor !== 'pointer') {
+            return false;
+        }
+        const parent = element.parentElement;
+        return !parent || window.getComputedStyle(parent).cursor !== 'pointer';
+    };
     const inferRole = (element, likelyInteractive) => {
         const explicitRole = element.getAttribute('role');
         if (explicitRole) {
@@ -284,7 +295,10 @@ export const INTERACTIVE_ELEMENT_SCRIPT = String.raw`(() => {
 
     document.querySelectorAll('[' + candidateAttribute + ']')
         .forEach((element) => element.removeAttribute(candidateAttribute));
-    const interactiveElements = Array.from(document.querySelectorAll(selector))
+    const interactiveElements = Array.from(document.querySelectorAll('body *'))
+        .filter((element) => (
+            element.matches(selector) || isPointerCursorRoot(element)
+        ))
         .filter(isLikelyInteractive);
     const interactiveSet = new Set(interactiveElements);
     return interactiveElements
