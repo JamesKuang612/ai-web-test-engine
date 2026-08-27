@@ -301,12 +301,14 @@ function listEnabledMcpServerNames(
     });
 }
 
-/** 为每个 MCP 名称生成独立配置覆盖，避免用户配置合并后重新启用。 */
+/** 为可安全表达为 TOML 裸键的 MCP 名称生成禁用覆盖。 */
 function createMcpDisableArguments(serverNames: string[]): string[] {
-    return serverNames.flatMap((serverName) => [
-        '-c',
-        `mcp_servers.${ JSON.stringify(serverName) }.enabled=false`
-    ]);
+    return serverNames
+        .filter((serverName) => /^[a-zA-Z0-9_-]+$/u.test(serverName))
+        .flatMap((serverName) => [
+            '-c',
+            `mcp_servers.${ serverName }.enabled=false`
+        ]);
 }
 
 /** Windows 子进程短暂占用 cwd 时，避免清理错误覆盖成功模型结果。 */

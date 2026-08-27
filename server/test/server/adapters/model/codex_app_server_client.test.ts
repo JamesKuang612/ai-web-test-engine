@@ -23,6 +23,7 @@ describe('StdioCodexAppServerClient', () => {
     it('按协议完成初始化、模型校验、临时线程和结构化回合', async () => {
         const fakeMcpListProcess = new FakeCodexMcpListProcess([
             'momentic',
+            'node_repl',
             'team.docs'
         ]);
         const fakeProcess = new FakeCodexProcess([
@@ -44,9 +45,9 @@ describe('StdioCodexAppServerClient', () => {
             }
             assert.deepEqual(args, [
                 '-c',
-                'mcp_servers."momentic".enabled=false',
+                'mcp_servers.momentic.enabled=false',
                 '-c',
-                'mcp_servers."team.docs".enabled=false',
+                'mcp_servers.node_repl.enabled=false',
                 'app-server',
                 '--stdio'
             ]);
