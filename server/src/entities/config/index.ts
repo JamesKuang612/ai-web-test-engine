@@ -7,9 +7,11 @@ import {
     IComponentsConf,
     IBrowserComponentConf,
     ILlmComponentConf,
+    IVisualGroundingComponentConf,
     LlmApiProtocol,
     LlmProvider,
     LlmReasoningEffort,
+    VisualGroundingProvider,
 } from './components.config';
 
 /**
@@ -34,7 +36,9 @@ export {
     IComponentsConf,
     IBrowserComponentConf,
     ILlmComponentConf,
+    IVisualGroundingComponentConf,
     LlmApiProtocol,
     LlmProvider,
-    LlmReasoningEffort
+    LlmReasoningEffort,
+    VisualGroundingProvider
 };

@@ -4,6 +4,8 @@
   "private": true,
   "dependencies": {
     "@ai-web-test-engine/core": "0.1.0",
+    "@midscene/web": "1.12.0",
+    "@playwright/test": "1.62.1",
     "playwright": "1.62.1",
     "yaml": "2.9.0"
   },

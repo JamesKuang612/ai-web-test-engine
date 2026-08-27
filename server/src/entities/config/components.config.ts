@@ -16,6 +16,20 @@ export type LlmReasoningEffort =
 /** Codex 可选的加速服务档位；未配置时使用账户默认档位。 */
 export type LlmServiceTier = 'priority';
 
+/** 当前视觉定位阶段固定使用 Midscene。 */
+export type VisualGroundingProvider = 'midscene';
+
+/** Midscene 视觉模型配置；暂不代表视觉能力已进入执行链路。 */
+export interface IVisualGroundingComponentConf {
+    readonly enabled: boolean;
+    readonly provider: VisualGroundingProvider;
+    readonly base_url: string;
+    readonly model: string;
+    readonly model_family: 'gpt-5';
+    readonly reasoning_enabled: boolean;
+    readonly timeout_ms: number;
+}
+
 /** 模型 Provider 配置；FineOne API Key 只允许由本机私有配置覆盖。 */
 export interface ILlmComponentConf {
     readonly provider: LlmProvider;
@@ -41,4 +55,6 @@ export interface IBrowserComponentConf {
 export interface IComponentsConf {
     readonly browser: IBrowserComponentConf;
     readonly llm: ILlmComponentConf;
+    /** 兼容尚未增加该字段的本机私有覆盖配置。 */
+    readonly visual_grounding?: IVisualGroundingComponentConf;
 }
