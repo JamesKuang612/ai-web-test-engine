@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { ErrorHandler } from './middlewares/error.handler';
 import {
     intentPreviewController,
+    planGenerationController,
     runDebugController,
     runDebugSessionController,
     testDefinitionController,
@@ -23,6 +24,10 @@ requestRouter.post(
 requestRouter.post(
     '/api/debug/runs',
     runDebugSessionController.start
+);
+requestRouter.post(
+    '/api/debug/runs/:runId/plan',
+    planGenerationController.generate
 );
 requestRouter.get(
     '/api/debug/runs/:sessionId/events',

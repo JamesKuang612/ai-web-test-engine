@@ -1,4 +1,5 @@
 import type {
+    EvidenceRef,
     PageObservation,
     RunBudgets,
     RunLifecycleState,
@@ -19,6 +20,7 @@ export interface RunContext {
     testIntent: TestIntent;
     browserSession: BrowserSession;
     latestObservation?: PageObservation;
+    latestObservationReference?: EvidenceRef;
     history: PlannerHistoryEntry[];
     budgets: RunBudgets;
     lifecycle: RunLifecycleState;

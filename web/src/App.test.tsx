@@ -165,6 +165,14 @@ describe('Run debug workbench', () => {
         });
         expect(window.localStorage.getItem(
             'ai-web-test-engine.plan-ref.login-and-open-workbench'
+        )).toBeNull();
+        await user.click(screen.getByRole('tab', { name: '控制台' }));
+        await user.click(screen.getByRole('button', {
+            name: '生成结构化计划'
+        }));
+        expect(await screen.findByText('计划生成成功')).toBeInTheDocument();
+        expect(window.localStorage.getItem(
+            'ai-web-test-engine.plan-ref.login-and-open-workbench'
         )).toBe('source-run/json/compiled-plan.json');
         const planSaveCall = api.mock.calls.find(([input, init]) => (
             String(input) === '/api/tests/login-and-open-workbench'
@@ -172,7 +180,11 @@ describe('Run debug workbench', () => {
             && String(init.body).includes('compiled-plan.json')
         ));
         expect(planSaveCall).toBeDefined();
+        await user.click(screen.getByRole('tab', { name: '时间线' }));
         expect(screen.getByText('页面状态已采集')).toBeInTheDocument();
+        expect(screen.getByText('最终判定依据')).toBeInTheDocument();
+        expect(screen.getByText('最终判定使用此页面观察'))
+            .toBeInTheDocument();
         expect(screen.getByRole('img', { name: '当前运行截图' }))
             .toHaveAttribute(
                 'src',
@@ -185,6 +197,46 @@ describe('Run debug workbench', () => {
         }));
         expect(screen.getByLabelText('运行模式'))
             .toHaveValue('structured-replay');
+    });
+
+    it('shows plan generation failures in the console and allows retry', async () => {
+        const user = userEvent.setup();
+        const api = installApiMock({
+            planBody: {
+                planGeneration: {
+                    schemaVersion: 1,
+                    runId: 'run-debug-001',
+                    status: 'FAILED',
+                    summary: '第 2 步效果未经确认，不能编译。',
+                    failure: {
+                        category: 'TRACE_COMPILE_ERROR',
+                        phase: 'COMPILING_PLAN',
+                        recoverable: true,
+                        summary: '第 2 步效果未经确认，不能编译。'
+                    }
+                }
+            },
+            planStatus: 422
+        });
+        renderApp('/tests/login-and-open-workbench');
+        await screen.findByDisplayValue(LOGIN_ACTION);
+
+        await user.click(screen.getByRole('button', { name: '运行' }));
+        expect(await screen.findByText('测试通过')).toBeInTheDocument();
+        await user.click(screen.getByRole('tab', { name: '控制台' }));
+        await user.click(screen.getByRole('button', {
+            name: '生成结构化计划'
+        }));
+
+        expect(await screen.findByText('计划生成失败')).toBeInTheDocument();
+        expect(screen.getByText('第 2 步效果未经确认，不能编译。'))
+            .toBeInTheDocument();
+        expect(screen.getByRole('button', {
+            name: '重新生成计划'
+        })).toBeInTheDocument();
+        expect(api.mock.calls.filter(([input]) => (
+            String(input) === '/api/debug/runs/run-debug-001/plan'
+        ))).toHaveLength(1);
     });
 
     it('shows backend validation errors in the console', async () => {
@@ -203,6 +255,29 @@ describe('Run debug workbench', () => {
         expect(await screen.findByRole('alert')).toHaveTextContent(
             'startUrl 只允许测试环境 Host。'
         );
+    });
+
+    it('distinguishes uncertain verdicts from failed runs', async () => {
+        const user = userEvent.setup();
+        installApiMock({
+            currentSession: {
+                ...createRunSession('COMPLETED'),
+                result: {
+                    ...createDebugRunResult(),
+                    result: 'UNCERTAIN',
+                    summary: '最终页面证据不足，无法判断。'
+                }
+            }
+        });
+        renderApp('/tests/login-and-open-workbench');
+        await screen.findByDisplayValue(LOGIN_ACTION);
+
+        await user.click(screen.getByRole('button', { name: '运行' }));
+
+        expect(await screen.findByText('需要确认')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: '待确认' }))
+            .toBeInTheDocument();
+        expect(screen.queryByText('运行未通过')).not.toBeInTheDocument();
     });
 
     it('actively cancels the same running session', async () => {
@@ -230,6 +305,8 @@ interface ApiMockOptions {
     currentSession?: ReturnType<typeof createRunSession>;
     startBody?: unknown;
     startStatus?: number;
+    planBody?: unknown;
+    planStatus?: number;
 }
 
 const RUN_SESSION_ID = '8d482633-14a6-4a13-a52f-bfb0617b14dc';
@@ -316,6 +393,23 @@ function installApiMock(options: ApiMockOptions = {}) {
                     ?? createRunSession('COMPLETED')
             });
         }
+        if (
+            url === '/api/debug/runs/run-debug-001/plan'
+            && method === 'POST'
+        ) {
+            return jsonResponse(
+                options.planBody ?? {
+                    planGeneration: {
+                        schemaVersion: 1,
+                        runId: 'run-debug-001',
+                        status: 'SUCCEEDED',
+                        summary: '结构化计划已生成，共 4 个步骤。',
+                        compiledPlanRef: 'source-run/json/compiled-plan.json'
+                    }
+                },
+                options.planStatus ?? 201
+            );
+        }
         return jsonResponse({ error: 'Not found.' }, 404);
     });
     vi.stubGlobal('EventSource', undefined);
@@ -385,11 +479,10 @@ function createDebugRunResult() {
             ref: 'run-debug-001/json/verdict.json'
         }],
         traceRef: 'run-debug-001/trace.jsonl',
-        compiledPlanRef: 'source-run/json/compiled-plan.json',
         metrics: {
-            actionCount: 8,
+            actionCount: 4,
             durationMs: 30_000,
-            modelCallCount: 7,
+            modelCallCount: 6,
             repeatedStateActionCount: 0
         }
     };
@@ -404,7 +497,9 @@ function createRunSession(
         status,
         createdAt: '2026-08-26T08:00:00.000Z',
         updatedAt: '2026-08-26T08:00:03.000Z',
-        events: status === 'COMPLETED' ? [createObservationEvent()] : [],
+        events: status === 'COMPLETED'
+            ? [createObservationEvent(), createVerdictEvent()]
+            : [],
         ...status === 'COMPLETED'
             ? { result: createDebugRunResult(), runId: 'run-debug-001' }
             : {},
@@ -423,8 +518,27 @@ function createObservationEvent() {
         sequence: 8,
         timestamp: '2026-08-26T08:00:03.000Z',
         payload: {
+            observationRef:
+                'run-debug-001/json/observation-after-action-4.json',
             screenshotRef: 'run-debug-001/artifacts/screen.png',
             url: DEFAULT_START_URL
+        }
+    };
+}
+
+function createVerdictEvent() {
+    return {
+        schemaVersion: 1,
+        eventId: 'event-verdict-001',
+        runId: 'run-debug-001',
+        type: 'verdict.completed',
+        sequence: 9,
+        timestamp: '2026-08-26T08:00:04.000Z',
+        payload: {
+            observationRef:
+                'run-debug-001/json/observation-after-action-4.json',
+            result: 'PASS',
+            summary: '页面已经进入简道云工作台。'
         }
     };
 }

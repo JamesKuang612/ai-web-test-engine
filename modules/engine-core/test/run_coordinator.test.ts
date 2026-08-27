@@ -268,10 +268,79 @@ describe('RunCoordinator', () => {
         ), true);
         assert.equal(result.summary, uncertainVerdict.summary);
     });
+
+});
+
+describe('RunCoordinator 最终观察', () => {
+    it('最终 Verdict 使用 UNCERTAIN 重试后保存的最新页面观察', async () => {
+        const retryObservation = createObservation(
+            'https://test.jdydevelop.com/dashboard#/',
+            false,
+            false,
+            true
+        );
+        retryObservation.visibleText = [ '应用列表', '蒋捷欣' ];
+        const staleObservation = {
+            ...structuredClone(retryObservation),
+            visibleText: [],
+            interactiveElements: [],
+            stateFingerprint: 'stale-observation'
+        };
+        const artifactStore = new FakeArtifactStore();
+        const eventPublisher = new FakeRunEventPublisher();
+        const browserAdapter = new FakeBrowserAdapter(
+            false,
+            false,
+            undefined,
+            [ undefined, undefined, staleObservation, retryObservation ]
+        );
+        const actionPlanner = new FakeActionPlanner([
+            plannedClickCommand,
+            {
+                type: 'UNCERTAIN',
+                reasonSummary: '动作后的页面观察暂时缺少应用列表',
+                risk: 'read-only'
+            },
+            finishCommand
+        ]);
+        const verdictEvaluator = new FakeVerdictEvaluator(passVerdict);
+        const coordinator = new RunCoordinator(
+            artifactStore,
+            eventPublisher,
+            new FakeIntentBuilder(testIntent),
+            browserAdapter,
+            {
+                actionPlanner,
+                verdictEvaluator
+            },
+            new FakeEnvironmentValueResolver()
+        );
+
+        const result = await coordinator.start(
+            startInput,
+            new AbortController().signal
+        );
+
+        assert.equal(result.result, 'PASS');
+        assert.deepEqual(
+            verdictEvaluator.lastInput?.observation.visibleText,
+            [ '应用列表', '蒋捷欣' ]
+        );
+        assert.equal(
+            artifactStore.updatedSnapshots.at(-1)?.metadata.observationRef,
+            `${ result.runId }/json/observation-after-uncertain-retry-1.json`
+        );
+        assert.equal(
+            eventPublisher.events.find(
+                (event) => event.type === 'verdict.completed'
+            )?.payload.observationRef,
+            `${ result.runId }/json/observation-after-uncertain-retry-1.json`
+        );
+    });
 });
 
 describe('RunCoordinator 扩展动作', () => {
-    it('允许受限 WAIT 进入成功轨迹并完成确定性回放', async () => {
+    it('允许受限 WAIT 进入成功轨迹并保存计划编译源', async () => {
         const artifactStore = new FakeArtifactStore();
         const verdictEvaluator = new FakeVerdictEvaluator(passVerdict);
         const waitCommand: ActionCommand = {
@@ -304,9 +373,11 @@ describe('RunCoordinator 扩展动作', () => {
             startInput,
             new AbortController().signal
         );
-        const compiledPlan = artifactStore.savedJson.find(
-            ({ name }) => name === 'compiled-plan'
-        )?.value as unknown as CompiledPlan;
+        const compilationSource = artifactStore.savedJson.find(
+            ({ name }) => name === 'plan-compilation-source'
+        )?.value as unknown as {
+            steps: Array<{ command: { type: string } }>
+        };
 
         assert.equal(result.result, 'PASS');
         assert.deepEqual(
@@ -314,8 +385,14 @@ describe('RunCoordinator 扩展动作', () => {
             [ 'NAVIGATE', 'WAIT' ]
         );
         assert.deepEqual(
-            compiledPlan.steps.map((step) => step.type),
+            compilationSource.steps.map((step) => step.command.type),
             [ 'NAVIGATE', 'WAIT' ]
+        );
+        assert.equal(
+            artifactStore.savedJson.some(
+                ({ name }) => name === 'compiled-plan'
+            ),
+            false
         );
         assert.equal(result.metrics.repeatedStateActionCount, 0);
         assert.equal(actionPlanner.callCount, 2);
@@ -452,9 +529,9 @@ function assertCompletedAiRun(state: CompletedRunState): void {
     assert.equal(result.lifecycle, 'COMPLETED');
     assert.equal(result.result, 'PASS');
     assert.equal(result.summary, passVerdict.summary);
-    assert.equal(result.metrics.actionCount, 8);
-    assert.equal(result.metrics.modelCallCount, 7);
-    assert.match(result.compiledPlanRef ?? '', /compiled-plan\.json$/);
+    assert.equal(result.metrics.actionCount, 4);
+    assert.equal(result.metrics.modelCallCount, 6);
+    assert.equal(result.compiledPlanRef, undefined);
     assert.equal(intentBuilder.callCount, 1);
     assert.equal(intentBuilder.lastSignal, signal);
     assert.deepEqual(intentBuilder.lastInput, {
@@ -472,27 +549,17 @@ function assertCompletedAiRun(state: CompletedRunState): void {
             'observation-after-action-3',
             'observation-after-action-4',
             'verdict',
-            'replay-observation-before-1',
-            'replay-observation-after-1',
-            'replay-observation-before-2',
-            'replay-observation-after-2',
-            'replay-observation-before-3',
-            'replay-observation-after-3',
-            'replay-observation-before-4',
-            'replay-observation-after-4',
-            'replay-verdict',
-            'replay-validation',
-            'compiled-plan'
+            'plan-compilation-source'
         ]
     );
     assert.equal(artifactStore.updatedSnapshots.at(-1)?.lifecycle, 'COMPLETED');
-    assert.equal(browserAdapter.startCount, 2);
-    assert.equal(browserAdapter.executeCount, 8);
-    assert.equal(browserAdapter.observeCount, 13);
-    assert.equal(browserAdapter.captureScreenshotCount, 8);
-    assert.equal(browserAdapter.closeCount, 2);
+    assert.equal(browserAdapter.startCount, 1);
+    assert.equal(browserAdapter.executeCount, 4);
+    assert.equal(browserAdapter.observeCount, 5);
+    assert.equal(browserAdapter.captureScreenshotCount, 4);
+    assert.equal(browserAdapter.closeCount, 1);
     assert.equal(artifactStore.traces.length, 4);
-    assert.equal(artifactStore.savedArtifacts.length, 8);
+    assert.equal(artifactStore.savedArtifacts.length, 4);
     assertObservationEventsIncludeScreenshot(eventPublisher.events);
     assert.equal(actionPlanner.callCount, 4);
     assert.deepEqual(
@@ -521,14 +588,12 @@ function assertCompletedAiRun(state: CompletedRunState): void {
     assert.equal(browserAdapter.commands[3]?.type, 'CLICK');
     assert.deepEqual(valueResolver.resolvedNames, [
         'username',
-        'password',
-        'username',
         'password'
     ]);
-    assert.equal(verdictEvaluator.callCount, 2);
+    assert.equal(verdictEvaluator.callCount, 1);
     assert.equal(verdictEvaluator.lastInput?.stopCommand.type, 'FINISH');
     assert.equal(artifactStore.results[0], result);
-    assertCompiledPlanIsSafe(artifactStore);
+    assertCompilationSourceIsSafe(artifactStore);
     assert.deepEqual(
         eventPublisher.events.map((event) => event.sequence),
         eventPublisher.events.map((_event, index) => index + 1)
@@ -544,13 +609,19 @@ function assertObservationEventsIncludeScreenshot(events: RunEvent[]): void {
     )), true);
 }
 
-/** 校验候选计划既已保存，又不泄露运行时定位或密码值。 */
-function assertCompiledPlanIsSafe(artifactStore: FakeArtifactStore): void {
-    const compiledPlan = artifactStore.savedJson.find(
-        ({ name }) => name === 'compiled-plan'
+/** 校验编译源保留候选定位，但不泄露已解析的密码值。 */
+function assertCompilationSourceIsSafe(artifactStore: FakeArtifactStore): void {
+    const compilationSource = artifactStore.savedJson.find(
+        ({ name }) => name === 'plan-compilation-source'
     )?.value;
-    assert.equal(JSON.stringify(compiledPlan).includes('candidateId'), false);
-    assert.equal(JSON.stringify(compiledPlan).includes('test-password'), false);
+    assert.equal(
+        JSON.stringify(compilationSource).includes('candidateId'),
+        true
+    );
+    assert.equal(
+        JSON.stringify(compilationSource).includes('test-password'),
+        false
+    );
 }
 
 describe('RunCoordinator 终止路径', () => {
@@ -690,8 +761,8 @@ describe('RunCoordinator 稳定性保护', () => {
     });
 });
 
-describe('RunCoordinator 回放失败路径', () => {
-    it('回放失败时不保存候选计划并返回稳定失败分类', async () => {
+describe('RunCoordinator 探索与计划生成分离', () => {
+    it('首次探索通过后不自动打开第二个浏览器', async () => {
         const artifactStore = new FakeArtifactStore();
         const browserAdapter = new FakeBrowserAdapter(true);
         const verdictEvaluator = new FakeVerdictEvaluator(passVerdict);
@@ -717,12 +788,19 @@ describe('RunCoordinator 回放失败路径', () => {
             new AbortController().signal
         );
 
-        assert.equal(result.lifecycle, 'CRASHED');
-        assert.equal(result.failure?.phase, 'REPLAY_VALIDATING');
-        assert.equal(result.failure?.category, 'REPLAY_FAILED');
-        assert.equal(result.metrics.actionCount, 5);
+        assert.equal(result.lifecycle, 'COMPLETED');
+        assert.equal(result.result, 'PASS');
+        assert.equal(result.failure, undefined);
+        assert.equal(result.metrics.actionCount, 4);
         assert.equal(verdictEvaluator.callCount, 1);
-        assert.equal(browserAdapter.closeCount, 2);
+        assert.equal(browserAdapter.startCount, 1);
+        assert.equal(browserAdapter.closeCount, 1);
+        assert.equal(
+            artifactStore.savedJson.some(
+                ({ name }) => name === 'plan-compilation-source'
+            ),
+            true
+        );
         assert.equal(
             artifactStore.savedJson.some(({ name }) => name === 'compiled-plan'),
             false
@@ -1115,7 +1193,10 @@ class FakeBrowserAdapter implements BrowserAdapter {
     constructor(
         private readonly failReplay = false,
         private readonly unreadyAfterLogin = false,
-        visualObservation?: PageObservation
+        visualObservation?: PageObservation,
+        private readonly observationOverrides: Array<
+            PageObservation | undefined
+        > = []
     ) {
         if (visualObservation) {
             this.enhanceObservationWithVision = (
@@ -1158,7 +1239,12 @@ class FakeBrowserAdapter implements BrowserAdapter {
             return Promise.reject(new Error('测试浏览器会话不存在。'));
         }
         if (commands.length === 0) {
-            return Promise.resolve(createObservation('about:blank'));
+            return Promise.resolve(
+                structuredClone(
+                    this.observationOverrides[this.observeCount - 1] ??
+                    createObservation('about:blank')
+                )
+            );
         }
         const loginSubmitted = commands.some(
             (command) => command.type === 'CLICK'
@@ -1177,8 +1263,7 @@ class FakeBrowserAdapter implements BrowserAdapter {
             ),
             loginSubmitted
         );
-        return Promise.resolve(
-            loginSubmitted && this.unreadyAfterLogin
+        const resolvedObservation = loginSubmitted && this.unreadyAfterLogin
                 ? {
                     ...observation,
                     page: {
@@ -1192,7 +1277,12 @@ class FakeBrowserAdapter implements BrowserAdapter {
                         text: '页面仍未渲染。'
                     }]
                 }
-                : observation
+                : observation;
+        return Promise.resolve(
+            structuredClone(
+                this.observationOverrides[this.observeCount - 1] ??
+                resolvedObservation
+            )
         );
     };
 

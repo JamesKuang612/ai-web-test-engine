@@ -703,6 +703,11 @@ code {
     background: #b9383e;
 }
 
+.run-button.uncertain {
+    color: #60450a;
+    background: #e8bd55;
+}
+
 .run-button.cancelled {
     background: #6d7178;
 }
@@ -1467,6 +1472,20 @@ code {
     color: #987477;
 }
 
+.run-result-toast.uncertain {
+    border-color: #ead69b;
+    color: #9a7116;
+    background: #fffaf0;
+}
+
+.run-result-toast.uncertain strong {
+    color: #7b5a0f;
+}
+
+.run-result-toast.uncertain span {
+    color: #9a865b;
+}
+
 .run-result-toast.cancelled {
     border-color: #d7d9dc;
     color: #5e636a;
@@ -1627,6 +1646,27 @@ code {
     white-space: nowrap;
 }
 
+.timeline-verdict-source {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr);
+    align-items: center;
+    gap: 5px;
+    margin: 8px 0 2px;
+    padding: 6px 8px;
+    border: 1px solid #d8e9df;
+    border-radius: 6px;
+    color: #24724e;
+    background: #f3fbf6;
+    font-size: 9px;
+}
+
+.timeline-verdict-source code {
+    overflow: hidden;
+    color: #56816b;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .run-timeline ol {
     display: grid;
     gap: 5px;
@@ -1650,6 +1690,11 @@ code {
 .run-timeline li.selected {
     border-color: #bfc5f0;
     background: #f8f8ff;
+}
+
+.run-timeline li.verdict-source {
+    border-color: #bfe5d1;
+    background: #f3fbf6;
 }
 
 .timeline-dot {
@@ -1698,6 +1743,14 @@ code {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.run-timeline li em {
+    display: block;
+    margin-top: 3px;
+    color: #24724e;
+    font-size: 8px;
+    font-style: normal;
 }
 
 .run-timeline li button {
@@ -1787,6 +1840,17 @@ code {
     font-weight: 650;
 }
 
+.run-summary-row button:disabled {
+    cursor: wait;
+    opacity: 0.65;
+}
+
+.run-summary-actions {
+    display: flex !important;
+    align-items: center;
+    justify-content: flex-end;
+}
+
 .result-badge {
     padding: 3px 6px;
     border-radius: 5px;
@@ -1801,10 +1865,14 @@ code {
     background: #e7f7ef;
 }
 
-.result-badge.fail,
-.result-badge.uncertain {
+.result-badge.fail {
     color: #a4363b;
     background: #fae9ea;
+}
+
+.result-badge.uncertain {
+    color: #8a650f;
+    background: #fff3d2;
 }
 
 .run-metrics {
@@ -1852,6 +1920,27 @@ code {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.plan-generation-result {
+    display: grid;
+    gap: 3px;
+    padding: 8px 9px;
+    border-radius: 7px;
+}
+
+.plan-generation-result p {
+    margin: 0;
+}
+
+.plan-generation-result.succeeded {
+    color: #17754b;
+    background: #edf9f3;
+}
+
+.plan-generation-result.failed {
+    color: #994044;
+    background: #fff5f5;
 }
 
 .run-failure-detail {

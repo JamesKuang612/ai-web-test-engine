@@ -10,6 +10,7 @@ import {
     useParams,
 } from 'react-router-dom';
 import type {
+    DebugPlanGenerationResult,
     DebugRunEvent,
     DebugRunMode,
     DebugRunResult,
@@ -18,6 +19,7 @@ import type {
 } from '../api/run-debug';
 import {
     cancelDebugRunSession,
+    generateDebugRunPlan,
     getDebugScreenshotUrl,
     startDebugRun,
     subscribeDebugRunSession,
@@ -31,7 +33,13 @@ import { Icon } from '../components/Icon';
 
 type InspectorTab = 'timeline' | 'context' | 'console' | 'network' | 'html';
 type LoadState = 'error' | 'loading' | 'ready';
-type RunState = 'cancelled' | 'failed' | 'idle' | 'passed' | 'running';
+type RunState =
+    | 'cancelled'
+    | 'failed'
+    | 'idle'
+    | 'passed'
+    | 'running'
+    | 'uncertain';
 type SaveState = 'dirty' | 'saved' | 'saving';
 
 const inspectorTabs: Array<{ id: InspectorTab; label: string }> = [
@@ -57,7 +65,12 @@ export function TestEditorPage() {
     const [loadError, setLoadError] = useState('');
     const [mode, setMode] = useState<DebugRunMode>('ai-explore');
     const [planRef, setPlanRef] = useState('');
+    const [planGeneration, setPlanGeneration] = useState<
+        DebugPlanGenerationResult | undefined
+    >();
+    const [planGenerating, setPlanGenerating] = useState(false);
     const [result, setResult] = useState<DebugRunResult>();
+    const [resultMode, setResultMode] = useState<DebugRunMode>();
     const [runError, setRunError] = useState('');
     const [runEvents, setRunEvents] = useState<DebugRunEvent[]>([]);
     const [runSessionId, setRunSessionId] = useState('');
@@ -92,6 +105,9 @@ export function TestEditorPage() {
         finalizedSessionRef.current = '';
         setRunState('idle');
         setResult(undefined);
+        setResultMode(undefined);
+        setPlanGeneration(undefined);
+        setPlanGenerating(false);
         setRunError('');
         setRunEvents([]);
         setRunSessionId('');
@@ -165,6 +181,8 @@ export function TestEditorPage() {
         setSaveError('');
         setMode('ai-explore');
         setPlanRef('');
+        setPlanGeneration(undefined);
+        setPlanGenerating(false);
         window.localStorage.removeItem(planStorageKey(activeTestId));
     };
 
@@ -208,21 +226,18 @@ export function TestEditorPage() {
     };
 
     const persistCompiledPlan = (
-        nextResult: DebugRunResult,
+        compiledPlanRef: string,
         normalizedAction: string
     ) => {
-        if (!nextResult.compiledPlanRef) {
-            return;
-        }
-        setPlanRef(nextResult.compiledPlanRef);
+        setPlanRef(compiledPlanRef);
         window.localStorage.setItem(
             planStorageKey(activeTestId),
-            nextResult.compiledPlanRef
+            compiledPlanRef
         );
         updateTestDefinition(activeTestId, {
             action: normalizedAction,
             name: testName.trim(),
-            planRef: nextResult.compiledPlanRef,
+            planRef: compiledPlanRef,
             startUrl: url.trim()
         }).then((record) => {
             setTestName(record.definition.name);
@@ -237,10 +252,7 @@ export function TestEditorPage() {
         });
     };
 
-    const finalizeRunSession = (
-        session: DebugRunSession,
-        normalizedAction: string
-    ) => {
+    const finalizeRunSession = (session: DebugRunSession) => {
         if (
             !isTerminalSession(session)
             || finalizedSessionRef.current === session.sessionId
@@ -264,25 +276,24 @@ export function TestEditorPage() {
             return;
         }
         setRunState(
-            nextResult?.lifecycle === 'COMPLETED'
-            && nextResult.result === 'PASS'
-                ? 'passed'
-                : 'failed'
+            nextResult?.lifecycle !== 'COMPLETED'
+                ? 'failed'
+                : nextResult.result === 'PASS'
+                    ? 'passed'
+                    : nextResult.result === 'UNCERTAIN'
+                        ? 'uncertain'
+                        : 'failed'
         );
         if (!nextResult) {
             setRunError(session.error ?? '运行异常结束，服务端未返回结果。');
             return;
         }
-        persistCompiledPlan(nextResult, normalizedAction);
     };
 
-    const receiveRunSession = (
-        session: DebugRunSession,
-        normalizedAction: string
-    ) => {
+    const receiveRunSession = (session: DebugRunSession) => {
         setRunSessionId(session.sessionId);
         receiveRunEvents(session.events);
-        finalizeRunSession(session, normalizedAction);
+        finalizeRunSession(session);
     };
 
     const runTest = async () => {
@@ -317,6 +328,9 @@ export function TestEditorPage() {
         runStartedAtRef.current = Date.now();
         setElapsedSeconds(0);
         setResult(undefined);
+        setResultMode(mode);
+        setPlanGeneration(undefined);
+        setPlanGenerating(false);
         setRunError('');
         setRunEvents([]);
         setRunSessionId('');
@@ -338,7 +352,7 @@ export function TestEditorPage() {
             if (controller.signal.aborted) {
                 return;
             }
-            receiveRunSession(session, normalizedAction);
+            receiveRunSession(session);
             if (isTerminalSession(session)) {
                 return;
             }
@@ -355,7 +369,7 @@ export function TestEditorPage() {
                             receiveRunEvents([update.event]);
                             return;
                         }
-                        receiveRunSession(update.session, normalizedAction);
+                        receiveRunSession(update.session);
                     }
                 }
             );
@@ -389,7 +403,7 @@ export function TestEditorPage() {
         }
         try {
             const session = await cancelDebugRunSession(runSessionId);
-            receiveRunSession(session, action.trim());
+            receiveRunSession(session);
         } catch (error) {
             setRunError(
                 error instanceof Error ? error.message : '终止运行失败。'
@@ -398,9 +412,50 @@ export function TestEditorPage() {
         }
     };
 
+    const generatePlan = async () => {
+        if (
+            !result
+            || result.lifecycle !== 'COMPLETED'
+            || result.result !== 'PASS'
+            || resultMode !== 'ai-explore'
+            || planGenerating
+        ) {
+            return;
+        }
+        setPlanGenerating(true);
+        setPlanGeneration(undefined);
+        try {
+            const nextPlanGeneration = await generateDebugRunPlan(result.runId);
+            setPlanGeneration(nextPlanGeneration);
+            if (
+                nextPlanGeneration.status === 'SUCCEEDED'
+                && nextPlanGeneration.compiledPlanRef
+            ) {
+                persistCompiledPlan(
+                    nextPlanGeneration.compiledPlanRef,
+                    action.trim()
+                );
+            }
+        } catch (error) {
+            setPlanGeneration({
+                schemaVersion: 1,
+                runId: result.runId,
+                status: 'FAILED',
+                summary: error instanceof Error
+                    ? error.message
+                    : '计划生成请求失败。'
+            });
+        } finally {
+            setPlanGenerating(false);
+        }
+    };
+
     const showInputError = (message: string) => {
         setRunError(message);
         setResult(undefined);
+        setResultMode(undefined);
+        setPlanGeneration(undefined);
+        setPlanGenerating(false);
         setRunState('failed');
         setActiveTab('console');
     };
@@ -413,6 +468,9 @@ export function TestEditorPage() {
         finalizedSessionRef.current = '';
         setRunState('idle');
         setResult(undefined);
+        setResultMode(undefined);
+        setPlanGeneration(undefined);
+        setPlanGenerating(false);
         setRunError('');
         setRunEvents([]);
         setRunSessionId('');
@@ -512,6 +570,7 @@ export function TestEditorPage() {
                         )}
                         {runState === 'running' && '运行中'}
                         {runState === 'passed' && '已通过'}
+                        {runState === 'uncertain' && '待确认'}
                         {runState === 'failed' && '重新运行'}
                         {runState === 'cancelled' && '重新运行'}
                         {runState === 'idle' && '运行'}
@@ -579,7 +638,7 @@ export function TestEditorPage() {
                                 )}
                                 value={mode}
                             >
-                                <option value="ai-explore">AI 探索并生成计划</option>
+                                <option value="ai-explore">AI 探索</option>
                                 <option value="structured-replay">结构化回放</option>
                             </select>
                         </label>
@@ -617,7 +676,7 @@ export function TestEditorPage() {
 
                         <p className="debug-run-hint">
                             {mode === 'ai-explore'
-                                ? '引号内的验证文本会逐字复核；通过后按用例保存计划引用。'
+                                ? '先完成一次独立探索；通过后可手动生成结构化计划。'
                                 : '预计 20～40 秒；跳过意图构建和动作规划。'}
                         </p>
                         {(saveError || loadError) && (
@@ -800,6 +859,15 @@ export function TestEditorPage() {
                                 </div>
                             </div>
                         )}
+                        {runState === 'uncertain' && (
+                            <div className="run-result-toast uncertain">
+                                <Icon name="lightbulb" size={18} />
+                                <div>
+                                    <strong>需要确认</strong>
+                                    <span>证据不足，请在控制台复核</span>
+                                </div>
+                            </div>
+                        )}
                         {runState === 'cancelled' && (
                             <div className="run-result-toast cancelled">
                                 <Icon name="code" size={18} />
@@ -862,9 +930,21 @@ export function TestEditorPage() {
                             )}
                             {activeTab === 'console' && (
                                 <RunConsole
+                                    canGeneratePlan={
+                                        resultMode === 'ai-explore'
+                                        && result?.lifecycle === 'COMPLETED'
+                                        && result?.result === 'PASS'
+                                    }
+                                    compiledPlanRef={
+                                        planGeneration?.compiledPlanRef
+                                        ?? result?.compiledPlanRef
+                                    }
                                     elapsedSeconds={elapsedSeconds}
                                     error={runError}
+                                    onGeneratePlan={generatePlan}
                                     onPrepareReplay={prepareReplay}
+                                    planGenerating={planGenerating}
+                                    planGeneration={planGeneration}
                                     result={result}
                                     runState={runState}
                                 />
@@ -919,6 +999,7 @@ function RunTimeline({
             </div>
         );
     }
+    const verdictObservationRef = getVerdictObservationRef(events);
     return (
         <div className="run-timeline">
             <header>
@@ -928,16 +1009,27 @@ function RunTimeline({
                     {runSessionId ? ` · 会话 ${ runSessionId }` : ''}
                 </span>
             </header>
+            {verdictObservationRef && (
+                <div className="timeline-verdict-source">
+                    <Icon name="check" size={14} />
+                    <span>最终判定依据</span>
+                    <code>{verdictObservationRef}</code>
+                </div>
+            )}
             <ol>
                 {events.map((event) => {
                     const screenshotRef = getScreenshotRef(event);
+                    const observationRef = getObservationRef(event);
+                    const isVerdictSource = event.type === 'observation.created'
+                        && observationRef === verdictObservationRef;
                     return (
                         <li
-                            className={
+                            className={[
                                 screenshotRef === selectedScreenshotRef
                                     ? 'selected'
-                                    : ''
-                            }
+                                    : '',
+                                isVerdictSource ? 'verdict-source' : ''
+                            ].filter(Boolean).join(' ')}
                             key={event.eventId}
                         >
                             <span className={`timeline-dot ${
@@ -949,6 +1041,9 @@ function RunTimeline({
                                     <time>{formatEventTime(event.timestamp)}</time>
                                 </p>
                                 <span>{getEventSummary(event)}</span>
+                                {isVerdictSource && (
+                                    <em>最终判定使用此页面观察</em>
+                                )}
                             </div>
                             {screenshotRef && (
                                 <button
@@ -971,18 +1066,28 @@ function RunTimeline({
 }
 
 interface RunConsoleProps {
+    canGeneratePlan: boolean;
+    compiledPlanRef?: string;
     elapsedSeconds: number;
     error: string;
+    onGeneratePlan: () => void;
     onPrepareReplay: () => void;
+    planGenerating: boolean;
+    planGeneration?: DebugPlanGenerationResult;
     result?: DebugRunResult;
     runState: RunState;
 }
 
 /** 在现有检查器区域展示轻量运行摘要、产物引用和原始响应。 */
 function RunConsole({
+    canGeneratePlan,
+    compiledPlanRef,
     elapsedSeconds,
     error,
+    onGeneratePlan,
     onPrepareReplay,
+    planGenerating,
+    planGeneration,
     result,
     runState,
 }: RunConsoleProps) {
@@ -1026,11 +1131,26 @@ function RunConsole({
                     <strong>{result.summary}</strong>
                     <span>Run ID：{result.runId}</span>
                 </div>
-                {result.compiledPlanRef && (
-                    <button onClick={onPrepareReplay} type="button">
-                        使用此计划回放
-                    </button>
-                )}
+                <div className="run-summary-actions">
+                    {canGeneratePlan && !compiledPlanRef && (
+                        <button
+                            disabled={planGenerating}
+                            onClick={onGeneratePlan}
+                            type="button"
+                        >
+                            {planGenerating
+                                ? '正在生成计划…'
+                                : planGeneration?.status === 'FAILED'
+                                    ? '重新生成计划'
+                                    : '生成结构化计划'}
+                        </button>
+                    )}
+                    {compiledPlanRef && (
+                        <button onClick={onPrepareReplay} type="button">
+                            使用此计划回放
+                        </button>
+                    )}
+                </div>
             </div>
 
             <dl className="run-metrics">
@@ -1040,10 +1160,22 @@ function RunConsole({
                 <div><dt>重复状态</dt><dd>{result.metrics.repeatedStateActionCount}</dd></div>
             </dl>
 
-            {result.compiledPlanRef && (
+            {planGeneration && (
+                <div className={`plan-generation-result ${
+                    planGeneration.status.toLowerCase()
+                }`}>
+                    <strong>
+                        {planGeneration.status === 'SUCCEEDED'
+                            ? '计划生成成功'
+                            : '计划生成失败'}
+                    </strong>
+                    <p>{planGeneration.summary}</p>
+                </div>
+            )}
+            {compiledPlanRef && (
                 <div className="run-reference">
                     <span>compiledPlanRef</span>
-                    <code>{result.compiledPlanRef}</code>
+                    <code>{compiledPlanRef}</code>
                 </div>
             )}
             {result.failure && (
@@ -1067,7 +1199,7 @@ function RunConsole({
             </details>
             <details className="raw-response">
                 <summary>原始响应</summary>
-                <pre>{JSON.stringify(result, null, 2)}</pre>
+                <pre>{JSON.stringify({ result, planGeneration }, null, 2)}</pre>
             </details>
         </div>
     );
@@ -1106,6 +1238,22 @@ function getScreenshotRef(event: DebugRunEvent): string {
     return typeof event.payload.screenshotRef === 'string'
         ? event.payload.screenshotRef
         : '';
+}
+
+function getObservationRef(event: DebugRunEvent): string {
+    return typeof event.payload.observationRef === 'string'
+        ? event.payload.observationRef
+        : '';
+}
+
+function getVerdictObservationRef(events: DebugRunEvent[]): string {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+        const event = events[index];
+        if (event.type === 'verdict.completed') {
+            return getObservationRef(event);
+        }
+    }
+    return '';
 }
 
 const eventLabels: Record<string, string> = {

@@ -41,10 +41,10 @@ import type {
     ReplayExecution,
 } from '../replay';
 import {
+    createPlanCompilationSource,
     DeterministicPlanReplayer,
     parseCompiledPlan,
     PlanReplayError,
-    TracePlanCompiler,
 } from '../replay';
 import {
     RunLifecycle,
@@ -86,6 +86,8 @@ interface RunExecutionContext {
     eventSequence: number;
     input: StartRunInput;
     lifecycle: RunLifecycle;
+    latestObservation?: PageObservation;
+    latestObservationReference?: EvidenceRef;
     modelCallCount: number;
     repeatedStateActionCount: number;
     runCreated: boolean;
@@ -149,12 +151,6 @@ interface PersistedReplay {
     finalObservation: PageObservation;
     finalObservationReference: EvidenceRef;
     history: PlannerHistoryEntry[];
-}
-
-/** PASS 轨迹编译和回放完成后的最终结果及证据终点。 */
-interface ReplayCompletion {
-    result: RunResult;
-    replay: PersistedReplay;
 }
 
 const DEFAULT_OPTIONS: RunCoordinatorOptions = {
@@ -274,7 +270,11 @@ export class RunCoordinator implements ExecutionEngine {
             metrics: this.createMetrics(context)
         };
 
-        await this.publishVerdict(context, result);
+        await this.publishVerdict(
+            context,
+            result,
+            persistedReplay.finalObservationReference.ref
+        );
         await this.transition(context, 'COMPLETED', result.summary);
         await this.persistStructuredReplayRun(
             context,
@@ -424,7 +424,15 @@ export class RunCoordinator implements ExecutionEngine {
                 session,
                 navigation
             );
-            return await this.runActionLoop(context, runtime, navigation);
+            const execution = await this.runActionLoop(
+                context,
+                runtime,
+                navigation
+            );
+            context.latestObservation = runtime.latestObservation;
+            context.latestObservationReference =
+                runtime.latestObservationReference;
+            return execution;
         } finally {
             await this.browserAdapter.close(session);
         }
@@ -603,6 +611,7 @@ export class RunCoordinator implements ExecutionEngine {
             `screenshot-after-uncertain-retry-${ sequence }.png`
         );
         runtime.latestObservation = evidence.observation;
+        runtime.latestObservationReference = evidence.observationReference;
         return evidence;
     }
 
@@ -676,6 +685,7 @@ export class RunCoordinator implements ExecutionEngine {
             `screenshot-after-visual-retry-${ sequence }.png`
         );
         runtime.latestObservation = evidence.observation;
+        runtime.latestObservationReference = evidence.observationReference;
         return {
             evidence
         };
@@ -834,98 +844,30 @@ export class RunCoordinator implements ExecutionEngine {
                 testIntent,
                 execution
             );
-        let replay: PersistedReplay | undefined;
         if (result.result === 'PASS') {
-            const completion = await this.compileAndValidatePlan(
-                context,
-                testIntent,
-                execution,
-                result
+            const sourceReference = await this.artifactStore.saveJson(
+                context.runId,
+                'plan-compilation-source',
+                toJsonValue(createPlanCompilationSource({
+                    runId: context.runId,
+                    testId: context.input.test.id,
+                    testIntent,
+                    steps: this.createCompilableTrace(execution)
+                }))
             );
-            result = completion.result;
-            replay = completion.replay;
+            context.evidence.push(sourceReference);
+            result = {
+                ...result,
+                evidence: [ ...context.evidence ]
+            };
         }
         await this.publishVerdict(context, result);
         await this.transition(context, 'COMPLETED', result.summary);
-        await this.persistCompletedRun(context, execution, result, replay);
+        await this.persistCompletedRun(context, execution, result);
         return result;
     }
 
-    /** PASS 后编译探索轨迹，并在全新浏览器上下文完成一次确定性回放。 */
-    private async compileAndValidatePlan(
-        context: RunExecutionContext,
-        testIntent: TestIntent,
-        execution: BrowserExecution,
-        initialResult: RunResult
-    ): Promise<ReplayCompletion> {
-        await this.transition(
-            context,
-            'COMPILING_PLAN',
-            '正在将成功轨迹编译为结构化计划'
-        );
-        const plan = new TracePlanCompiler().compile({
-            runId: context.runId,
-            testId: context.input.test.id,
-            testIntent,
-            steps: this.createCompilableTrace(execution)
-        });
-
-        await this.transition(
-            context,
-            'REPLAY_VALIDATING',
-            '正在全新浏览器上下文验证结构化计划'
-        );
-        this.requireReplayBudget(context, plan);
-        const replay = await this.executeDeterministicReplay(context, plan);
-        const persistedReplay = await this.persistReplayEvidence(
-            context,
-            replay
-        );
-        const replayVerdict = await this.evaluateReplayVerdict(
-            context,
-            testIntent,
-            persistedReplay
-        );
-        if (replayVerdict.result !== 'PASS') {
-            throw new PlanReplayError(
-                `确定性回放最终判定为 ${ replayVerdict.result }：${
-                    replayVerdict.summary
-                }`,
-                replay.actionCount
-            );
-        }
-
-        const replayVerdictReference = await this.artifactStore.saveJson(
-            context.runId,
-            'replay-verdict',
-            toVerdictJson(replayVerdict)
-        );
-        context.evidence.push(replayVerdictReference);
-        const validationReference = await this.artifactStore.saveJson(
-            context.runId,
-            'replay-validation',
-            this.createReplayValidationJson(plan, replay, replayVerdict)
-        );
-        context.evidence.push(validationReference);
-        const planReference = await this.artifactStore.saveJson(
-            context.runId,
-            'compiled-plan',
-            toJsonValue(plan)
-        );
-        context.evidence.push(planReference);
-
-        return {
-            replay: persistedReplay,
-            result: {
-                ...initialResult,
-                evidence: [ ...context.evidence ],
-                compiledPlanRef: planReference.ref,
-                metrics: this.createMetrics(context)
-            }
-        };
-    }
-
-    /** 把内存中的真实执行记录转换为编译器要求的连续轨迹。 */
+    /** 把内存中的真实执行记录转换为稍后手动编译所需的连续轨迹。 */
     private createCompilableTrace(
         execution: BrowserExecution
     ): CompilableTraceStep[] {
@@ -1181,6 +1123,7 @@ export class RunCoordinator implements ExecutionEngine {
             testIntent,
             browserSession,
             latestObservation: navigation.afterObservation,
+            latestObservationReference: navigation.afterObservationReference,
             history: [historyEntry],
             budgets: context.input.budgets,
             lifecycle: context.lifecycle.current(),
@@ -1652,6 +1595,7 @@ export class RunCoordinator implements ExecutionEngine {
             }
         );
         runtime.latestObservation = execution.afterObservation;
+        runtime.latestObservationReference = execution.afterObservationReference;
         runtime.history.push({
             command: execution.command,
             actionResult: execution.result,
@@ -1783,14 +1727,18 @@ export class RunCoordinator implements ExecutionEngine {
     /** 发布阶段性判定事件，便于调试接口展示执行终点。 */
     private async publishVerdict(
         context: RunExecutionContext,
-        result: RunResult
+        result: RunResult,
+        observationRef = context.latestObservationReference?.ref
     ): Promise<void> {
         await this.publishEvent(
             context.runId,
             this.nextSequence(context),
             'verdict.completed', {
                 result: result.result ?? 'UNCERTAIN',
-                summary: result.summary
+                summary: result.summary,
+                ...observationRef
+                    ? { observationRef }
+                    : {}
             }
         );
     }
@@ -1804,9 +1752,11 @@ export class RunCoordinator implements ExecutionEngine {
     ): Promise<void> {
         const latestAction = execution.plannedActions.at(-1);
         const latestObservation = replay?.finalObservation ??
-            latestAction?.afterObservation ?? execution.navigation.afterObservation;
+            context.latestObservation ?? latestAction?.afterObservation ??
+            execution.navigation.afterObservation;
         const latestObservationReference =
             replay?.finalObservationReference ??
+            context.latestObservationReference ??
             latestAction?.afterObservationReference ??
             execution.navigation.afterObservationReference;
         context.snapshot = {
@@ -1954,8 +1904,8 @@ export class RunCoordinator implements ExecutionEngine {
         execution: BrowserExecution
     ): Promise<RunResult> {
         const latestAction = execution.plannedActions.at(-1);
-        const latestObservation = latestAction?.afterObservation ??
-            execution.navigation.afterObservation;
+        const latestObservation = context.latestObservation ??
+            latestAction?.afterObservation ?? execution.navigation.afterObservation;
         const history = this.createExecutionHistory(execution);
         if (!this.isObservationReady(latestObservation)) {
             return this.createInsufficientVerdictResult(

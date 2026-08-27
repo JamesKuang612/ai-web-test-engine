@@ -29,6 +29,20 @@ export interface DebugRunResult {
     };
 }
 
+export interface DebugPlanGenerationResult {
+    schemaVersion: number;
+    runId: string;
+    status: 'FAILED' | 'SUCCEEDED';
+    summary: string;
+    compiledPlanRef?: string;
+    failure?: {
+        category: string,
+        phase: string,
+        recoverable: boolean,
+        summary: string
+    };
+}
+
 export interface RunDebugRequest {
     action: string;
     mode: DebugRunMode;
@@ -166,6 +180,30 @@ export async function cancelDebugRunSession(
         { method: 'DELETE' }
     );
     return readSessionResponse(response);
+}
+
+/** 成功探索结束后，由用户主动请求将该次轨迹编译为结构化计划。 */
+export async function generateDebugRunPlan(
+    runId: string,
+    signal?: AbortSignal
+): Promise<DebugPlanGenerationResult> {
+    const response = await fetch(
+        `/api/debug/runs/${ encodeURIComponent(runId) }/plan`,
+        {
+            method: 'POST',
+            signal
+        }
+    );
+    const value = await readJson(response);
+    const result = getObject(value)?.planGeneration;
+    if (!isDebugPlanGenerationResult(result)) {
+        throw new RunDebugRequestError(
+            getErrorMessage(value)
+                ?? `计划生成接口返回异常（HTTP ${ response.status }）。`,
+            response.status
+        );
+    }
+    return result;
 }
 
 /**
@@ -356,6 +394,20 @@ function isDebugRunResult(value: unknown): value is DebugRunResult {
         && typeof metrics?.actionCount === 'number'
         && typeof metrics.durationMs === 'number'
         && typeof metrics.modelCallCount === 'number';
+}
+
+function isDebugPlanGenerationResult(
+    value: unknown
+): value is DebugPlanGenerationResult {
+    const object = getObject(value);
+    return typeof object?.schemaVersion === 'number'
+        && typeof object.runId === 'string'
+        && (object.status === 'FAILED' || object.status === 'SUCCEEDED')
+        && typeof object.summary === 'string'
+        && (
+            object.compiledPlanRef === undefined
+            || typeof object.compiledPlanRef === 'string'
+        );
 }
 
 function getObject(value: unknown): Record<string, unknown> | undefined {
