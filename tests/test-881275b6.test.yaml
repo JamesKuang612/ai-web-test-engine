@@ -1,9 +1,0 @@
-schemaVersion: 1
-id: test-881275b6
-name: 验证创建应用
-environmentId: jiandaoyun-test
-startUrl: https://test.jdydevelop.com/dashboard#/
-action: 登录后，点击新建应用，创建一个名为“2026.8.27”的应用，创建完成后退回工作台验证一下应用是否存在。不需要考虑是否有同名应用存在。
-execution:
-  planRef: a17959ca-d96c-4178-abb1-58177f044093/json/compiled-plan.json
-  preferredMode: structured-replay

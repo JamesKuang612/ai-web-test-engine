@@ -21,12 +21,13 @@ import {
     cancelDebugRunSession,
     generateDebugRunPlan,
     getDebugScreenshotUrl,
+    getLatestDebugRunSession,
     startDebugRun,
     subscribeDebugRunSession,
 } from '../api/run-debug';
 import {
     createTestDefinition,
-    getTestDefinition,
+    getTestDefinitionRecord,
     updateTestDefinition,
 } from '../api/test-definitions';
 import { Icon } from '../components/Icon';
@@ -79,6 +80,7 @@ export function TestEditorPage() {
     const [selectedScreenshotRef, setSelectedScreenshotRef] = useState('');
     const [saveError, setSaveError] = useState('');
     const [saveState, setSaveState] = useState<SaveState>('dirty');
+    const [savedFileName, setSavedFileName] = useState('');
     const [testName, setTestName] = useState('');
     const [url, setUrl] = useState(DEFAULT_START_URL);
     const [optionsOpen, setOptionsOpen] = useState(false);
@@ -98,7 +100,7 @@ export function TestEditorPage() {
 
     const fileName = isNewTest
         ? '未命名测试.test.yaml'
-        : `${ activeTestId }.test.yaml`;
+        : savedFileName || `${ activeTestId }.test.yaml`;
     const action = useMemo(() => serializeActionSteps(steps), [steps]);
 
     useEffect(() => {
@@ -124,6 +126,7 @@ export function TestEditorPage() {
         setPlanRef(readStoredPlanRef(activeTestId));
         setSaveError('');
         setLoadError('');
+        setSavedFileName('');
         if (isNewTest) {
             setTestName('');
             setSteps([]);
@@ -134,10 +137,15 @@ export function TestEditorPage() {
         }
 
         setDefinitionState('loading');
-        void getTestDefinition(activeTestId, controller.signal)
-            .then((definition) => {
+        void Promise.all([
+            getTestDefinitionRecord(activeTestId, controller.signal),
+            getLatestDebugRunSession(activeTestId, controller.signal)
+                .catch(() => undefined)
+        ]).then(([record, previousSession]) => {
+                const definition = record.definition;
                 const savedPlanRef = definition.execution?.planRef
                     ?? readStoredPlanRef(activeTestId);
+                setSavedFileName(record.fileName);
                 setTestName(definition.name);
                 setSteps(parseActionSteps(definition.action));
                 setUrl(definition.startUrl ?? DEFAULT_START_URL);
@@ -156,6 +164,43 @@ export function TestEditorPage() {
                 );
                 setSaveState('saved');
                 setDefinitionState('ready');
+                if (previousSession && isTerminalSession(previousSession)) {
+                    const previousResult = previousSession.result;
+                    setRunSessionId(previousSession.sessionId);
+                    setRunEvents(previousSession.events);
+                    setSelectedScreenshotRef(
+                        findLatestScreenshotRef(previousSession.events)
+                    );
+                    setResult(previousResult);
+                    setResultMode(previousSession.mode ?? 'ai-explore');
+                    setElapsedSeconds(previousResult
+                        ? Math.round(previousResult.metrics.durationMs / 1_000)
+                        : 0);
+                    if (previousSession.status === 'CANCELLED') {
+                        setRunState('cancelled');
+                        setRunError(
+                            previousSession.error
+                            ?? previousResult?.summary
+                            ?? '上一次运行已终止。'
+                        );
+                    } else if (!previousResult) {
+                        setRunState('failed');
+                        setRunError(
+                            previousSession.error
+                            ?? '上一次运行异常结束。'
+                        );
+                    } else {
+                        setRunState(
+                            previousResult.lifecycle !== 'COMPLETED'
+                                ? 'failed'
+                                : previousResult.result === 'PASS'
+                                    ? 'passed'
+                                    : previousResult.result === 'UNCERTAIN'
+                                        ? 'uncertain'
+                                        : 'failed'
+                        );
+                    }
+                }
             }).catch((error) => {
                 if (!controller.signal.aborted) {
                     setLoadError(
@@ -217,6 +262,7 @@ export function TestEditorPage() {
             const record = isNewTest
                 ? await createTestDefinition(draft)
                 : await updateTestDefinition(activeTestId, draft);
+            setSavedFileName(record.fileName);
             setSaveState('saved');
             if (isNewTest) {
                 navigate(`/tests/${ record.definition.id }`, {
@@ -931,6 +977,7 @@ export function TestEditorPage() {
                                     compiledPlanRef={
                                         planGeneration?.compiledPlanRef
                                         ?? result?.compiledPlanRef
+                                        ?? (planRef || undefined)
                                     }
                                     elapsedSeconds={elapsedSeconds}
                                     error={runError}

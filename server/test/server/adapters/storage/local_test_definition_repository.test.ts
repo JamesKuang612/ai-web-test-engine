@@ -37,7 +37,7 @@ describe('LocalTestDefinitionRepository', () => {
 
         const record = await repository.save(definition);
 
-        assert.equal(record.fileName, 'my-todo.test.yaml');
+        assert.equal(record.fileName, '验证我的待办.test.yaml');
         assert.deepEqual(await repository.load('my-todo'), definition);
         assert.deepEqual(
             (await repository.list()).map((item) => item.definition),
@@ -72,8 +72,49 @@ describe('LocalTestDefinitionRepository', () => {
             '第二版动作。'
         );
         assert.deepEqual(await fs.readdir(temporaryDirectory), [
-            'my-todo.test.yaml'
+            '验证我的待办.test.yaml'
         ]);
+    });
+
+    it('改名时同步重命名文件并为同名用例添加序号', async () => {
+        const definition = {
+            schemaVersion: 1 as const,
+            id: 'first-test',
+            name: '验证创建应用',
+            environmentId: 'jiandaoyun-test',
+            action: '创建应用。'
+        };
+        await repository.save(definition);
+        const duplicate = await repository.save({
+            ...definition,
+            id: 'second-test'
+        });
+        const renamed = await repository.save({
+            ...definition,
+            name: '验证应用列表'
+        });
+
+        assert.equal(duplicate.fileName, '验证创建应用（2）.test.yaml');
+        assert.equal(renamed.fileName, '验证应用列表.test.yaml');
+        assert.deepEqual(await fs.readdir(temporaryDirectory), [
+            '验证创建应用（2）.test.yaml',
+            '验证应用列表.test.yaml'
+        ]);
+    });
+
+    it('按稳定内部 id 删除中文文件名用例', async () => {
+        await repository.save({
+            schemaVersion: 1,
+            id: 'delete-test',
+            name: '验证删除数据',
+            environmentId: 'jiandaoyun-test',
+            action: '删除一条数据。'
+        });
+
+        assert.equal(await repository.delete('delete-test'), true);
+        assert.equal(await repository.load('delete-test'), undefined);
+        assert.equal(await repository.delete('delete-test'), false);
+        assert.deepEqual(await fs.readdir(temporaryDirectory), []);
     });
 
     it('允许持久化尚未添加步骤的空 action', async () => {

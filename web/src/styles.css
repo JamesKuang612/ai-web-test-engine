@@ -311,6 +311,10 @@ a {
     width: min(620px, calc(100vw - 48px));
 }
 
+.test-settings-dialog.delete-test-dialog {
+    width: min(480px, calc(100vw - 48px));
+}
+
 .test-settings-dialog > header {
     display: flex;
     align-items: flex-start;
@@ -430,6 +434,13 @@ a {
     font-size: 11px;
 }
 
+.delete-confirm-copy {
+    margin: 0;
+    color: #3c3f44;
+    font-size: 13px;
+    line-height: 21px;
+}
+
 .test-settings-dialog > footer {
     display: flex;
     justify-content: flex-end;
@@ -456,6 +467,15 @@ a {
 
 .dialog-primary-button:hover {
     background: #303238;
+}
+
+.dialog-primary-button.danger {
+    border-color: #b4232d;
+    background: #b4232d;
+}
+
+.dialog-primary-button.danger:hover {
+    background: #941b24;
 }
 
 .dialog-secondary-button {
@@ -566,6 +586,11 @@ a {
     width: 126px;
 }
 
+.repository-table th:nth-child(4) {
+    width: 64px;
+    text-align: center;
+}
+
 .repository-table th span,
 .repository-table th svg {
     display: inline-block;
@@ -652,6 +677,28 @@ a {
     color: #6f7278;
     font-size: 11px;
     white-space: nowrap;
+}
+
+.repository-table td:last-child {
+    text-align: center;
+}
+
+.delete-entry-button {
+    display: inline-grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    color: #8a8d93;
+    background: transparent;
+}
+
+.delete-entry-button:hover {
+    border-color: #f0c7ca;
+    color: #b4232d;
+    background: #fff4f4;
 }
 
 .empty-repository {

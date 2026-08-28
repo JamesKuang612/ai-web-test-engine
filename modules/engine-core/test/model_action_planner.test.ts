@@ -117,7 +117,11 @@ describe('ModelActionPlanner', () => {
         );
         assert.match(
             adapter.lastRequest?.systemPrompt ?? '',
-            /TYPE、CLICK、SELECT、CHECK 和 WAIT/u
+            /TYPE、CLICK、HOVER、SELECT、CHECK 和 WAIT/u
+        );
+        assert.match(
+            adapter.lastRequest?.systemPrompt ?? '',
+            /先对当前真实存在的父级、卡片或入口候选执行 HOVER/u
         );
     });
 

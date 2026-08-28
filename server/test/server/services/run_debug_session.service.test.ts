@@ -8,6 +8,10 @@ import {
     RunDebugSessionService,
 } from '../../../src/services/run_debug_session.service';
 import type {
+    RunSessionHistoryStore,
+    StoredRunSessionSnapshot,
+} from '../../../src/adapters/storage/local_run_session_history_store';
+import type {
     RunDebugOptions,
 } from '../../../src/services/run_debug.service';
 
@@ -64,6 +68,25 @@ describe('RunDebugSessionService', () => {
         assert.equal(cancelled.error, '运行已由用户终止。');
         assert.equal(runner.signal?.aborted, true);
     });
+
+    it('持久化终态会话并允许按用例恢复', async () => {
+        const history = new MemoryHistoryStore();
+        const service = new RunDebugSessionService(
+            new CompletingRunner(),
+            history
+        );
+        const initial = service.start('打开页面', {
+            mode: 'ai-explore',
+            testId: 'saved-test'
+        });
+        await waitForTerminal(service, initial.sessionId);
+
+        const latest = await service.latest('saved-test');
+
+        assert.equal(history.saved?.result?.result, 'PASS');
+        assert.equal(latest?.runId, 'run-session-001');
+        assert.equal(latest?.events.length, 1);
+    });
 });
 
 class CompletingRunner {
@@ -91,6 +114,22 @@ class AbortableRunner {
                 reject(new Error('aborted'));
             }, { once: true });
         });
+    }
+}
+
+class MemoryHistoryStore implements RunSessionHistoryStore {
+    public saved?: StoredRunSessionSnapshot;
+
+    public loadLatest(): Promise<StoredRunSessionSnapshot | undefined> {
+        return Promise.resolve(this.saved);
+    }
+
+    public save(
+        _testId: string,
+        snapshot: StoredRunSessionSnapshot
+    ): Promise<void> {
+        this.saved = snapshot;
+        return Promise.resolve();
     }
 }
 

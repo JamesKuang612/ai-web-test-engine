@@ -63,6 +63,7 @@ const ANSI_ESCAPE_PATTERN = new RegExp(
 const EXECUTABLE_PLANNED_ACTIONS = new Set<ActionCommand['type']>([
     'CHECK',
     'CLICK',
+    'HOVER',
     'SELECT',
     'TYPE',
     'WAIT'
@@ -447,8 +448,8 @@ export class RunCoordinator implements ExecutionEngine {
         const plannedActions: PlannedActionExecution[] = [];
         let beforeObservationReference =
             navigation.afterObservationReference;
-        let uncertainRecoveryStage: 0 | 1 | 2 = 0;
-        let uncertainRetrySequence = 0;
+        let visualRecoveryApplied = false;
+        let visualRetrySequence = 0;
 
         while (true) {
             const budgetStop = this.createBudgetStopCommand(context);
@@ -461,32 +462,17 @@ export class RunCoordinator implements ExecutionEngine {
             }
 
             let command = await this.planNextAction(context, runtime);
-            const retryObservation =
-                command.type === 'UNCERTAIN' && uncertainRecoveryStage === 0
-                    ? await this.retryAfterUncertain(
-                        context,
-                        runtime,
-                        uncertainRetrySequence + 1
-                    )
-                    : undefined;
-            if (retryObservation) {
-                uncertainRecoveryStage = 1;
-                uncertainRetrySequence += 1;
-                beforeObservationReference =
-                    retryObservation.observationReference;
-                continue;
-            }
             const visualRetry =
-                command.type === 'UNCERTAIN' && uncertainRecoveryStage === 1
+                command.type === 'UNCERTAIN' && !visualRecoveryApplied
                     ? await this.retryWithVision(
                         context,
                         runtime,
-                        command,
-                        uncertainRetrySequence
+                        visualRetrySequence + 1
                     )
                     : undefined;
             if (visualRetry?.evidence) {
-                uncertainRecoveryStage = 2;
+                visualRecoveryApplied = true;
+                visualRetrySequence += 1;
                 beforeObservationReference =
                     visualRetry.evidence.observationReference;
                 continue;
@@ -518,7 +504,7 @@ export class RunCoordinator implements ExecutionEngine {
                 beforeObservationReference
             );
             plannedActions.push(execution);
-            uncertainRecoveryStage = 0;
+            visualRecoveryApplied = false;
             if (command.type !== 'WAIT') {
                 this.updateRepeatedStateCount(
                     context,
@@ -589,86 +575,50 @@ export class RunCoordinator implements ExecutionEngine {
         return undefined;
     }
 
-    /** Planner 首次证据不足时，立即重采集一次 DOM 与截图后再次规划。 */
-    private async retryAfterUncertain(
-        context: RunExecutionContext,
-        runtime: RunContext,
-        sequence: number
-    ): Promise<ObservationEvidence | undefined> {
-        const remaining = this.getRemainingBudgets(context);
-        if (remaining.maxModelCalls <= 1 || remaining.maxDurationMs <= 0) {
-            return undefined;
-        }
-        await this.transition(
-            context,
-            'OBSERVING',
-            '当前页面证据不足，正在重新采集页面状态与截图'
-        );
-        const evidence = await this.captureObservationEvidence(
-            context,
-            runtime.browserSession,
-            `observation-after-uncertain-retry-${ sequence }`,
-            `screenshot-after-uncertain-retry-${ sequence }.png`
-        );
-        runtime.latestObservation = evidence.observation;
-        runtime.latestObservationReference = evidence.observationReference;
-        return evidence;
-    }
-
-    /** 第二次证据不足时用视觉发现语义目标，并补充为新的页面候选。 */
+    /** 首次证据不足时用视觉模型批量命名当前候选，再交回 Planner。 */
     private async retryWithVision(
         context: RunExecutionContext,
         runtime: RunContext,
-        command: ActionCommand,
         sequence: number
     ): Promise<VisualRetryOutcome> {
-        const targetDescription = command.target?.description.trim();
-        if (!targetDescription) {
+        const observation = runtime.latestObservation;
+        if (!observation) {
             return {
-                failureSummary: '普通重试后仍无法规划，且 Planner 未提供可供视觉定位的语义目标。'
+                failureSummary: '当前没有可供视觉模型标注的页面观察。'
             };
         }
         const enhance = this.browserAdapter.enhanceObservationWithVision;
         if (!enhance) {
             return {
-                failureSummary: '普通重试后仍无法规划，当前浏览器未接入视觉定位能力。'
+                failureSummary: '当前浏览器未接入候选元素视觉标注能力。'
             };
         }
         const remaining = this.getRemainingBudgets(context);
         if (remaining.maxModelCalls <= 2 || remaining.maxDurationMs <= 0) {
             return {
-                failureSummary: '普通重试后仍无法规划，剩余预算不足以完成视觉定位、再次规划和最终判定。'
+                failureSummary: '剩余预算不足以完成视觉标注、再次规划和最终判定。'
             };
         }
         await this.transition(
             context,
             'OBSERVING',
-            '普通重试仍缺少目标，正在使用视觉定位增强页面观察'
+            '当前页面证据不足，正在使用视觉模型批量标注候选元素'
         );
         context.modelCallCount += 1;
         runtime.counters.modelCallCount = context.modelCallCount;
-        const request = {
-            targetDescription,
-            ...command.expectedEffect
-                ? {
-                    expectedEffect: command.expectedEffect
-                }
-                : {}
-        };
         const result = await enhance(
             runtime.browserSession,
-            request,
+            observation,
             context.signal
         );
         context.signal.throwIfAborted();
         const groundingReference = await this.artifactStore.saveJson(
             context.runId,
-            `visual-grounding-retry-${ sequence }`,
+            `visual-candidate-annotations-retry-${ sequence }`,
             toJsonValue({
-                request,
                 status: result.status,
                 summary: result.summary,
-                candidateId: result.candidateId
+                candidateIds: result.candidateIds ?? []
             })
         );
         context.evidence.push(groundingReference);
@@ -1447,10 +1397,26 @@ export class RunCoordinator implements ExecutionEngine {
                     : '浏览器没有成功完成等待动作。'
             };
         }
+        return this.createGenericActionEffect(command, result, before, after);
+    }
+
+    /** 验证点击或悬浮是否产生与规划方向一致的可观察变化。 */
+    private createGenericActionEffect(
+        command: ActionCommand,
+        result: ActionResult,
+        before: PageObservation | undefined,
+        after: ObservationEvidence
+    ): EffectVerification {
+        const unexpectedNavigation = command.type === 'CLICK'
+            && result.browserSignals.urlChanged
+            && !this.isNavigationExpected(command);
         const changed = before?.stateFingerprint !==
             after.observation.stateFingerprint;
         const pageReady = this.isObservationReady(after.observation);
-        const confirmed = result.status === 'executed' && changed && pageReady;
+        const confirmed = result.status === 'executed'
+            && changed
+            && pageReady
+            && !unexpectedNavigation;
         return {
             status: result.status !== 'executed'
                 ? 'contradicted'
@@ -1462,14 +1428,26 @@ export class RunCoordinator implements ExecutionEngine {
                 after.observationReference,
                 after.screenshotReference
             ],
-            summary: confirmed
-                ? '页面状态在动作执行后发生了变化。'
+            summary: unexpectedNavigation
+                ? '点击意外改变了页面地址，与规划的非导航效果不一致。'
+                : confirmed
+                    ? command.type === 'HOVER'
+                        ? '鼠标悬浮后页面出现了可观察变化。'
+                        : '页面状态在动作执行后发生了变化。'
                 : result.status === 'executed' && !pageReady
                     ? '动作已执行，但页面在等待窗口内仍未完成可见内容渲染。'
                 : result.status === 'executed'
                     ? '动作已执行，但页面观察未发现状态变化。'
                     : '浏览器没有成功执行页面动作。'
         };
+    }
+
+    /** 判断 Planner 是否明确预期点击后发生页面导航。 */
+    private isNavigationExpected(command: ActionCommand): boolean {
+        return /跳转|页面进入|进入.+页面|进入(?:工作台|应用)(?=$|[\s，。；,]|并|后)|导航|打开.+页面|打开(?:工作台|应用)(?=$|[\s，。；,]|并|后)|返回(?:.+页面|工作台|首页|上一页)|登录(?:成功)?(?:后|进入|跳转|完成)|URL|地址/iu.test([
+            command.expectedEffect ?? '',
+            command.reasonSummary
+        ].join(' '));
     }
 
     /** 根据候选输入框的值状态验证 TYPE 是否产生预期效果。 */

@@ -46,9 +46,9 @@ describe('App routes', () => {
             name: '项目文件'
         })).toBeInTheDocument();
         expect(await screen.findByText(
-            'login-and-open-workbench.test.yaml'
+            '登录并打开简道云工作台.test.yaml'
         )).toBeInTheDocument();
-        expect(screen.getByText('avatar-account-menu.test.yaml'))
+        expect(screen.getByText('验证头像账号菜单.test.yaml'))
             .toBeInTheDocument();
         expect(screen.getByText('工作区干净')).toBeInTheDocument();
     });
@@ -57,7 +57,7 @@ describe('App routes', () => {
         const user = userEvent.setup();
         installApiMock();
         renderApp('/repository');
-        await screen.findByText('avatar-account-menu.test.yaml');
+        await screen.findByText('验证头像账号菜单.test.yaml');
 
         await user.click(screen.getByRole('button', { name: /搜索/u }));
         await user.type(
@@ -65,9 +65,9 @@ describe('App routes', () => {
             '账号菜单'
         );
 
-        expect(screen.getByText('avatar-account-menu.test.yaml'))
+        expect(screen.getByText('验证头像账号菜单.test.yaml'))
             .toBeInTheDocument();
-        expect(screen.queryByText('login-and-open-workbench.test.yaml'))
+        expect(screen.queryByText('登录并打开简道云工作台.test.yaml'))
             .not.toBeInTheDocument();
     });
 
@@ -78,7 +78,7 @@ describe('App routes', () => {
 
         expect(await screen.findByDisplayValue(LOGIN_ACTION))
             .toBeInTheDocument();
-        expect(screen.getByText('login-and-open-workbench.test.yaml'))
+        expect(screen.getByText('登录并打开简道云工作台.test.yaml'))
             .toBeInTheDocument();
         await user.click(screen.getByRole('button', { name: '选项' }));
         expect(screen.getByLabelText('用例名称'))
@@ -98,7 +98,7 @@ describe('App routes', () => {
         expect((screen.getByLabelText(
             '操作步骤 3'
         ) as HTMLTextAreaElement).value).toContain('从上到下逐字严格验证');
-        expect(screen.getByText('avatar-account-menu.test.yaml'))
+        expect(screen.getByText('验证头像账号菜单.test.yaml'))
             .toBeInTheDocument();
     });
 
@@ -106,7 +106,7 @@ describe('App routes', () => {
         const user = userEvent.setup();
         const api = installApiMock();
         renderApp('/repository');
-        await screen.findByText('login-and-open-workbench.test.yaml');
+        await screen.findByText('登录并打开简道云工作台.test.yaml');
 
         await user.click(screen.getByRole('button', { name: '新建测试' }));
         await user.type(screen.getByLabelText('新建用例名称'), 'My Todo Flow');
@@ -125,6 +125,27 @@ describe('App routes', () => {
             setupModules: [ 'jiandaoyun-login' ],
             startUrl: DEFAULT_START_URL
         });
+    });
+
+    it('deletes a YAML definition after confirmation', async () => {
+        const user = userEvent.setup();
+        const api = installApiMock();
+        renderApp('/repository');
+        const fileName = '验证头像账号菜单.test.yaml';
+        await screen.findByText(fileName);
+
+        await user.click(screen.getByRole('button', {
+            name: `删除 ${ fileName }`
+        }));
+        expect(screen.getByRole('dialog', { name: '删除测试' }))
+            .toBeInTheDocument();
+        await user.click(screen.getByRole('button', { name: '确认删除' }));
+
+        expect(screen.queryByText(fileName)).not.toBeInTheDocument();
+        expect(api).toHaveBeenCalledWith(
+            '/api/tests/avatar-account-menu',
+            { method: 'DELETE' }
+        );
     });
 
     it('supports adding a natural-language step and switching tabs', async () => {
@@ -150,6 +171,50 @@ describe('App routes', () => {
 });
 
 describe('Run debug workbench', () => {
+    it('restores the latest passed run and keeps plan actions available', async () => {
+        const user = userEvent.setup();
+        installApiMock({
+            latestSession: {
+                ...createRunSession('COMPLETED'),
+                mode: 'ai-explore' as const
+            }
+        });
+        renderApp('/tests/login-and-open-workbench');
+        await screen.findByDisplayValue(LOGIN_ACTION);
+
+        expect(screen.getByText('测试通过')).toBeInTheDocument();
+        await user.click(screen.getByRole('tab', { name: '控制台' }));
+        expect(screen.getByText('页面已经进入简道云工作台。'))
+            .toBeInTheDocument();
+        expect(screen.getByRole('button', { name: '生成结构化计划' }))
+            .toBeInTheDocument();
+        await user.click(screen.getByRole('tab', { name: '时间线' }));
+        expect(screen.getByText('页面状态已采集')).toBeInTheDocument();
+        expect(screen.getByRole('img', { name: '当前运行截图' }))
+            .toBeInTheDocument();
+    });
+
+    it('loads a saved compiled plan directly in replay mode', async () => {
+        const user = userEvent.setup();
+        installApiMock({
+            latestSession: {
+                ...createRunSession('COMPLETED'),
+                mode: 'ai-explore' as const
+            },
+            savedPlanRef: 'source-run/json/compiled-plan.json'
+        });
+        renderApp('/tests/login-and-open-workbench');
+        await screen.findByDisplayValue(LOGIN_ACTION);
+
+        await user.click(screen.getByRole('button', { name: '选项' }));
+        expect(screen.getByLabelText('运行模式'))
+            .toHaveValue('structured-replay');
+        await user.click(screen.getByRole('button', { name: '取消' }));
+        await user.click(screen.getByRole('tab', { name: '控制台' }));
+        expect(screen.getByRole('button', { name: '使用此计划回放' }))
+            .toBeInTheDocument();
+    });
+
     it('sends generic context and stores a per-test replay plan', async () => {
         const user = userEvent.setup();
         const api = installApiMock();
@@ -314,10 +379,14 @@ describe('Run debug workbench', () => {
 interface ApiMockOptions {
     cancelSession?: ReturnType<typeof createRunSession>;
     currentSession?: ReturnType<typeof createRunSession>;
+    latestSession?: ReturnType<typeof createRunSession> & {
+        mode?: 'ai-explore' | 'structured-replay'
+    };
     startBody?: unknown;
     startStatus?: number;
     planBody?: unknown;
     planStatus?: number;
+    savedPlanRef?: string;
 }
 
 const RUN_SESSION_ID = '8d482633-14a6-4a13-a52f-bfb0617b14dc';
@@ -328,6 +397,7 @@ function installApiMock(options: ApiMockOptions = {}) {
             id: 'login-and-open-workbench',
             name: '登录并打开简道云工作台',
             action: LOGIN_ACTION,
+            planRef: options.savedPlanRef,
             setupModules: [ 'jiandaoyun-login' ]
         })],
         ['avatar-account-menu', createDefinition({
@@ -384,7 +454,22 @@ function installApiMock(options: ApiMockOptions = {}) {
                 definitions.set(id, updated);
                 return jsonResponse({ record: toRecord(updated) });
             }
-            return jsonResponse({ test: definition });
+            if (method === 'DELETE') {
+                definitions.delete(id);
+                return new Response(null, { status: 204 });
+            }
+            return jsonResponse({
+                record: toRecord(definition),
+                test: definition
+            });
+        }
+        if (
+            url === '/api/debug/tests/login-and-open-workbench/latest-run'
+            && method === 'GET'
+        ) {
+            return jsonResponse({
+                session: options.latestSession ?? null
+            });
         }
         if (url === '/api/debug/runs' && method === 'POST') {
             return jsonResponse(
@@ -466,7 +551,7 @@ function createDefinition(input: {
 function toRecord(definition: TestDefinitionDto) {
     return {
         definition,
-        fileName: `${ definition.id }.test.yaml`,
+        fileName: `${ definition.name }.test.yaml`,
         updatedAt: '2026-08-26T00:00:00.000Z'
     };
 }

@@ -1,6 +1,0 @@
-schemaVersion: 1
-id: login-and-open-workbench
-name: 登录并打开简道云工作台
-environmentId: jiandaoyun-test
-startUrl: "https://test.jdydevelop.com/dashboard#/"
-action: 使用环境变量中的账号和密码登录简道云，并等待工作台加载完成。

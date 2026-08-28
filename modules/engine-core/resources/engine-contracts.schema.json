@@ -113,6 +113,7 @@
                 "CLICK",
                 "FAIL",
                 "FINISH",
+                "HOVER",
                 "INSPECT",
                 "NAVIGATE",
                 "SCROLL",
@@ -128,6 +129,7 @@
             "enum": [
                 "CHECK",
                 "CLICK",
+                "HOVER",
                 "NAVIGATE",
                 "SELECT",
                 "TYPE",
@@ -639,7 +641,7 @@
                     "type": "boolean"
                 },
                 "discoverySource": {
-                    "description": "元素由常规 DOM 采集发现，或由视觉定位后反查 DOM 补充。",
+                    "description": "元素由常规 DOM 采集发现，或由视觉模型批量补充了外观语义。",
                     "enum": [
                         "dom",
                         "vision-assisted"
@@ -692,7 +694,7 @@
                     "type": "boolean"
                 },
                 "visualDescription": {
-                    "description": "视觉定位使用的业务语义，不替代页面本身的可访问名称。",
+                    "description": "视觉模型根据候选框独立识别的外观和用途，不替代 DOM 语义。",
                     "type": "string"
                 }
             },

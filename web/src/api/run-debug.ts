@@ -78,6 +78,7 @@ export interface DebugRunSession {
     updatedAt: string;
     events: DebugRunEvent[];
     error?: string;
+    mode?: DebugRunMode;
     result?: DebugRunResult;
     runId?: string;
 }
@@ -171,6 +172,33 @@ export async function getDebugRunSession(
         { signal }
     );
     return readSessionResponse(response);
+}
+
+/** 读取某条用例最近一次仍在运行或已经结束的持久化会话。 */
+export async function getLatestDebugRunSession(
+    testId: string,
+    signal?: AbortSignal
+): Promise<DebugRunSession | undefined> {
+    const response = await fetch(
+        `/api/debug/tests/${ encodeURIComponent(testId) }/latest-run`,
+        { signal }
+    );
+    const value = await readJson(response);
+    if (!response.ok) {
+        throw new RunDebugRequestError(
+            getErrorMessage(value)
+                ?? `历史运行接口请求失败（HTTP ${ response.status }）。`,
+            response.status
+        );
+    }
+    const session = getObject(value)?.session;
+    if (session === null) {
+        return undefined;
+    }
+    if (!isDebugRunSession(session)) {
+        throw new RunDebugRequestError('历史运行接口返回了无法识别的会话。');
+    }
+    return session;
 }
 
 /** 请求服务端终止模型调用、浏览器操作和后续回放。 */
@@ -360,6 +388,9 @@ function isDebugRunSession(value: unknown): value is DebugRunSession {
         && typeof object.updatedAt === 'string'
         && Array.isArray(object.events)
         && object.events.every(isDebugRunEvent)
+        && (object.mode === undefined
+            || object.mode === 'ai-explore'
+            || object.mode === 'structured-replay')
         && (object.result === undefined || isDebugRunResult(object.result));
 }
 

@@ -1,6 +1,9 @@
 schemaVersion: 1
-id: test-61ee56fb
-name: 验证创建应用是否成功
+id: test-70b977ef
+name: 验证创建应用
 environmentId: jiandaoyun-test
 startUrl: https://www.jiandaoyun.com/dashboard#/
 action: ""
+execution:
+  setupModules:
+    - jiandaoyun-login

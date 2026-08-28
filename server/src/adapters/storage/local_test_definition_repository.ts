@@ -26,8 +26,10 @@ export interface TestDefinitionRecord {
 }
 
 export interface TestDefinitionRepository {
+    delete: (id: string) => Promise<boolean>;
     list: () => Promise<TestDefinitionRecord[]>;
     load: (id: string) => Promise<TestDefinition | undefined>;
+    loadRecord: (id: string) => Promise<TestDefinitionRecord | undefined>;
     save: (definition: TestDefinition) => Promise<TestDefinitionRecord>;
 }
 
@@ -43,28 +45,41 @@ implements TestDefinitionRepository {
         const names = (await fsPromises.readdir(this.rootDirectory))
             .filter((name) => name.endsWith(TEST_FILE_SUFFIX))
             .sort();
-        return await Promise.all(names.map(async (fileName) => {
-            const id = fileName.slice(0, -TEST_FILE_SUFFIX.length);
-            const definition = await this.loadRequired(id);
-            const stat = await fsPromises.stat(this.filePath(id));
-            return {
-                definition,
-                fileName,
-                updatedAt: stat.mtime.toISOString()
-            };
-        }));
+        const records = await Promise.all(
+            names.map((fileName) => this.loadFile(fileName))
+        );
+        const ids = new Set<string>();
+        for (const record of records) {
+            if (ids.has(record.definition.id)) {
+                throw new Error(
+                    `存在重复的用例 id：${ record.definition.id }。`
+                );
+            }
+            ids.add(record.definition.id);
+        }
+        return records;
     }
 
     public async load(id: string): Promise<TestDefinition | undefined> {
+        return (await this.loadRecord(id))?.definition;
+    }
+
+    public async loadRecord(
+        id: string
+    ): Promise<TestDefinitionRecord | undefined> {
         requireTestId(id);
-        try {
-            return await this.loadRequired(id);
-        } catch (error) {
-            if (hasErrorCode(error, 'ENOENT')) {
-                return undefined;
-            }
-            throw error;
+        return (await this.list()).find(
+            (record) => record.definition.id === id
+        );
+    }
+
+    public async delete(id: string): Promise<boolean> {
+        const record = await this.loadRecord(id);
+        if (!record) {
+            return false;
         }
+        await fsPromises.rm(this.filePath(record.fileName));
+        return true;
     }
 
     public async save(
@@ -72,8 +87,18 @@ implements TestDefinitionRepository {
     ): Promise<TestDefinitionRecord> {
         const normalized = parseTestDefinition(definition);
         await fsPromises.mkdir(this.rootDirectory, { recursive: true });
-        const fileName = `${ normalized.id }${ TEST_FILE_SUFFIX }`;
-        const target = this.filePath(normalized.id);
+        const records = await this.list();
+        const existing = records.find(
+            (record) => record.definition.id === normalized.id
+        );
+        const fileName = createAvailableFileName(
+            normalized.name,
+            normalized.id,
+            records
+                .filter((record) => record.definition.id !== normalized.id)
+                .map((record) => record.fileName)
+        );
+        const target = this.filePath(fileName);
         const temporary = path.join(
             this.rootDirectory,
             `.${ fileName }.${ process.pid }.${ randomUUID() }.tmp`
@@ -87,6 +112,14 @@ implements TestDefinitionRepository {
         });
         try {
             await fsPromises.rename(temporary, target);
+            if (existing && existing.fileName !== fileName) {
+                try {
+                    await fsPromises.rm(this.filePath(existing.fileName));
+                } catch (error) {
+                    await fsPromises.rm(target, { force: true });
+                    throw error;
+                }
+            }
         } catch (error) {
             await fsPromises.rm(temporary, { force: true });
             throw error;
@@ -99,19 +132,25 @@ implements TestDefinitionRepository {
         };
     }
 
-    private filePath(id: string): string {
-        requireTestId(id);
-        return path.join(this.rootDirectory, `${ id }${ TEST_FILE_SUFFIX }`);
+    private filePath(fileName: string): string {
+        if (
+            path.basename(fileName) !== fileName
+            || !fileName.endsWith(TEST_FILE_SUFFIX)
+        ) {
+            throw new Error('用例文件名不合法。');
+        }
+        return path.join(this.rootDirectory, fileName);
     }
 
-    private async loadRequired(id: string): Promise<TestDefinition> {
-        const content = await fsPromises.readFile(this.filePath(id), 'utf8');
+    private async loadFile(fileName: string): Promise<TestDefinitionRecord> {
+        const target = this.filePath(fileName);
+        const content = await fsPromises.readFile(target, 'utf8');
         const document = parseDocument(content, {
             uniqueKeys: true
         });
         if (document.errors.length > 0) {
             throw new Error(
-                `用例 ${ id } 的 YAML 无法解析：${
+                `用例 ${ fileName } 的 YAML 无法解析：${
                     document.errors[0].message
                 }`
             );
@@ -119,11 +158,48 @@ implements TestDefinitionRepository {
         const definition = parseTestDefinition(document.toJS({
             maxAliasCount: 0
         }));
-        if (definition.id !== id) {
-            throw new Error(`用例文件名与内部 id 不一致：${ id }。`);
-        }
-        return definition;
+        const stat = await fsPromises.stat(target);
+        return {
+            definition,
+            fileName,
+            updatedAt: stat.mtime.toISOString()
+        };
     }
+}
+
+/** 根据用例名称生成可在 Windows/macOS/Linux 使用的中文 YAML 文件名。 */
+export function createAvailableFileName(
+    name: string,
+    id: string,
+    occupiedFileNames: string[]
+): string {
+    const normalized = name
+        .normalize('NFKC')
+        .replace(/[\u0000-\u001f<>:"/\\|?*]/gu, ' ')
+        .replace(/\s+/gu, ' ')
+        .replace(/[. ]+$/gu, '')
+        .trim();
+    const truncated = Array.from(normalized).slice(0, 80).join('');
+    const fallback = `测试用例-${ id }`;
+    const safeBase = isWindowsReservedName(truncated)
+        ? `${ truncated }-用例`
+        : truncated || fallback;
+    const occupied = new Set(
+        occupiedFileNames.map((fileName) => fileName.toLocaleLowerCase())
+    );
+    for (let suffix = 1; suffix <= 100; suffix += 1) {
+        const candidate = suffix === 1
+            ? `${ safeBase }${ TEST_FILE_SUFFIX }`
+            : `${ safeBase }（${ suffix }）${ TEST_FILE_SUFFIX }`;
+        if (!occupied.has(candidate.toLocaleLowerCase())) {
+            return candidate;
+        }
+    }
+    throw new Error(`无法为用例“${ name }”生成不重复的文件名。`);
+}
+
+function isWindowsReservedName(value: string): boolean {
+    return /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(value);
 }
 
 /** 对本地 YAML 内容进行白名单字段和类型校验。 */
@@ -282,10 +358,4 @@ function requireAllowedFields(
     if (unexpected) {
         throw new Error(`${ pathLabel }.${ unexpected } 不允许出现。`);
     }
-}
-
-function hasErrorCode(error: unknown, code: string): boolean {
-    return error instanceof Error
-        && 'code' in error
-        && error.code === code;
 }

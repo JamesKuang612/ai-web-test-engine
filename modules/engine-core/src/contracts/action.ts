@@ -9,6 +9,7 @@ export type ActionType =
     | 'CLICK'
     | 'FAIL'
     | 'FINISH'
+    | 'HOVER'
     | 'INSPECT'
     | 'NAVIGATE'
     | 'SCROLL'

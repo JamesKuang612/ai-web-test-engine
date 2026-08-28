@@ -26,6 +26,7 @@ describe('RunDebugSessionController', () => {
         const app = express();
         app.use(express.json());
         app.post('/api/debug/runs', controller.start);
+        app.get('/api/debug/tests/:testId/latest-run', controller.latest);
         app.get('/api/debug/runs/:sessionId/events', controller.events);
         app.get('/api/debug/runs/:sessionId', controller.status);
         app.get('/api/debug/artifact', controller.screenshot);
@@ -41,7 +42,10 @@ describe('RunDebugSessionController', () => {
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ action: '打开页面' })
+                body: JSON.stringify({
+                    action: '打开页面',
+                    testId: 'saved-test'
+                })
             });
             const startBody = await startResponse.json() as {
                 session: { sessionId: string }
@@ -58,6 +62,12 @@ describe('RunDebugSessionController', () => {
             const statusBody = await statusResponse.json() as {
                 session: { status: string }
             };
+            const latestResponse = await fetch(
+                `${ origin }/api/debug/tests/saved-test/latest-run`
+            );
+            const latestBody = await latestResponse.json() as {
+                session: { result?: { result?: string } }
+            };
             const screenshotResponse = await fetch(
                 `${ origin }/api/debug/artifact?ref=${
                     encodeURIComponent('run-http-001/artifacts/page.png')
@@ -70,6 +80,7 @@ describe('RunDebugSessionController', () => {
             assert.match(eventStream, /run-http-001\/artifacts\/page\.png/u);
             assert.match(eventStream, /"status":"COMPLETED"/u);
             assert.equal(statusBody.session.status, 'COMPLETED');
+            assert.equal(latestBody.session.result?.result, 'PASS');
             assert.equal(screenshotResponse.headers.get('content-type'), 'image/png');
             assert.deepEqual(
                 [...new Uint8Array(await screenshotResponse.arrayBuffer())],

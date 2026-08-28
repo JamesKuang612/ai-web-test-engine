@@ -1,9 +1,0 @@
-schemaVersion: 1
-id: avatar-account-menu
-name: 验证头像账号菜单
-environmentId: jiandaoyun-test
-startUrl: https://test.jdydevelop.com/dashboard#/
-action: 使用环境变量中的账号和密码登录简道云，等待工作台加载完成；点击页面右上角用户头像，确认账号菜单成功展开；从上到下逐字严格验证账号菜单完整显示以下文本：“吾名佳欣”、“测试企业(31186)”、“我创建的”、“我的收藏”、“个人设置”、“管理后台”、“版本购买”、“语言”、“简体中文”、“退出”。以上每项均为精确文本断言，顺序、文字或缺失任一不符均判定失败。
-execution:
-  planRef: f5780831-e558-489c-814f-d8662021f4a3/json/compiled-plan.json
-  preferredMode: structured-replay

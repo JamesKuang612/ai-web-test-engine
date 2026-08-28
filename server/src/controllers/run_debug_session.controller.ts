@@ -26,7 +26,7 @@ export class RunDebugSessionController {
     constructor(
         private readonly sessions: Pick<
             RunDebugSessionService,
-            'cancel' | 'get' | 'start' | 'subscribe'
+            'cancel' | 'get' | 'latest' | 'start' | 'subscribe'
         > = runDebugSessionService,
         private readonly artifacts: Pick<
             ArtifactPreviewService,
@@ -66,6 +66,20 @@ export class RunDebugSessionController {
         try {
             res.json({
                 session: this.sessions.get(req.params.sessionId)
+            });
+        } catch (error) {
+            this.handleSessionError(error, res, next);
+        }
+    };
+
+    public latest = async (
+        req: Request,
+        res: Response,
+        next: NextFunction
+    ): Promise<void> => {
+        try {
+            res.json({
+                session: await this.sessions.latest(req.params.testId) ?? null
             });
         } catch (error) {
             this.handleSessionError(error, res, next);

@@ -257,20 +257,38 @@ export class DeterministicPlanReplayer {
             );
         }
 
+        const unexpectedNavigation = command.type === 'CLICK'
+            && result.browserSignals.urlChanged
+            && !this.isNavigationExpected(command);
         const changed = result.browserSignals.urlChanged
             || before.stateFingerprint !== after.stateFingerprint;
         const pageReady = !after.page.loading;
-        const confirmed = result.status === 'executed' && changed && pageReady;
+        const confirmed = result.status === 'executed'
+            && changed
+            && pageReady
+            && !unexpectedNavigation;
         return this.createEffect(
             command,
             confirmed,
             result.status,
-            confirmed
-                ? '点击后页面状态发生了变化。'
+            unexpectedNavigation
+                ? '点击意外改变了页面地址，与计划的非导航效果不一致。'
+                : confirmed
+                    ? command.type === 'HOVER'
+                        ? '鼠标悬浮后页面出现了可观察变化。'
+                        : '点击后页面状态发生了变化。'
                 : !pageReady
                     ? '点击后页面未在等待窗口内渲染出可验证内容。'
                     : '点击后页面状态没有产生可观察变化。'
         );
+    }
+
+    /** 判断结构化步骤是否明确预期发生页面导航。 */
+    private isNavigationExpected(command: ActionCommand): boolean {
+        return /跳转|页面进入|进入(?:.+页面|工作台|应用)|导航|打开(?:.+页面|工作台|应用)|返回(?:.+页面|工作台|首页|上一页)|登录(?:成功)?(?:后|进入|跳转|完成)|URL|地址/iu.test([
+            command.expectedEffect ?? '',
+            command.reasonSummary
+        ].join(' '));
     }
 
     private verifyNavigationEffect(

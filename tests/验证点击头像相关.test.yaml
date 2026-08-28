@@ -1,0 +1,9 @@
+schemaVersion: 1
+id: test-70c79fe8
+name: 验证点击头像相关
+environmentId: jiandaoyun-test
+startUrl: https://www.jiandaoyun.com/dashboard#/
+action: ""
+execution:
+  setupModules:
+    - jiandaoyun-login

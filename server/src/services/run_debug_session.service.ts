@@ -2,10 +2,16 @@ import { randomUUID } from 'node:crypto';
 import type {
     RunEvent,
     RunEventPublisher,
+    RunMode,
     RunResult,
 } from '@ai-web-test-engine/core';
 import { service } from 'nstarter-core';
+import {
+    LocalRunSessionHistoryStore,
+    type RunSessionHistoryStore,
+} from '../adapters/storage/local_run_session_history_store';
 import { LoggingRunEventPublisher } from '../adapters/events';
+import { config } from '../config';
 import {
     RunDebugService,
     type RunDebugOptions,
@@ -26,6 +32,7 @@ export interface RunDebugSessionSnapshot {
     updatedAt: string;
     events: RunEvent[];
     error?: string;
+    mode?: RunMode;
     result?: RunResult;
     runId?: string;
 }
@@ -43,6 +50,8 @@ export type RunDebugSessionUpdate =
 interface RunDebugSessionRecord extends RunDebugSessionSnapshot {
     abortController: AbortController;
     listeners: Set<(update: RunDebugSessionUpdate) => void>;
+    persistence: Promise<void>;
+    testId?: string;
 }
 
 /** 表示指定的异步运行会话不存在。 */
@@ -60,7 +69,9 @@ export class RunDebugSessionService {
 
     constructor(
         private readonly runner: Pick<RunDebugService, 'run'> =
-            new RunDebugService()
+            new RunDebugService(),
+        private readonly history: RunSessionHistoryStore =
+            new LocalRunSessionHistoryStore(config.storage.artifact_root)
     ) {}
 
     /** 立即创建会话，实际模型与浏览器工作在后续微任务中执行。 */
@@ -77,7 +88,14 @@ export class RunDebugSessionService {
             updatedAt: now,
             events: [],
             abortController: new AbortController(),
-            listeners: new Set()
+            listeners: new Set(),
+            persistence: Promise.resolve(),
+            ...typeof options.testId === 'string'
+                ? { testId: options.testId }
+                : {},
+            mode: options.mode === 'structured-replay'
+                ? 'structured-replay'
+                : 'ai-explore'
         };
         this.sessions.set(record.sessionId, record);
         this.pruneTerminalSessions();
@@ -85,6 +103,22 @@ export class RunDebugSessionService {
             this.execute(record, action, options).catch(() => undefined);
         });
         return this.toSnapshot(record);
+    }
+
+    /** 返回同一用例当前会话，或从磁盘恢复最近一次终态运行。 */
+    public async latest(testId: string): Promise<
+        RunDebugSessionSnapshot | undefined
+    > {
+        if (!/^[a-z0-9][a-z0-9-]{0,63}$/u.test(testId)) {
+            throw new RunDebugSessionNotFoundError(testId);
+        }
+        const inMemory = [...this.sessions.values()]
+            .filter((record) => record.testId === testId)
+            .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+            .at(0);
+        return inMemory
+            ? this.toSnapshot(inMemory)
+            : await this.history.loadLatest(testId);
     }
 
     /** 返回当前状态和已累积事件，供断线重连或最终状态读取。 */
@@ -105,6 +139,7 @@ export class RunDebugSessionService {
             kind: 'session',
             session: this.toSnapshot(record)
         });
+        this.queuePersistence(record).catch(() => undefined);
         return this.toSnapshot(record);
     }
 
@@ -123,7 +158,7 @@ export class RunDebugSessionService {
         action: string,
         options: RunDebugOptions
     ): Promise<void> {
-        const publisher = new SessionRunEventPublisher((event) => {
+        const publisher = new SessionRunEventPublisher(async (event) => {
             record.runId = event.runId;
             record.events.push(event);
             record.updatedAt = event.timestamp;
@@ -131,6 +166,7 @@ export class RunDebugSessionService {
                 kind: 'run-event',
                 event
             });
+            await this.queuePersistence(record);
         });
         try {
             const result = await this.runner.run(
@@ -161,6 +197,7 @@ export class RunDebugSessionService {
             kind: 'session',
             session: this.toSnapshot(record)
         });
+        await this.queuePersistence(record);
     }
 
     private requireSession(sessionId: string): RunDebugSessionRecord {
@@ -184,10 +221,22 @@ export class RunDebugSessionService {
             createdAt: record.createdAt,
             updatedAt: record.updatedAt,
             events: [...record.events],
+            ...record.mode ? { mode: record.mode } : {},
             ...record.runId ? { runId: record.runId } : {},
             ...record.result ? { result: record.result } : {},
             ...record.error ? { error: record.error } : {}
         };
+    }
+
+    private queuePersistence(record: RunDebugSessionRecord): Promise<void> {
+        if (!record.runId || !record.testId) {
+            return record.persistence;
+        }
+        const snapshot = this.toSnapshot(record);
+        record.persistence = record.persistence
+            .then(() => this.history.save(record.testId as string, snapshot))
+            .catch(() => undefined);
+        return record.persistence;
     }
 
     private emit(
@@ -213,10 +262,12 @@ export class RunDebugSessionService {
 class SessionRunEventPublisher implements RunEventPublisher {
     private readonly logger = new LoggingRunEventPublisher();
 
-    constructor(private readonly capture: (event: RunEvent) => void) {}
+    constructor(
+        private readonly capture: (event: RunEvent) => Promise<void>
+    ) {}
 
     public publish = async (event: RunEvent): Promise<void> => {
-        this.capture(event);
+        await this.capture(event);
         await this.logger.publish(event);
     };
 }

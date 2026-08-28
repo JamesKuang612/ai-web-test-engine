@@ -26,7 +26,7 @@ describe('CompiledPlan Schema', () => {
         );
     });
 
-    it('解析可回放的 SELECT、CHECK 和 WAIT 步骤', () => {
+    it('解析可回放的 HOVER、SELECT、CHECK 和 WAIT 步骤', () => {
         const plan = createPlan();
         plan.steps.push({
             id: 'step-3',
@@ -59,6 +59,13 @@ describe('CompiledPlan Schema', () => {
                 value: 500
             },
             expectedEffect: '等待异步内容渲染',
+            risk: 'read-only'
+        }, {
+            id: 'step-6',
+            sequence: 6,
+            type: 'HOVER',
+            target: createTarget('11应用卡片', 'a'),
+            expectedEffect: '显示添加收藏按钮',
             risk: 'read-only'
         });
 

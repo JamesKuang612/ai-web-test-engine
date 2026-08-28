@@ -124,7 +124,16 @@ describe('ActionCommand Schema 严格输出', () => {
 });
 
 describe('ActionCommand Schema 扩展动作', () => {
-    it('解析下拉选择、复选框和受限等待动作', () => {
+    it('解析悬浮、下拉选择、复选框和受限等待动作', () => {
+        const hover = actionCommandSchema.parse({
+            type: 'HOVER',
+            target: {
+                candidateId: 'application-11',
+                description: '“11”应用卡片'
+            },
+            reasonSummary: '悬浮后显示收藏按钮',
+            risk: 'read-only'
+        });
         const select = actionCommandSchema.parse({
             type: 'SELECT',
             target: {
@@ -161,6 +170,7 @@ describe('ActionCommand Schema 扩展动作', () => {
             risk: 'read-only'
         });
 
+        assert.equal(hover.type, 'HOVER');
         assert.equal(select.type, 'SELECT');
         assert.equal(check.value?.source, 'literal');
         assert.equal(wait.type, 'WAIT');
@@ -186,5 +196,13 @@ describe('ActionCommand Schema 扩展动作', () => {
             reasonSummary: '长时间等待',
             risk: 'read-only'
         }), /100～5000/u);
+        assert.throws(() => actionCommandSchema.parse({
+            type: 'HOVER',
+            target: {
+                description: '缺少候选编号的应用卡片'
+            },
+            reasonSummary: '尝试悬浮',
+            risk: 'read-only'
+        }), /HOVER 必须引用/u);
     });
 });

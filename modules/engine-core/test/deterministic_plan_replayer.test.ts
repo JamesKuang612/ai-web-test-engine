@@ -136,6 +136,48 @@ describe('DeterministicPlanReplayer literal inputs', () => {
 });
 
 describe('DeterministicPlanReplayer failures and advanced actions', () => {
+    it('非导航点击意外改变 URL 时不把动作效果误判为成功', async () => {
+        const browser = new FakeReplayBrowser([
+            createObservation('blank', 'about:blank', []),
+            createObservation('dashboard-1', workspaceUrl, favoriteElements()),
+            createObservation('dashboard-2', workspaceUrl, favoriteElements()),
+            createObservation('inside-app', `${ workspaceUrl }app/11`, [])
+        ]);
+        const plan = createPlan();
+        plan.steps = [
+            plan.steps[0],
+            {
+                id: 'step-2',
+                sequence: 2,
+                type: 'CLICK',
+                target: {
+                    description: '11应用的收藏图标',
+                    locatorHints: [{
+                        strategy: 'role-name',
+                        value: 'link::11'
+                    }],
+                    identity: {
+                        tag: 'a',
+                        role: 'link',
+                        name: '11'
+                    }
+                },
+                expectedEffect: '将11应用添加至我的收藏',
+                risk: 'side-effect'
+            }
+        ];
+        const replayer = new DeterministicPlanReplayer(
+            browser,
+            new FakeValueResolver()
+        );
+
+        await assert.rejects(() => replayer.replay({
+            plan,
+            environment,
+            signal: new AbortController().signal
+        }), /意外改变了页面地址/u);
+    });
+
     it('动作效果没有确认时中止回放并仍然关闭会话', async () => {
         const browser = new FakeReplayBrowser([
             createObservation('blank', 'about:blank', []),
@@ -159,7 +201,7 @@ describe('DeterministicPlanReplayer failures and advanced actions', () => {
         assert.equal(browser.closeCount, 1);
     });
 
-    it('确定性回放 SELECT、CHECK 和 WAIT 计划步骤', async () => {
+    it('确定性回放 HOVER、SELECT、CHECK 和 WAIT 计划步骤', async () => {
         const browser = new FakeReplayBrowser([
             createObservation('blank', 'about:blank', []),
             createObservation('form-1', loginUrl, formElements('empty', false)),
@@ -168,7 +210,9 @@ describe('DeterministicPlanReplayer failures and advanced actions', () => {
             createObservation('form-4', loginUrl, formElements('filled', false)),
             createObservation('form-5', loginUrl, formElements('filled', true)),
             createObservation('form-6', loginUrl, formElements('filled', true)),
-            createObservation('form-7', loginUrl, formElements('filled', true))
+            createObservation('form-7', loginUrl, formElements('filled', true)),
+            createObservation('form-8', loginUrl, formElements('filled', true)),
+            createObservation('form-9', loginUrl, formElements('filled', true))
         ]);
         const replayer = new DeterministicPlanReplayer(
             browser,
@@ -183,9 +227,9 @@ describe('DeterministicPlanReplayer failures and advanced actions', () => {
 
         assert.deepEqual(
             browser.commands.map((command) => command.type),
-            [ 'NAVIGATE', 'SELECT', 'CHECK', 'WAIT' ]
+            [ 'NAVIGATE', 'SELECT', 'CHECK', 'WAIT', 'HOVER' ]
         );
-        assert.equal(execution.actionCount, 4);
+        assert.equal(execution.actionCount, 5);
         assert.equal(execution.steps.every(
             (step) => step.effect.status === 'confirmed'
         ), true);
@@ -382,6 +426,13 @@ function createAdvancedPlan(): CompiledPlan {
             },
             expectedEffect: '等待异步内容稳定',
             risk: 'read-only'
+        }, {
+            id: 'step-5',
+            sequence: 5,
+            type: 'HOVER',
+            target: createCompiledControl('语言', 'select'),
+            expectedEffect: '悬浮后显示附加信息',
+            risk: 'read-only'
         }]
     };
 }
@@ -485,6 +536,25 @@ function formElements(
         locatorHints: [{
             strategy: 'label',
             value: '接收通知'
+        }]
+    }];
+}
+
+function favoriteElements(): ObservedElement[] {
+    return [{
+        candidateId: 'application-11',
+        tag: 'a',
+        role: 'link',
+        name: '11',
+        text: '11',
+        disabled: false,
+        visible: true,
+        inViewport: true,
+        attributes: {},
+        nearbyText: [],
+        locatorHints: [{
+            strategy: 'role-name',
+            value: 'link::11'
         }]
     }];
 }

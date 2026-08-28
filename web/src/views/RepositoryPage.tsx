@@ -9,6 +9,7 @@ import {
 } from 'react-router-dom';
 import {
     createTestDefinition,
+    deleteTestDefinition,
     listTestDefinitions,
 } from '../api/test-definitions';
 import { Icon } from '../components/Icon';
@@ -36,6 +37,9 @@ export function RepositoryPage() {
     const [createStartUrl, setCreateStartUrl] = useState(DEFAULT_START_URL);
     const [createError, setCreateError] = useState('');
     const [createSubmitting, setCreateSubmitting] = useState(false);
+    const [deleteTarget, setDeleteTarget] = useState<RepositoryEntry>();
+    const [deleteError, setDeleteError] = useState('');
+    const [deleteSubmitting, setDeleteSubmitting] = useState(false);
 
     useEffect(() => {
         const controller = new AbortController();
@@ -129,6 +133,34 @@ export function RepositoryPage() {
             );
         } finally {
             setCreateSubmitting(false);
+        }
+    };
+
+    const closeDeleteDialog = () => {
+        if (!deleteSubmitting) {
+            setDeleteTarget(undefined);
+            setDeleteError('');
+        }
+    };
+
+    const deleteTest = async () => {
+        if (!deleteTarget?.testId) {
+            return;
+        }
+        setDeleteSubmitting(true);
+        setDeleteError('');
+        try {
+            await deleteTestDefinition(deleteTarget.testId);
+            setTestEntries((entries) => entries.filter(
+                (entry) => entry.testId !== deleteTarget.testId
+            ));
+            setDeleteTarget(undefined);
+        } catch (error) {
+            setDeleteError(
+                error instanceof Error ? error.message : '删除测试失败。'
+            );
+        } finally {
+            setDeleteSubmitting(false);
         }
     };
 
@@ -271,6 +303,7 @@ export function RepositoryPage() {
                                         <span>最后更新</span>
                                         <Icon name="sort" size={15} />
                                     </th>
+                                    <th>操作</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -326,6 +359,22 @@ export function RepositoryPage() {
                                             <span className="time-value">
                                                 {entry.updatedAt ?? '—'}
                                             </span>
+                                        </td>
+                                        <td>
+                                            {entry.type === 'test' && (
+                                                <button
+                                                    aria-label={`删除 ${entry.name}`}
+                                                    className="delete-entry-button"
+                                                    onClick={() => {
+                                                        setDeleteTarget(entry);
+                                                        setDeleteError('');
+                                                    }}
+                                                    title="删除测试"
+                                                    type="button"
+                                                >
+                                                    <Icon name="trash" size={16} />
+                                                </button>
+                                            )}
                                         </td>
                                     </tr>
                                 ))}
@@ -435,6 +484,62 @@ export function RepositoryPage() {
                                 type="submit"
                             >
                                 {createSubmitting ? '创建中…' : '创建测试'}
+                            </button>
+                        </footer>
+                    </form>
+                </div>
+            )}
+            {deleteTarget && (
+                <div className="dialog-backdrop" role="presentation">
+                    <form
+                        aria-labelledby="delete-test-title"
+                        aria-modal="true"
+                        className="test-settings-dialog delete-test-dialog"
+                        onSubmit={(event) => {
+                            event.preventDefault();
+                            void deleteTest();
+                        }}
+                        role="dialog"
+                    >
+                        <header>
+                            <div>
+                                <h2 id="delete-test-title">删除测试</h2>
+                                <p>此操作会从项目 tests 目录删除 YAML 文件。</p>
+                            </div>
+                            <button
+                                aria-label="关闭删除测试窗口"
+                                disabled={deleteSubmitting}
+                                onClick={closeDeleteDialog}
+                                type="button"
+                            >
+                                <Icon name="x" size={18} />
+                            </button>
+                        </header>
+                        <div className="dialog-fields">
+                            <p className="delete-confirm-copy">
+                                确认删除“{deleteTarget.name}”吗？
+                            </p>
+                            {deleteError && (
+                                <p className="dialog-error" role="alert">
+                                    {deleteError}
+                                </p>
+                            )}
+                        </div>
+                        <footer>
+                            <button
+                                className="dialog-secondary-button"
+                                disabled={deleteSubmitting}
+                                onClick={closeDeleteDialog}
+                                type="button"
+                            >
+                                取消
+                            </button>
+                            <button
+                                className="dialog-primary-button danger"
+                                disabled={deleteSubmitting}
+                                type="submit"
+                            >
+                                {deleteSubmitting ? '删除中…' : '确认删除'}
                             </button>
                         </footer>
                     </form>

@@ -1,0 +1,9 @@
+schemaVersion: 1
+id: 1-2
+name: "1"
+environmentId: jiandaoyun-test
+startUrl: https://test.jdydevelop.com/dashboard#/
+action: ""
+execution:
+  setupModules:
+    - jiandaoyun-login

@@ -52,13 +52,24 @@ export class TestDefinitionService {
         return this.repository.list();
     }
 
-    public async get(id: string): Promise<TestDefinition> {
+    public async getRecord(id: string): Promise<TestDefinitionRecord> {
         const normalizedId = this.normalizeId(id);
-        const definition = await this.repository.load(normalizedId);
-        if (!definition) {
+        const record = await this.repository.loadRecord(normalizedId);
+        if (!record) {
             throw new TestDefinitionNotFoundError(normalizedId);
         }
-        return definition;
+        return record;
+    }
+
+    public async get(id: string): Promise<TestDefinition> {
+        return (await this.getRecord(id)).definition;
+    }
+
+    public async delete(id: string): Promise<void> {
+        const normalizedId = this.normalizeId(id);
+        if (!await this.repository.delete(normalizedId)) {
+            throw new TestDefinitionNotFoundError(normalizedId);
+        }
     }
 
     public async create(

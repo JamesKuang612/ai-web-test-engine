@@ -813,21 +813,71 @@ describe('PlaywrightBrowserAdapter', () => {
         }
     }).timeout(15_000);
 
-    it('把视觉坐标反查为 PageObservation 候选并继续使用 DOM 点击', async () => {
+    it('执行 HOVER 后重新观察到悬浮才显示的控件', async () => {
+        const testServer = await startTestHttpServer([
+            '<!doctype html><title>悬浮收藏</title><body>',
+            '<a href="#app-11" aria-label="11应用" ',
+            'style="display:block;width:200px;height:100px">',
+            '11应用<button aria-label="添加收藏">收藏</button></a>',
+            '<style>button{visibility:hidden}',
+            'a:hover button{visibility:visible}</style>',
+            '</body>'
+        ].join(''));
+        const adapter = new PlaywrightBrowserAdapter();
+        let session: BrowserSession | undefined;
+
+        try {
+            session = await adapter.start(START_OPTIONS);
+            await adapter.execute(session, createNavigateCommand(testServer.url));
+            const before = await adapter.observe(session);
+            const application = before.interactiveElements.find(
+                (element) => element.name === '11应用'
+            );
+            assert.ok(application);
+            assert.equal(before.interactiveElements.some(
+                (element) => element.name === '添加收藏'
+            ), false);
+
+            const hoverResult = await adapter.execute(session, {
+                type: 'HOVER',
+                target: {
+                    candidateId: application.candidateId,
+                    description: '11应用卡片'
+                },
+                expectedEffect: '显示添加收藏按钮',
+                reasonSummary: '悬浮应用卡片以显示收藏入口',
+                risk: 'read-only'
+            });
+            const after = await adapter.observe(session);
+
+            assert.equal(hoverResult.status, 'executed');
+            assert.equal(after.interactiveElements.some(
+                (element) => element.name === '添加收藏'
+            ), true);
+        } finally {
+            if (session) {
+                await adapter.close(session);
+            }
+            await testServer.close();
+        }
+    }).timeout(15_000);
+
+    it('批量标注已有候选框并继续使用原 DOM Locator 点击', async () => {
+        let annotatedCandidateCount = 0;
         const adapter = new PlaywrightBrowserAdapter({
-            visualTargetLocator: {
-                locate: () => Promise.resolve({
-                    center: [
-                        45,
-                        45
-                    ],
-                    rect: {
-                        left: 20,
-                        top: 20,
-                        width: 50,
-                        height: 50
-                    }
-                })
+            visualCandidateAnnotator: {
+                annotate: (_page, candidates) => {
+                    annotatedCandidateCount = candidates.length;
+                    return Promise.resolve(candidates.map((candidate) => ({
+                        candidateId: candidate.candidateId,
+                        visualDescription: candidate.attributes.id ===
+                            'favorite'
+                            ? '空心五角星图标，收藏按钮'
+                            : '齿轮图标，设置按钮',
+                        elementType: '图标按钮',
+                        confidence: 0.96
+                    })));
+                }
             }
         });
         const session = await adapter.start(START_OPTIONS);
@@ -836,48 +886,56 @@ describe('PlaywrightBrowserAdapter', () => {
             const page = requireManagedPage(adapter, session);
             await page.setContent([
                 '<!doctype html><body>',
-                '<div id="visual-back" style="position:fixed;left:20px;',
-                'top:20px;width:50px;height:50px">返回</div>',
+                '<button id="favorite" style="position:fixed;left:20px;',
+                'top:20px;width:50px;height:50px">☆</button>',
+                '<button id="settings" style="position:fixed;left:90px;',
+                'top:20px;width:50px;height:50px">⚙</button>',
                 '<script>',
-                'document.querySelector("#visual-back").addEventListener(',
+                'document.querySelector("#favorite").addEventListener(',
                 '"click", () => { document.body.dataset.clicked = "true"; });',
                 '</script>',
                 '</body>'
             ].join(''));
             const ordinary = await adapter.observe(session);
-            assert.equal(
-                ordinary.interactiveElements.some(
-                    (element) => element.attributes.id === 'visual-back'
-                ),
-                false
+            const favorite = ordinary.interactiveElements.find(
+                (element) => element.attributes.id === 'favorite'
             );
+            assert.ok(favorite);
 
             const result = await adapter.enhanceObservationWithVision(
                 session,
-                {
-                    targetDescription: '当前页面内能够返回工作台的控件',
-                    expectedEffect: '返回工作台'
-                },
+                ordinary,
                 new AbortController().signal
             );
 
             assert.equal(result.status, 'grounded', result.summary);
             const candidate = result.observation?.interactiveElements.find(
-                (element) => element.candidateId === result.candidateId
+                (element) => element.candidateId === favorite.candidateId
             );
             assert.equal(candidate?.discoverySource, 'vision-assisted');
             assert.equal(
                 candidate?.visualDescription,
-                '当前页面内能够返回工作台的控件'
+                '空心五角星图标，收藏按钮；类型：图标按钮；置信度：0.96'
             );
-            assert.equal(candidate?.attributes.id, 'visual-back');
+            assert.equal(candidate?.attributes.id, 'favorite');
+            assert.equal(annotatedCandidateCount, 2);
+            assert.equal(
+                result.observation?.interactiveElements.length,
+                ordinary.interactiveElements.length
+            );
+            assert.deepEqual(
+                result.candidateIds,
+                ordinary.interactiveElements.map(
+                    ({ candidateId }) => candidateId
+                )
+            );
             const clickResult = await adapter.execute(session, {
                 type: 'CLICK',
                 target: {
-                    candidateId: result.candidateId,
-                    description: '返回工作台控件'
+                    candidateId: favorite.candidateId,
+                    description: '收藏按钮'
                 },
-                expectedEffect: '返回工作台',
+                expectedEffect: '添加收藏',
                 reasonSummary: '选择视觉增强候选',
                 risk: 'read-only'
             });

@@ -15,6 +15,7 @@ import type {
 export type CompiledActionType =
     | 'CHECK'
     | 'CLICK'
+    | 'HOVER'
     | 'NAVIGATE'
     | 'SELECT'
     | 'TYPE'

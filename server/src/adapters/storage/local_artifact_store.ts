@@ -10,6 +10,7 @@ import type {
     RunSnapshot,
     TraceEvent,
 } from '@ai-web-test-engine/core';
+import { resolveArtifactRootDirectories } from './artifact_root';
 
 const RUN_ID_PATTERN = /^[a-zA-Z0-9_-]+$/u;
 const FILE_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u;
@@ -21,10 +22,14 @@ const MAX_JSON_FILE_BYTES = 5 * 1024 * 1024;
  */
 export class LocalArtifactStore implements ArtifactStore {
     private readonly rootDirectory: string;
+    private readonly readableRootDirectories: string[];
 
     /** 将用户传入的存储根目录转换为稳定的绝对路径。 */
     constructor(rootDirectory: string) {
-        this.rootDirectory = path.resolve(rootDirectory);
+        this.readableRootDirectories = resolveArtifactRootDirectories(
+            rootDirectory
+        );
+        this.rootDirectory = this.readableRootDirectories[0];
     }
 
     /** 创建新的运行目录，并原子写入首份 run.json 快照。 */
@@ -47,10 +52,9 @@ export class LocalArtifactStore implements ArtifactStore {
     public updateRun = async (
         snapshot: RunSnapshot
     ): Promise<void> => {
-        const runDirectory = this.getRunDirectory(snapshot.runId);
+        const runDirectory = await this.requireRun(snapshot.runId);
         const runFile = path.join(runDirectory, 'run.json');
 
-        await fs.access(runFile);
         await this.writeJsonAtomically(runFile, snapshot);
     };
 
@@ -170,9 +174,20 @@ export class LocalArtifactStore implements ArtifactStore {
 
     /** 确认运行已完成初始化，并返回其目录路径。 */
     private async requireRun(runId: string): Promise<string> {
-        const runDirectory = this.getRunDirectory(runId);
-        await fs.access(path.join(runDirectory, 'run.json'));
-        return runDirectory;
+        if (!RUN_ID_PATTERN.test(runId)) {
+            throw new Error(`非法的 Run ID：${ runId }`);
+        }
+        let lastError: unknown;
+        for (const rootDirectory of this.readableRootDirectories) {
+            const runDirectory = path.join(rootDirectory, runId);
+            try {
+                await fs.access(path.join(runDirectory, 'run.json'));
+                return runDirectory;
+            } catch (error) {
+                lastError = error;
+            }
+        }
+        throw lastError ?? new Error(`运行产物不存在：${ runId }`);
     }
 
     /** 只接受简单文件名，阻止绝对路径和父目录片段进入存储层。 */

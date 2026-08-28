@@ -1,6 +1,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { service } from 'nstarter-core';
+import {
+    resolveArtifactRootDirectories,
+} from '../adapters/storage/artifact_root';
 import { config } from '../config';
 
 const SCREENSHOT_REF_PATTERN =
@@ -18,10 +21,10 @@ export class ArtifactPreviewError extends Error {
 /** 只读取执行引擎生成的 PNG 截图，不开放任意本地文件访问。 */
 @service()
 export class ArtifactPreviewService {
-    private readonly rootDirectory: string;
+    private readonly rootDirectories: string[];
 
     constructor(rootDirectory: string = config.storage.artifact_root) {
-        this.rootDirectory = path.resolve(rootDirectory);
+        this.rootDirectories = resolveArtifactRootDirectories(rootDirectory);
     }
 
     public async readScreenshot(reference: unknown): Promise<Buffer> {
@@ -31,23 +34,27 @@ export class ArtifactPreviewService {
         ) {
             throw new ArtifactPreviewError('截图引用格式不合法。');
         }
-        const filePath = path.resolve(
-            this.rootDirectory,
-            ...reference.split('/')
-        );
-        const expectedPrefix = `${ this.rootDirectory }${ path.sep }`;
-        if (!filePath.startsWith(expectedPrefix)) {
-            throw new ArtifactPreviewError('截图引用超出产物目录。');
+        for (const rootDirectory of this.rootDirectories) {
+            const filePath = path.resolve(
+                rootDirectory,
+                ...reference.split('/')
+            );
+            const expectedPrefix = `${ rootDirectory }${ path.sep }`;
+            if (!filePath.startsWith(expectedPrefix)) {
+                continue;
+            }
+            try {
+                const stats = await fs.stat(filePath);
+                if (!stats.isFile() || stats.size > MAX_SCREENSHOT_BYTES) {
+                    throw new ArtifactPreviewError('截图文件不可读取。');
+                }
+                return await fs.readFile(filePath);
+            } catch (error) {
+                if (error instanceof ArtifactPreviewError) {
+                    throw error;
+                }
+            }
         }
-        let stats;
-        try {
-            stats = await fs.stat(filePath);
-        } catch {
-            throw new ArtifactPreviewError('截图不存在或尚未生成。');
-        }
-        if (!stats.isFile() || stats.size > MAX_SCREENSHOT_BYTES) {
-            throw new ArtifactPreviewError('截图文件不可读取。');
-        }
-        return await fs.readFile(filePath);
+        throw new ArtifactPreviewError('截图不存在或尚未生成。');
     }
 }

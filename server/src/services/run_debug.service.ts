@@ -17,10 +17,11 @@ import {
     JiandaoyunLoginBrowserAdapter,
     PlaywrightBrowserAdapter,
 } from '../adapters/browser';
+import { resolveArtifactRootDirectories } from '../adapters/storage/artifact_root';
 import { LocalEnvironmentValueResolver } from '../adapters/environment';
 import { LoggingRunEventPublisher } from '../adapters/events';
 import { LocalArtifactStore } from '../adapters/storage/local_artifact_store';
-import { MidsceneVisualTargetLocator } from '../adapters/visual';
+import { MidsceneVisualCandidateAnnotator } from '../adapters/visual';
 import { config } from '../config';
 import {
     createConfiguredIntentBuilder,
@@ -66,20 +67,24 @@ function createConfiguredExecutionEngine(
     setupModules: string[]
 ): ExecutionEngine {
     const browserConfig = config.components.browser;
+    const artifactRoot = resolveArtifactRootDirectories(
+        config.storage.artifact_root
+    )[0];
     const modelAdapter = createConfiguredModelAdapter();
     const visualGroundingEnabled =
         config.components.visual_grounding?.enabled !== false;
     const baseBrowserAdapter = new PlaywrightBrowserAdapter({
         ...visualGroundingEnabled
             ? {
-                visualTargetLocator: new MidsceneVisualTargetLocator()
+                visualCandidateAnnotator:
+                    new MidsceneVisualCandidateAnnotator()
             }
             : {}
     });
     const browserAdapter = setupModules.includes(JIANDAOYUN_LOGIN_MODULE_ID)
         ? new JiandaoyunLoginBrowserAdapter(baseBrowserAdapter, {
             cacheRoot: path.join(
-                config.storage.artifact_root,
+                artifactRoot,
                 '.auth-cache'
             ),
             password: process.env.JIANDAOYUN_PASSWORD,

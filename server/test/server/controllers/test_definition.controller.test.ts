@@ -19,21 +19,29 @@ const definition: TestDefinition = {
 
 describe('TestDefinitionController', () => {
     it('通过 HTTP 创建并列出项目用例', async () => {
+        let deletedId = '';
         const controller = new TestDefinitionController({
             create: async () => ({
                 definition,
-                fileName: 'my-todo.test.yaml',
+                fileName: '验证我的待办.test.yaml',
                 updatedAt: '2026-08-26T00:00:00.000Z'
             }),
-            get: async () => definition,
+            delete: async (id) => {
+                deletedId = id;
+            },
+            getRecord: async () => ({
+                definition,
+                fileName: '验证我的待办.test.yaml',
+                updatedAt: '2026-08-26T00:00:00.000Z'
+            }),
             list: async () => [{
                 definition,
-                fileName: 'my-todo.test.yaml',
+                fileName: '验证我的待办.test.yaml',
                 updatedAt: '2026-08-26T00:00:00.000Z'
             }],
             update: async () => ({
                 definition,
-                fileName: 'my-todo.test.yaml',
+                fileName: '验证我的待办.test.yaml',
                 updatedAt: '2026-08-26T00:00:00.000Z'
             })
         });
@@ -41,6 +49,7 @@ describe('TestDefinitionController', () => {
         app.use(express.json());
         app.get('/api/tests', controller.list);
         app.post('/api/tests', controller.create);
+        app.delete('/api/tests/:testId', controller.delete);
         const server = app.listen(0);
 
         try {
@@ -61,9 +70,15 @@ describe('TestDefinitionController', () => {
                     action: definition.action
                 })
             });
+            const deleteResponse = await fetch(
+                `${ baseUrl }/api/tests/my-todo`,
+                { method: 'DELETE' }
+            );
 
             assert.equal(listResponse.status, 200);
             assert.equal(createResponse.status, 201);
+            assert.equal(deleteResponse.status, 204);
+            assert.equal(deletedId, 'my-todo');
             assert.deepEqual(
                 (await listResponse.json() as {
                     tests: Array<{ definition: TestDefinition }>

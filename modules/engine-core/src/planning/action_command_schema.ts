@@ -15,6 +15,7 @@ const ACTION_TYPES = new Set<ActionType>([
     'CLICK',
     'FAIL',
     'FINISH',
+    'HOVER',
     'INSPECT',
     'NAVIGATE',
     'SCROLL',
@@ -26,6 +27,7 @@ const ACTION_TYPES = new Set<ActionType>([
 const TARGET_ACTIONS = new Set<ActionType>([
     'CHECK',
     'CLICK',
+    'HOVER',
     'INSPECT',
     'SCROLL',
     'SELECT',

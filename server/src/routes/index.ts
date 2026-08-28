@@ -25,6 +25,10 @@ requestRouter.post(
     '/api/debug/runs',
     runDebugSessionController.start
 );
+requestRouter.get(
+    '/api/debug/tests/:testId/latest-run',
+    runDebugSessionController.latest
+);
 requestRouter.post(
     '/api/debug/runs/:runId/plan',
     planGenerationController.generate
@@ -60,6 +64,10 @@ requestRouter.get(
 requestRouter.put(
     '/api/tests/:testId',
     testDefinitionController.update
+);
+requestRouter.delete(
+    '/api/tests/:testId',
+    testDefinitionController.delete
 );
 requestRouter.use(ErrorHandler.requestErrorHandler);
 

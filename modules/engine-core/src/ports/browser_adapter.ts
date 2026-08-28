@@ -28,17 +28,11 @@ export interface BrowserScreenshot {
     mediaType: 'image/png';
 }
 
-/** 普通 DOM 观察无法给出候选元素时发起的定向视觉定位请求。 */
-export interface VisualGroundingRequest {
-    targetDescription: string;
-    expectedEffect?: string;
-}
-
-/** 视觉定位只增强页面观察，不绕过 Planner 直接执行页面动作。 */
+/** 视觉模型批量命名已有候选，只增强页面观察，不绕过 Planner 执行动作。 */
 export interface VisualGroundingResult {
     status: 'grounded' | 'not-found' | 'unsupported';
     summary: string;
-    candidateId?: string;
+    candidateIds?: string[];
     observation?: PageObservation;
 }
 
@@ -60,10 +54,10 @@ export interface BrowserAdapter {
     ) => Promise<BrowserScreenshot>;
     /** 导出当前上下文的 Cookie 与 localStorage，供本机登录态缓存使用。 */
     captureStorageState?: (session: BrowserSession) => Promise<JsonValue>;
-    /** 使用视觉定位补充一个候选元素；未接入视觉的适配器可以省略。 */
+    /** 使用视觉批量命名当前观察中的候选元素；未接入视觉时可以省略。 */
     enhanceObservationWithVision?: (
         session: BrowserSession,
-        request: VisualGroundingRequest,
+        observation: PageObservation,
         signal: AbortSignal
     ) => Promise<VisualGroundingResult>;
     /** 将浏览器会话恢复到本次测试约定的初始状态。 */

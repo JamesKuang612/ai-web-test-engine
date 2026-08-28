@@ -48,6 +48,7 @@ const IDENTITY_FIELDS: Array<keyof CompiledTargetIdentity> = [
 const COMPILED_ACTION_TYPES = new Set<CompiledActionType>([
     'CHECK',
     'CLICK',
+    'HOVER',
     'NAVIGATE',
     'SELECT',
     'TYPE',
@@ -370,8 +371,11 @@ function requireClickShape(
     value: ValueReference | undefined,
     path: string
 ): void {
-    if (type === 'CLICK' && value) {
-        throw new CompiledPlanSchemaError(path, 'CLICK 不能携带输入值');
+    if ((type === 'CLICK' || type === 'HOVER') && value) {
+        throw new CompiledPlanSchemaError(
+            path,
+            `${ type } 不能携带输入值`
+        );
     }
 }
 

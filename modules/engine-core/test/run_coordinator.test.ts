@@ -254,25 +254,25 @@ describe('RunCoordinator', () => {
         assert.equal(result.lifecycle, 'COMPLETED');
         assert.equal(result.result, 'UNCERTAIN');
         assert.equal(result.metrics.actionCount, 1);
-        assert.equal(result.metrics.modelCallCount, 4);
+        assert.equal(result.metrics.modelCallCount, 3);
         assert.equal(browserAdapter.executeCount, 1);
-        assert.equal(browserAdapter.observeCount, 3);
-        assert.equal(browserAdapter.captureScreenshotCount, 2);
-        assert.equal(actionPlanner.callCount, 2);
+        assert.equal(browserAdapter.observeCount, 2);
+        assert.equal(browserAdapter.captureScreenshotCount, 1);
+        assert.equal(actionPlanner.callCount, 1);
         assert.equal(artifactStore.traces.length, 1);
         assert.equal(artifactStore.savedJson.some(
             ({ name }) => name === 'observation-after-uncertain-retry-1'
-        ), true);
+        ), false);
         assert.equal(artifactStore.savedArtifacts.some(
             ({ name }) => name === 'screenshot-after-uncertain-retry-1.png'
-        ), true);
+        ), false);
         assert.equal(result.summary, uncertainVerdict.summary);
     });
 
 });
 
 describe('RunCoordinator 最终观察', () => {
-    it('最终 Verdict 使用 UNCERTAIN 重试后保存的最新页面观察', async () => {
+    it('最终 Verdict 使用视觉批量标注后保存的最新页面观察', async () => {
         const retryObservation = createObservation(
             'https://test.jdydevelop.com/dashboard#/',
             false,
@@ -291,8 +291,8 @@ describe('RunCoordinator 最终观察', () => {
         const browserAdapter = new FakeBrowserAdapter(
             false,
             false,
-            undefined,
-            [ undefined, undefined, staleObservation, retryObservation ]
+            retryObservation,
+            [ undefined, undefined, staleObservation ]
         );
         const actionPlanner = new FakeActionPlanner([
             plannedClickCommand,
@@ -328,13 +328,13 @@ describe('RunCoordinator 最终观察', () => {
         );
         assert.equal(
             artifactStore.updatedSnapshots.at(-1)?.metadata.observationRef,
-            `${ result.runId }/json/observation-after-uncertain-retry-1.json`
+            `${ result.runId }/json/observation-after-visual-retry-1.json`
         );
         assert.equal(
             eventPublisher.events.find(
                 (event) => event.type === 'verdict.completed'
             )?.payload.observationRef,
-            `${ result.runId }/json/observation-after-uncertain-retry-1.json`
+            `${ result.runId }/json/observation-after-visual-retry-1.json`
         );
     });
 });
@@ -400,7 +400,7 @@ describe('RunCoordinator 扩展动作', () => {
 });
 
 describe('RunCoordinator 视觉恢复', () => {
-    it('普通重试仍不确定时用视觉候选增强观察并交回 Planner', async () => {
+    it('首次不确定时直接用视觉批量命名候选并交回 Planner', async () => {
         const unresolvedCommand: ActionCommand = {
             type: 'UNCERTAIN',
             target: {
@@ -414,7 +414,7 @@ describe('RunCoordinator 视觉恢复', () => {
             startInput.test.startUrl ?? ''
         );
         visualObservation.interactiveElements.push({
-            candidateId: 'v4',
+            candidateId: 'e4',
             discoverySource: 'vision-assisted',
             visualDescription: '当前页面内能够返回工作台的控件',
             tag: 'div',
@@ -440,11 +440,10 @@ describe('RunCoordinator 视觉恢复', () => {
         );
         const actionPlanner = new FakeActionPlanner([
             unresolvedCommand,
-            unresolvedCommand,
             {
                 type: 'CLICK',
                 target: {
-                    candidateId: 'v4',
+                    candidateId: 'e4',
                     description: '返回工作台控件'
                 },
                 expectedEffect: '返回工作台并显示应用列表',
@@ -473,28 +472,29 @@ describe('RunCoordinator 视觉恢复', () => {
 
         assert.equal(result.lifecycle, 'COMPLETED');
         assert.equal(result.result, 'UNCERTAIN');
-        assert.equal(result.metrics.modelCallCount, 7);
+        assert.equal(result.metrics.modelCallCount, 6);
         assert.equal(browserAdapter.visualGroundingCount, 1);
         assert.equal(
-            browserAdapter.lastVisualRequest?.targetDescription,
-            '当前页面内能够返回工作台的控件'
+            browserAdapter.lastVisualObservation?.observationId,
+            actionPlanner.inputs[0]?.observation.observationId
         );
         assert.equal(
-            actionPlanner.inputs[2]?.observation.interactiveElements.some(
-                (element) => element.candidateId === 'v4' &&
+            actionPlanner.inputs[1]?.observation.interactiveElements.some(
+                (element) => element.candidateId === 'e4' &&
                     element.discoverySource === 'vision-assisted'
             ),
             true
         );
         assert.equal(
             browserAdapter.commands.some(
-                (command) => command.target?.candidateId === 'v4'
+                (command) => command.target?.candidateId === 'e4'
             ),
             true
         );
         assert.equal(
             artifactStore.savedJson.some(
-                ({ name }) => name === 'visual-grounding-retry-1'
+                ({ name }) =>
+                    name === 'visual-candidate-annotations-retry-1'
             ),
             true
         );
@@ -1182,7 +1182,7 @@ class FakeBrowserAdapter implements BrowserAdapter {
     public closeCount = 0;
     public captureScreenshotCount = 0;
     public visualGroundingCount = 0;
-    public lastVisualRequest?: Parameters<
+    public lastVisualObservation?: Parameters<
         NonNullable<BrowserAdapter['enhanceObservationWithVision']>
     >[1];
     public enhanceObservationWithVision?:
@@ -1201,20 +1201,22 @@ class FakeBrowserAdapter implements BrowserAdapter {
         if (visualObservation) {
             this.enhanceObservationWithVision = (
                 _session,
-                request,
+                observation,
                 signal
             ) => {
                 signal.throwIfAborted();
                 this.visualGroundingCount += 1;
-                this.observeCount += 1;
-                this.lastVisualRequest = request;
-                const candidate = visualObservation.interactiveElements.find(
-                    (element) => element.discoverySource === 'vision-assisted'
-                );
+                this.lastVisualObservation = observation;
+                const candidateIds = visualObservation.interactiveElements
+                    .filter(
+                        (element) =>
+                            element.discoverySource === 'vision-assisted'
+                    )
+                    .map(({ candidateId }) => candidateId);
                 return Promise.resolve({
                     status: 'grounded',
-                    summary: '视觉定位已补充测试候选。',
-                    candidateId: candidate?.candidateId,
+                    summary: '视觉模型已批量标注测试候选。',
+                    candidateIds,
                     observation: structuredClone(visualObservation)
                 });
             };

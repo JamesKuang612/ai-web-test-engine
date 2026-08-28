@@ -11,7 +11,6 @@ import type {
     JsonValue,
     PageObservation,
     ResolvedTarget,
-    VisualGroundingRequest,
     VisualGroundingResult,
 } from '@ai-web-test-engine/core';
 import {
@@ -183,7 +182,7 @@ export class JiandaoyunLoginBrowserAdapter implements BrowserAdapter {
 
     public enhanceObservationWithVision = async (
         session: BrowserSession,
-        request: VisualGroundingRequest,
+        observation: PageObservation,
         signal: AbortSignal
     ): Promise<VisualGroundingResult> => {
         if (!this.delegate.enhanceObservationWithVision) {
@@ -194,7 +193,7 @@ export class JiandaoyunLoginBrowserAdapter implements BrowserAdapter {
         }
         return await this.delegate.enhanceObservationWithVision(
             session,
-            request,
+            observation,
             signal
         );
     };

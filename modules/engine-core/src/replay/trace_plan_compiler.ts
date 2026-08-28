@@ -154,6 +154,7 @@ export class TracePlanCompiler {
         if (
             type === 'CHECK'
             || type === 'CLICK'
+            || type === 'HOVER'
             || type === 'NAVIGATE'
             || type === 'SELECT'
             || type === 'TYPE'

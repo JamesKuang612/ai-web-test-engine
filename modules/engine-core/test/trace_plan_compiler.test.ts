@@ -58,7 +58,52 @@ describe('TracePlanCompiler', () => {
 
 });
 
+describe('TracePlanCompiler HOVER', () => {
+    it('把成功的 HOVER 轨迹编译为可回放步骤', () => {
+        const compiler = new TracePlanCompiler();
+        const steps = [
+            createStep(1, {
+                type: 'NAVIGATE',
+                value: {
+                    source: 'literal',
+                    value: 'https://test.jdydevelop.com/dashboard#/'
+                },
+                expectedEffect: '打开工作台',
+                reasonSummary: '进入工作台',
+                risk: 'read-only'
+            }, []),
+            createStep(2, {
+                type: 'HOVER',
+                target: {
+                    candidateId: 'runtime-application-11',
+                    description: '11应用卡片'
+                },
+                expectedEffect: '显示添加收藏按钮',
+                reasonSummary: '悬浮应用卡片',
+                risk: 'read-only'
+            }, [ createControlElement(
+                'runtime-application-11',
+                'a',
+                '11应用卡片'
+            ) ])
+        ];
+
+        const plan = compiler.compile({
+            runId: 'run-hover',
+            testId: 'favorite-application',
+            testIntent: intent,
+            steps
+        });
+
+        assert.equal(plan.steps[1]?.type, 'HOVER');
+        assert.equal(plan.steps[1]?.value, undefined);
+        assert.equal(plan.steps[1]?.target?.description, '11应用卡片');
+    });
+
+});
+
 describe('TracePlanCompiler 安全约束', () => {
+
     it('保留非敏感业务字段的 TYPE 字面量值', () => {
         const compiler = new TracePlanCompiler();
         const steps = [

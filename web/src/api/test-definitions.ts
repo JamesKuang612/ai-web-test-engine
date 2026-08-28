@@ -60,6 +60,18 @@ export async function getTestDefinition(
     return parseDefinition(getObject(value)?.test);
 }
 
+/** 读取一条真实 YAML 用例及其当前文件名。 */
+export async function getTestDefinitionRecord(
+    id: string,
+    signal?: AbortSignal
+): Promise<TestDefinitionRecordDto> {
+    const value = await requestJson(
+        `/api/tests/${ encodeURIComponent(id) }`,
+        { signal }
+    );
+    return parseRecord(getObject(value)?.record);
+}
+
 /** 创建新的真实 YAML 用例。 */
 export async function createTestDefinition(
     draft: TestDefinitionDraft
@@ -90,6 +102,28 @@ export async function updateTestDefinition(
         }
     );
     return parseRecord(getObject(value)?.record);
+}
+
+/** 删除一条真实 YAML 用例。 */
+export async function deleteTestDefinition(id: string): Promise<void> {
+    const response = await fetch(
+        `/api/tests/${ encodeURIComponent(id) }`,
+        { method: 'DELETE' }
+    );
+    if (response.ok) {
+        return;
+    }
+    let message = `删除用例失败（HTTP ${ response.status }）。`;
+    try {
+        const value = await response.json() as unknown;
+        const error = getObject(value)?.error;
+        if (typeof error === 'string') {
+            message = error;
+        }
+    } catch {
+        // 非 JSON 错误响应使用上面的 HTTP 状态说明。
+    }
+    throw new TestDefinitionRequestError(message, response.status);
 }
 
 async function requestJson(

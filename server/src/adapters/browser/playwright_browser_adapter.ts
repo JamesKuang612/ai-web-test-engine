@@ -26,7 +26,6 @@ import type {
     ObservedElement,
     PageObservation,
     ResolvedTarget,
-    VisualGroundingRequest,
     VisualGroundingResult,
 } from '@ai-web-test-engine/core';
 
@@ -39,14 +38,9 @@ import {
 import type {
     CapturedInteractiveElement,
 } from './interactive_element_script';
-import {
-    createVisualElementScript,
-} from './visual_element_script';
 import type {
-    CapturedVisualElement,
-} from './visual_element_script';
-import type {
-    VisualTargetLocator,
+    VisualCandidateAnnotation,
+    VisualCandidateAnnotator,
 } from '../visual';
 
 /** 保存 Playwright 运行时对象，不把这些对象暴露给核心引擎。 */
@@ -75,7 +69,7 @@ interface CapturedPageState {
 /** 允许测试缩短页面内容等待时间，生产环境继续使用稳健默认值。 */
 export interface PlaywrightBrowserAdapterOptions {
     pageContentWaitMs?: number;
-    visualTargetLocator?: VisualTargetLocator;
+    visualCandidateAnnotator?: VisualCandidateAnnotator;
 }
 
 const NAVIGATION_TIMEOUT_MS = 30_000;
@@ -87,6 +81,7 @@ const OBSERVATION_RETRY_DELAY_MS = 250;
 const CLICK_NAVIGATION_WAIT_MS = 15_000;
 const CLICK_SETTLE_DELAY_MS = 500;
 const CLICK_DOM_CHANGE_WAIT_MS = 2_000;
+const HOVER_SETTLE_DELAY_MS = 200;
 const MIN_WAIT_ACTION_MS = 100;
 const MAX_WAIT_ACTION_MS = 5_000;
 const SCREENSHOT_TIMEOUT_MS = 15_000;
@@ -117,12 +112,12 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
     private readonly sessions =
         new Map<string, ManagedBrowserSession>();
     private readonly pageContentWaitMs: number;
-    private readonly visualTargetLocator?: VisualTargetLocator;
+    private readonly visualCandidateAnnotator?: VisualCandidateAnnotator;
 
     constructor(options: PlaywrightBrowserAdapterOptions = {}) {
         this.pageContentWaitMs = options.pageContentWaitMs ??
             DEFAULT_PAGE_CONTENT_WAIT_MS;
-        this.visualTargetLocator = options.visualTargetLocator;
+        this.visualCandidateAnnotator = options.visualCandidateAnnotator;
     }
 
     /**
@@ -275,133 +270,83 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
         };
     };
 
-    /** 使用 Midscene 定位语义目标，再把坐标反查为现有 Planner 可选的 DOM 候选。 */
+    /** 用 Midscene 一次性识别已有候选框，并把视觉语义合并回同一份观察。 */
     public enhanceObservationWithVision = async (
         session: BrowserSession,
-        request: VisualGroundingRequest,
+        observation: PageObservation,
         signal: AbortSignal
     ): Promise<VisualGroundingResult> => {
-        if (!this.visualTargetLocator) {
+        if (!this.visualCandidateAnnotator) {
             return {
                 status: 'unsupported',
-                summary: '当前浏览器适配器未配置视觉定位能力。'
+                summary: '当前浏览器适配器未配置候选元素视觉标注能力。'
             };
         }
         const managedSession = this.requireSession(session);
         signal.throwIfAborted();
-        const observation = await this.observe(session);
-        const pageUrl = managedSession.page.url();
+        if (
+            managedSession.page.url() !== observation.page.url ||
+            managedSession.elementIndex?.observationId !==
+                observation.observationId
+        ) {
+            return {
+                status: 'not-found',
+                summary: '页面状态已变化，已拒绝对过期候选框进行视觉标注。'
+            };
+        }
+        const candidates = observation.interactiveElements.filter(
+            (element) => element.visible && element.inViewport &&
+                !element.disabled && element.boundingBox
+        );
+        if (candidates.length === 0) {
+            return {
+                status: 'not-found',
+                summary: '当前视口没有可供视觉模型标注的候选框。'
+            };
+        }
 
         try {
-            const location = await this.visualTargetLocator.locate(
+            const annotations = await this.visualCandidateAnnotator.annotate(
                 managedSession.page,
-                request,
+                candidates,
                 signal
             );
             signal.throwIfAborted();
-            if (!location) {
+            if (annotations.length === 0) {
                 return {
                     status: 'not-found',
-                    summary: `视觉模型没有定位到目标：${
-                        request.targetDescription
-                    }`
+                    summary: '视觉模型未能为当前候选框返回有效名称。'
                 };
             }
-            return await this.groundVisualTarget(
-                managedSession,
+            const enhancedObservation = this.mergeVisualAnnotations(
                 observation,
-                request,
-                pageUrl,
-                location.center
+                annotations
             );
+            return {
+                status: 'grounded',
+                summary: `视觉模型已批量标注 ${
+                    annotations.length
+                } 个候选元素。`,
+                candidateIds: annotations.map(
+                    ({ candidateId }) => candidateId
+                ),
+                observation: enhancedObservation
+            };
         } catch (error) {
             signal.throwIfAborted();
             return {
                 status: 'not-found',
-                summary: `视觉定位失败：${
+                summary: `视觉候选标注失败：${
                     error instanceof Error ? error.message : '未知错误'
                 }`
             };
         }
     };
 
-    /** 校验视觉坐标，并把坐标下的 DOM 节点补成可执行候选。 */
-    private async groundVisualTarget(
-        session: ManagedBrowserSession,
-        observation: PageObservation,
-        request: VisualGroundingRequest,
-        pageUrl: string,
-        center: readonly [number, number]
-    ): Promise<VisualGroundingResult> {
-        if (session.page.url() !== pageUrl) {
-            return {
-                status: 'not-found',
-                summary: '视觉定位期间页面地址发生变化，已丢弃过期坐标。'
-            };
-        }
-        const [x, y] = center;
-        const viewport = session.page.viewportSize();
-        if (
-            !viewport || x < 0 || y < 0 ||
-            x >= viewport.width || y >= viewport.height
-        ) {
-            return {
-                status: 'not-found',
-                summary: '视觉模型返回的坐标不在当前页面视口内。'
-            };
-        }
-        const captured = await session.page.evaluate<
-            CapturedVisualElement | null
-        >(createVisualElementScript({
-            candidateId: `v${ observation.interactiveElements.length + 1 }`,
-            targetDescription: request.targetDescription,
-            x,
-            y
-        }));
-        if (!captured) {
-            return {
-                status: 'not-found',
-                summary: '视觉坐标下没有可映射的可见 DOM 元素。'
-            };
-        }
-        const elements = this.mergeVisualCandidate(
-            observation.interactiveElements,
-            captured
-        );
-        session.elementIndex?.locators.set(
-            captured.candidateId,
-            session.page.locator(
-                `[${ RUNTIME_CANDIDATE_ATTRIBUTE }="${
-                    captured.candidateId
-                }"]`
-            )
-        );
-        const enhancedObservation: PageObservation = {
-            ...observation,
-            interactiveElements: elements,
-            stateFingerprint: createHash('sha256')
-                .update(JSON.stringify({
-                    base: observation.stateFingerprint,
-                    visualCandidate: {
-                        candidateId: captured.candidateId,
-                        boundingBox: captured.boundingBox,
-                        targetDescription: request.targetDescription
-                    }
-                }))
-                .digest('hex')
-        };
-        return {
-            status: 'grounded',
-            summary: `视觉定位已补充候选元素 ${ captured.candidateId }。`,
-            candidateId: captured.candidateId,
-            observation: enhancedObservation
-        };
-    }
-
     /**
      * 执行导航、点击、输入等受控浏览器动作。
      *
-     * 当前支持导航、输入、点击、选择、勾选和受限等待动作。
+     * 当前支持导航、输入、点击、悬浮、选择、勾选和受限等待动作。
      */
     public execute = async (
         session: BrowserSession,
@@ -425,6 +370,10 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
                 command,
                 startedAt
             );
+        }
+
+        if (command.type === 'HOVER') {
+            return await this.executeHover(managedSession, command, startedAt);
         }
 
         if (command.type === 'SELECT') {
@@ -761,6 +710,77 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
         }
     }
 
+    /** 将鼠标悬浮到候选元素，并保留悬浮状态供下一次页面观察采集。 */
+    private async executeHover(
+        session: ManagedBrowserSession,
+        command: ActionCommand,
+        startedAt: string
+    ): Promise<ActionResult> {
+        const candidateId = command.target?.candidateId;
+        if (!candidateId) {
+            return this.createActionResult(
+                startedAt,
+                'rejected',
+                false,
+                {
+                    code: 'INVALID_HOVER_COMMAND',
+                    message: 'HOVER 必须提供 candidateId。'
+                }
+            );
+        }
+
+        const locator = session.elementIndex?.locators.get(candidateId);
+        if (!locator) {
+            return this.createActionResult(
+                startedAt,
+                'rejected',
+                false,
+                {
+                    code: 'TARGET_NOT_FOUND',
+                    message: `当前页面观察中不存在候选元素：${ candidateId }`
+                }
+            );
+        }
+
+        const previousUrl = session.page.url();
+        try {
+            if (await locator.count() !== 1 || !await locator.isVisible()) {
+                return this.createActionResult(
+                    startedAt,
+                    'rejected',
+                    false,
+                    {
+                        code: 'TARGET_NOT_ACTIONABLE',
+                        message: `候选元素当前不可唯一悬浮：${ candidateId }`
+                    }
+                );
+            }
+            await locator.hover();
+            await session.page.waitForTimeout(HOVER_SETTLE_DELAY_MS);
+            return this.createActionResult(
+                startedAt,
+                'executed',
+                session.page.url() !== previousUrl
+            );
+        } catch (error) {
+            const timedOut = error instanceof errors.TimeoutError;
+            return this.createActionResult(
+                startedAt,
+                timedOut ? 'timed-out' : 'failed',
+                session.page.url() !== previousUrl,
+                {
+                    code: timedOut ? 'HOVER_TIMEOUT' : 'HOVER_FAILED',
+                    message: timedOut
+                        ? '鼠标悬浮动作执行超时。'
+                        : 'Playwright 无法完成鼠标悬浮动作。'
+                }
+            );
+        } finally {
+            // 悬浮可能改变可见控件集合，下一次观察必须重新建立候选索引。
+            session.elementIndex = undefined;
+        }
+    }
+
     /** 按页面显示文本或 option value 精确选择原生下拉框选项。 */
     private async executeSelect(
         session: ManagedBrowserSession,
@@ -1000,7 +1020,7 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
 
     /** 根据 Planner 描述判断点击是否预期进入另一个页面。 */
     private isNavigationExpected(command: ActionCommand): boolean {
-        return /跳转|进入.+页面|导航|打开.+页面|登录(?:成功)?(?:后|进入|跳转|完成)|URL|地址/iu.test([
+        return /跳转|页面进入|进入.+页面|进入(?:工作台|应用)(?=$|[\s，。；,]|并|后)|导航|打开.+页面|打开(?:工作台|应用)(?=$|[\s，。；,]|并|后)|返回(?:.+页面|工作台|首页|上一页)|登录(?:成功)?(?:后|进入|跳转|完成)|URL|地址/iu.test([
             command.expectedEffect ?? '',
             command.reasonSummary
         ].join(' '));
@@ -1041,42 +1061,46 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
         };
     }
 
-    /** 保留常规 DOM 语义，并为视觉命中的候选补充业务描述和稳定定位提示。 */
-    private mergeVisualCandidate(
-        elements: ObservedElement[],
-        captured: CapturedVisualElement
-    ): ObservedElement[] {
-        const existingIndex = elements.findIndex(
-            (element) => element.candidateId === captured.candidateId
+    /** 保留 DOM 语义和 Locator，只补充每个确定候选框的视觉名称。 */
+    private mergeVisualAnnotations(
+        observation: PageObservation,
+        annotations: VisualCandidateAnnotation[]
+    ): PageObservation {
+        const annotationById = new Map(annotations.map((annotation) => [
+            annotation.candidateId,
+            annotation
+        ]));
+        const interactiveElements = observation.interactiveElements.map(
+            (element): ObservedElement => {
+                const annotation = annotationById.get(element.candidateId);
+                if (!annotation) {
+                    return element;
+                }
+                return {
+                    ...element,
+                    discoverySource: 'vision-assisted',
+                    visualDescription: [
+                        annotation.visualDescription,
+                        ...annotation.elementType
+                            ? [ `类型：${ annotation.elementType }` ]
+                            : [],
+                        ...annotation.confidence === undefined
+                            ? []
+                            : [ `置信度：${ annotation.confidence }` ]
+                    ].join('；')
+                };
+            }
         );
-        if (existingIndex < 0) {
-            return [
-                ...elements,
-                captured
-            ];
-        }
-        const existing = elements[existingIndex];
-        const locatorHints = [
-            ...existing.locatorHints,
-            ...captured.locatorHints
-        ].filter((hint, index, hints) => hints.findIndex((candidate) => (
-            candidate.strategy === hint.strategy &&
-            candidate.value === hint.value
-        )) === index);
-        const nearbyText = [
-            ...existing.nearbyText,
-            ...captured.nearbyText
-        ].filter((text, index, values) => values.indexOf(text) === index);
-        const merged: ObservedElement = {
-            ...existing,
-            discoverySource: 'vision-assisted',
-            visualDescription: captured.visualDescription,
-            nearbyText,
-            locatorHints
+        return {
+            ...observation,
+            interactiveElements,
+            stateFingerprint: createHash('sha256')
+                .update(JSON.stringify({
+                    base: observation.stateFingerprint,
+                    visualAnnotations: annotations
+                }))
+                .digest('hex')
         };
-        return elements.map((element, index) => (
-            index === existingIndex ? merged : element
-        ));
     }
 
     /** 为延迟渲染的 SPA 等待首批可见文本或交互元素。 */

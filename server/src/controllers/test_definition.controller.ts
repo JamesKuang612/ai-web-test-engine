@@ -13,13 +13,13 @@ import {
     TestDefinitionService,
 } from '../services/test_definition.service';
 
-/** 为前端提供真实 YAML 用例的读取、新建与保存接口。 */
+/** 为前端提供真实 YAML 用例的读取、新建、保存与删除接口。 */
 @controller()
 export class TestDefinitionController {
     constructor(
         private readonly service: Pick<
             TestDefinitionService,
-            'create' | 'get' | 'list' | 'update'
+            'create' | 'delete' | 'getRecord' | 'list' | 'update'
         > = testDefinitionService
     ) {}
 
@@ -43,9 +43,24 @@ export class TestDefinitionController {
         next: NextFunction
     ): Promise<void> => {
         try {
+            const record = await this.service.getRecord(req.params.testId);
             res.json({
-                test: await this.service.get(req.params.testId)
+                record,
+                test: record.definition
             });
+        } catch (error) {
+            this.handleKnownError(error, res, next);
+        }
+    };
+
+    public delete = async (
+        req: Request,
+        res: Response,
+        next: NextFunction
+    ): Promise<void> => {
+        try {
+            await this.service.delete(req.params.testId);
+            res.status(204).end();
         } catch (error) {
             this.handleKnownError(error, res, next);
         }

@@ -40,9 +40,43 @@ describe('TestDefinitionService', () => {
 
         assert.equal(record.definition.id, 'my-todo-flow');
         assert.equal(record.definition.name, 'My Todo Flow');
+        assert.equal(record.fileName, 'My Todo Flow.test.yaml');
         assert.equal(
             (await service.get('my-todo-flow')).action,
             '登录后点击“我的待办”。'
+        );
+    });
+
+    it('中文名称使用稳定内部 id 和可读文件名', async () => {
+        const record = await service.create({
+            name: '验证删除数据',
+            startUrl: 'https://test.jdydevelop.com/dashboard#/',
+            action: ''
+        });
+
+        assert.match(record.definition.id, /^test-[a-f0-9]{8}$/u);
+        assert.equal(record.fileName, '验证删除数据.test.yaml');
+        assert.equal(
+            (await service.getRecord(record.definition.id)).fileName,
+            '验证删除数据.test.yaml'
+        );
+    });
+
+    it('删除用例并在重复删除时返回不存在', async () => {
+        const record = await service.create({
+            name: '待删除用例',
+            startUrl: 'https://test.jdydevelop.com/dashboard#/',
+            action: ''
+        });
+
+        await service.delete(record.definition.id);
+        await assert.rejects(
+            () => service.get(record.definition.id),
+            /没有找到测试用例/u
+        );
+        await assert.rejects(
+            () => service.delete(record.definition.id),
+            /没有找到测试用例/u
         );
     });
 
