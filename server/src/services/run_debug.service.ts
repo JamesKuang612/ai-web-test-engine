@@ -6,9 +6,10 @@ import type {
 } from '@ai-web-test-engine/core';
 import path from 'node:path';
 import {
-    DeterministicTargetGrounder,
+    CompositeTargetGrounder,
     ModelActionPlanner,
     ModelVerdictEvaluator,
+    PerceptionService,
     RunCoordinator,
     semanticActionSchema,
     verdictDecisionSchema,
@@ -17,12 +18,18 @@ import { service } from 'nstarter-core';
 import {
     JiandaoyunLoginBrowserAdapter,
     PlaywrightBrowserAdapter,
+    PlaywrightCandidateMappingAdapter,
+    PlaywrightPagePerceptionAdapter,
 } from '../adapters/browser';
 import { resolveArtifactRootDirectories } from '../adapters/storage/artifact_root';
 import { LocalEnvironmentValueResolver } from '../adapters/environment';
 import { LoggingRunEventPublisher } from '../adapters/events';
 import { LocalArtifactStore } from '../adapters/storage/local_artifact_store';
 import { config } from '../config';
+import {
+    DisabledVisualGroundingAdapter,
+    MidsceneVisualGroundingAdapter,
+} from '../adapters/visual';
 import {
     createConfiguredIntentBuilder,
     createConfiguredModelAdapter,
@@ -72,6 +79,17 @@ function createConfiguredExecutionEngine(
     )[0];
     const modelAdapter = createConfiguredModelAdapter();
     const baseBrowserAdapter = new PlaywrightBrowserAdapter();
+    const visualGrounding =
+        config.components.visual_grounding?.enabled === false
+            ? new DisabledVisualGroundingAdapter()
+            : new MidsceneVisualGroundingAdapter(baseBrowserAdapter);
+    const perceptionService = new PerceptionService(
+        new PlaywrightPagePerceptionAdapter(baseBrowserAdapter)
+    );
+    const targetGrounder = new CompositeTargetGrounder(
+        new PlaywrightCandidateMappingAdapter(baseBrowserAdapter),
+        visualGrounding
+    );
     const browserAdapter = setupModules.includes(JIANDAOYUN_LOGIN_MODULE_ID)
         ? new JiandaoyunLoginBrowserAdapter(baseBrowserAdapter, {
             cacheRoot: path.join(
@@ -97,7 +115,8 @@ function createConfiguredExecutionEngine(
                     timeoutMs: 300_000
                 }
             ),
-            targetGrounder: new DeterministicTargetGrounder(),
+            perceptionService,
+            targetGrounder,
             verdictEvaluator: new ModelVerdictEvaluator(
                 modelAdapter,
                 verdictDecisionSchema,

@@ -29,7 +29,10 @@ export class CompositeTargetGrounder implements TargetGrounder {
         signal: AbortSignal
     ): Promise<GroundingDecision> {
         signal.throwIfAborted();
-        const domDecision = await this.domGrounder.ground(request, signal);
+        const domDecision = validateDomInteraction(
+            await this.domGrounder.ground(request, signal),
+            request
+        );
         if (
             domDecision.status === 'grounded' ||
             domDecision.status === 'blocked' ||
@@ -90,7 +93,7 @@ export class CompositeTargetGrounder implements TargetGrounder {
                         : [],
                     'visual'
                 ],
-                1
+                visual.modelCalls
             );
         }
         const visualMapping = await this.candidateMapper.map(
@@ -103,8 +106,56 @@ export class CompositeTargetGrounder implements TargetGrounder {
             },
             signal
         );
-        return fromMapping(request, visualMapping, 'visual', 0.85, 1);
+        return fromMapping(
+            request,
+            visualMapping,
+            'visual',
+            0.85,
+            visual.modelCalls
+        );
     }
+}
+
+function validateDomInteraction(
+    decision: GroundingDecision,
+    request: GroundingRequest
+): GroundingDecision {
+    if (decision.status !== 'grounded' || !decision.target) {
+        return decision;
+    }
+    const state = request.perception.interactionStates[
+        decision.target.candidateId
+    ];
+    if (!state) {
+        return decision;
+    }
+    if (!state.visible || !state.inViewport) {
+        return {
+            status: 'not-visible',
+            confidence: 1,
+            evidence: decision.evidence,
+            summary: 'DOM 目标存在，但当前不可见或不在视口内。'
+        };
+    }
+    if (!state.enabled && request.action.type !== 'HOVER') {
+        return {
+            status: 'not-actionable',
+            confidence: 1,
+            evidence: decision.evidence,
+            summary: 'DOM 目标存在，但当前不可执行。'
+        };
+    }
+    return state.hitTest === 'blocked'
+        ? {
+            status: 'blocked',
+            confidence: 1,
+            evidence: [
+                ...decision.evidence,
+                '所有有效 hit-test 采样点均被无关元素阻挡'
+            ],
+            summary: 'DOM 目标存在，但当前被其他元素阻挡。'
+        }
+        : decision;
 }
 
 function fromMapping(
@@ -128,6 +179,40 @@ function fromMapping(
         };
     }
     const candidate = mapping.candidates[0];
+    if (
+        !candidate.interactionState.visible ||
+        !candidate.interactionState.inViewport ||
+        !candidate.elementSnapshot.boundingBox
+    ) {
+        return mappingFailure(
+            mapping,
+            sources,
+            visualModelCalls,
+            'not-visible',
+            '目标已经映射，但当前不可见或没有有效 geometry。'
+        );
+    }
+    if (
+        !candidate.actionCompatible ||
+        (!candidate.interactionState.enabled && request.action.type !== 'HOVER')
+    ) {
+        return mappingFailure(
+            mapping,
+            sources,
+            visualModelCalls,
+            'not-actionable',
+            '目标已经映射，但不满足当前动作的执行条件。'
+        );
+    }
+    if (candidate.interactionState.hitTest === 'blocked') {
+        return mappingFailure(
+            mapping,
+            sources,
+            visualModelCalls,
+            'blocked',
+            '目标的所有有效采样点均被无关元素阻挡。'
+        );
+    }
     const target: ResolvedTarget = {
         description: request.action.target!.description,
         observationId: request.perception.dom.observationId,
@@ -152,6 +237,28 @@ function fromMapping(
         summary: mapping.summary,
         usage: {
             sourcesUsed: [ ...sources ],
+            visualModelCalls
+        }
+    };
+}
+
+function mappingFailure(
+    mapping: CandidateMappingResult,
+    sourcesUsed: readonly NonNullable<
+    GroundingDecision['usage']
+    >['sourcesUsed'][number][],
+    visualModelCalls: number,
+    status: Extract<GroundingDecision['status'],
+    'blocked' | 'not-actionable' | 'not-visible'>,
+    summary: string
+): GroundingDecision {
+    return {
+        status,
+        confidence: 1,
+        evidence: mapping.evidence,
+        summary,
+        usage: {
+            sourcesUsed: [ ...sourcesUsed ],
             visualModelCalls
         }
     };

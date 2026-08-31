@@ -14,6 +14,10 @@ export interface PlaywrightPageProvider {
         observationId: string,
         candidateId: string
     ) => Locator | undefined;
+    getCandidateIds: (
+        session: BrowserSession,
+        observationId: string
+    ) => string[];
     isObservationCurrent: (
         session: BrowserSession,
         observationId: string

@@ -9,6 +9,7 @@ import type {
 
 /** 视觉 Provider 的只读目标发现结果，不代表目标已经可执行。 */
 export interface VisualGroundingResult {
+    modelCalls: number;
     status: 'located' | 'not-found' | 'unsupported';
     regions: VisualRegion[];
     summary: string;

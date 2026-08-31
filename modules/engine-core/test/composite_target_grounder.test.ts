@@ -31,6 +31,30 @@ describe('CompositeTargetGrounder 多模态顺序', () => {
         assert.deepEqual(decision.usage?.sourcesUsed, [ 'dom' ]);
     });
 
+    it('DOM 目标被可靠遮挡时返回 blocked，不调用视觉或浏览器坐标', async () => {
+        const mapper = new FakeCandidateMapper();
+        const visual = new FakeVisualGrounder();
+        const grounder = new CompositeTargetGrounder(mapper, visual);
+        const request = createRequest(
+            [ createElement('e1', '新建应用') ],
+            createAction('新建应用')
+        );
+        request.perception.interactionStates.e1 = {
+            candidateId: 'e1',
+            enabled: true,
+            hitTest: 'blocked',
+            inViewport: true,
+            visible: true,
+            blockedBy: { tag: 'div', text: '遮罩层' }
+        };
+
+        const decision = await grounder.ground(request, signal());
+
+        assert.equal(decision.status, 'blocked');
+        assert.equal(mapper.calls.length, 0);
+        assert.equal(visual.callCount, 0);
+    });
+
     it('DOM 不足时使用 bounded A11y 证据映射到 live candidate', async () => {
         const mapper = new FakeCandidateMapper('ax-1');
         const visual = new FakeVisualGrounder();
@@ -54,6 +78,7 @@ describe('CompositeTargetGrounder 多模态顺序', () => {
     it('DOM/A11y 不足时由视觉发现区域，再经 mapping 落到 candidate', async () => {
         const mapper = new FakeCandidateMapper('visual-1');
         const visual = new FakeVisualGrounder({
+            modelCalls: 1,
             status: 'located',
             regions: [{
                 id: 'vr-1',
@@ -79,6 +104,7 @@ describe('CompositeTargetGrounder 多模态顺序', () => {
     it('视觉区域无法安全映射时返回 unmapped，不生成坐标目标', async () => {
         const mapper = new FakeCandidateMapper(undefined, 'unmapped');
         const visual = new FakeVisualGrounder({
+            modelCalls: 1,
             status: 'located',
             regions: [{
                 id: 'vr-1',
@@ -98,6 +124,26 @@ describe('CompositeTargetGrounder 多模态顺序', () => {
         assert.equal(decision.status, 'unmapped');
         assert.equal(decision.target, undefined);
         assert.equal(decision.usage?.visualModelCalls, 1);
+    });
+
+});
+
+describe('CompositeTargetGrounder 视觉预算', () => {
+    it('Provider 未启用时不消耗模型预算', async () => {
+        const mapper = new FakeCandidateMapper();
+        const visual = new FakeVisualGrounder({
+            modelCalls: 0,
+            status: 'unsupported',
+            regions: [],
+            summary: '当前环境已关闭视觉定位。'
+        });
+        const decision = await new CompositeTargetGrounder(
+            mapper,
+            visual
+        ).ground(createRequest([], createAction('收藏星标')), signal());
+
+        assert.equal(decision.status, 'not-found');
+        assert.equal(decision.usage?.visualModelCalls, 0);
     });
 });
 
@@ -119,6 +165,7 @@ class FakeCandidateMapper implements CandidateMappingPort {
         return Promise.resolve({
             status: this.candidateId ? this.status : 'unmapped',
             candidates: this.candidateId ? [{
+                actionCompatible: true,
                 candidateId: this.candidateId,
                 elementSnapshot: {
                     tag: 'button',
@@ -129,9 +176,22 @@ class FakeCandidateMapper implements CandidateMappingPort {
                     inViewport: true,
                     attributes: {},
                     nearbyText: [ '应用 11' ],
+                    boundingBox: {
+                        x: 10,
+                        y: 10,
+                        width: 24,
+                        height: 24
+                    },
                     locatorHints: []
                 },
-                evidence: [ `mapped:${ this.candidateId }` ]
+                evidence: [ `mapped:${ this.candidateId }` ],
+                interactionState: {
+                    candidateId: this.candidateId,
+                    enabled: true,
+                    hitTest: 'receives-events',
+                    inViewport: true,
+                    visible: true
+                }
             }] : [],
             evidence: [ 'mapping-result' ],
             summary: this.candidateId ? '唯一映射成功。' : '无法安全映射。'
@@ -143,6 +203,7 @@ class FakeVisualGrounder implements VisualGroundingPort {
     public callCount = 0;
 
     constructor(private readonly result: VisualGroundingResult = {
+        modelCalls: 0,
         status: 'not-found',
         regions: [],
         summary: '未调用视觉。'

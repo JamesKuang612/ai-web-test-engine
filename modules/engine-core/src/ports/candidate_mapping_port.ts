@@ -1,5 +1,6 @@
 import type {
     AccessibilityNode,
+    ElementInteractionState,
     PagePerception,
     ResolvedElementSnapshot,
     SemanticAction,
@@ -20,9 +21,11 @@ export type CandidateMappingEvidence = {
 
 /** 映射端口证明可执行的 observation 生命周期 candidate。 */
 export interface MappedCandidate {
+    actionCompatible: boolean;
     candidateId: string;
     elementSnapshot: ResolvedElementSnapshot;
     evidence: string[];
+    interactionState: ElementInteractionState;
 }
 
 export interface CandidateMappingResult {

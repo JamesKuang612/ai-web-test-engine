@@ -504,6 +504,16 @@ implements BrowserAdapter, PlaywrightPageProvider {
             : undefined;
     };
 
+    public getCandidateIds = (
+        session: BrowserSession,
+        observationId: string
+    ): string[] => {
+        const managed = this.requireSession(session);
+        return managed.elementIndex?.observationId === observationId
+            ? [ ...managed.elementIndex.locators.keys() ]
+            : [];
+    };
+
     public registerTransientCandidate = (
         session: BrowserSession,
         observationId: string,

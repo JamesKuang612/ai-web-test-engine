@@ -622,7 +622,10 @@
                         "ambiguous",
                         "blocked",
                         "grounded",
-                        "not-found"
+                        "not-actionable",
+                        "not-found",
+                        "not-visible",
+                        "unmapped"
                     ],
                     "type": "string"
                 },
@@ -631,6 +634,31 @@
                 },
                 "target": {
                     "$ref": "#/definitions/CandidateResolvedTarget"
+                },
+                "usage": {
+                    "additionalProperties": false,
+                    "properties": {
+                        "sourcesUsed": {
+                            "items": {
+                                "enum": [
+                                    "accessibility",
+                                    "dom",
+                                    "hit-test",
+                                    "visual"
+                                ],
+                                "type": "string"
+                            },
+                            "type": "array"
+                        },
+                        "visualModelCalls": {
+                            "type": "number"
+                        }
+                    },
+                    "required": [
+                        "sourcesUsed",
+                        "visualModelCalls"
+                    ],
+                    "type": "object"
                 }
             },
             "required": [

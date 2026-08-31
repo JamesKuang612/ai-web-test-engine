@@ -14,6 +14,16 @@ import {
     createConfiguredMidsceneVisualAgent,
 } from './midscene_visual_agent';
 
+/** 配置关闭视觉时保持同一 Grounder 组合结构。 */
+export class DisabledVisualGroundingAdapter implements VisualGroundingPort {
+    public locate: VisualGroundingPort['locate'] = () => Promise.resolve({
+        modelCalls: 0,
+        status: 'unsupported',
+        regions: [],
+        summary: '当前环境已关闭视觉定位。'
+    });
+}
+
 /** 使用 Midscene aiLocate 发现目标区域，但不让 Midscene 执行鼠标动作。 */
 export class MidsceneVisualGroundingAdapter implements VisualGroundingPort {
     constructor(private readonly pageProvider: PlaywrightPageProvider) {}
@@ -30,6 +40,7 @@ export class MidsceneVisualGroundingAdapter implements VisualGroundingPort {
             perception.dom.observationId
         )) {
             return {
+                modelCalls: 0,
                 status: 'not-found',
                 regions: [],
                 summary: '页面 observation 已过期，拒绝使用视觉结果。'
@@ -54,12 +65,14 @@ export class MidsceneVisualGroundingAdapter implements VisualGroundingPort {
                 rect.width <= 0 || rect.height <= 0
             ) {
                 return {
+                    modelCalls: 1,
                     status: 'not-found',
                     regions: [],
                     summary: `视觉模型没有找到“${ target.description }”。`
                 };
             }
             return {
+                modelCalls: 1,
                 status: 'located',
                 regions: [{
                     id: `visual-${ randomUUID() }`,
@@ -77,6 +90,7 @@ export class MidsceneVisualGroundingAdapter implements VisualGroundingPort {
         } catch (error) {
             signal.throwIfAborted();
             return {
+                modelCalls: 1,
                 status: 'not-found',
                 regions: [],
                 summary: `视觉定位失败：${

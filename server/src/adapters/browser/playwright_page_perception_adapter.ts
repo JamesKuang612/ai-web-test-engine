@@ -12,6 +12,7 @@ import type {
 import { parseDocument } from 'yaml';
 
 import { RUNTIME_CANDIDATE_ATTRIBUTE } from './interactive_element_script';
+import { captureInteractionState } from './playwright_element_evidence';
 import type { PlaywrightPageProvider } from './playwright_page_provider';
 
 const MAX_ACCESSIBILITY_NODES = 200;
@@ -94,6 +95,17 @@ export class PlaywrightPagePerceptionAdapter implements PagePerceptionPort {
                 ...domCandidateId ? { domCandidateId } : {}
             });
         }
+        const interactionStates = Object.fromEntries((await Promise.all(
+            this.pageProvider.getCandidateIds(
+                session,
+                observation.observationId
+            ).map(async (candidateId) => {
+                const state = await captureInteractionState(page, candidateId);
+                return state ? [ candidateId, state ] as const : undefined;
+            })
+        )).filter((entry): entry is readonly [string, NonNullable<
+        typeof entry
+        >[1]] => entry !== undefined));
         return {
             accessibility: {
                 nodes,
@@ -101,8 +113,7 @@ export class PlaywrightPagePerceptionAdapter implements PagePerceptionPort {
                 truncated: flattenAriaNodes(parsed).length >
                     MAX_ACCESSIBILITY_NODES
             },
-            // Phase 2.3 通过同一 capture 边界补充真实 hit-test 状态。
-            interactionStates: {}
+            interactionStates
         };
     };
 
