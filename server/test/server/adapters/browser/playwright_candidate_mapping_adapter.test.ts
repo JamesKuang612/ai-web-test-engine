@@ -173,6 +173,56 @@ describe('PlaywrightCandidateMappingAdapter', () => {
         }
     }).timeout(15_000);
 
+    it('视觉命中 SVG 时优先绑定更具体的 pointer owner', async () => {
+        const browser = new PlaywrightBrowserAdapter();
+        const session = await browser.start(START_OPTIONS);
+        try {
+            const page = browser.getPage(session);
+            await page.setContent([
+                '<style>.favorite{cursor:pointer}</style>',
+                '<div id="card" role="button" aria-label="应用 11 卡片" ',
+                'style="width:200px;height:100px">应用 11',
+                '<div id="favorite" class="favorite" ',
+                'style="width:40px;height:40px">',
+                '<svg viewBox="0 0 40 40" width="40" height="40">',
+                '<path d="M20 2L25 14L38 15L28 24L31 38L20 30',
+                'L9 38L12 24L2 15L15 14Z"></path></svg></div></div>'
+            ].join(''));
+            const observation = await browser.observe(session);
+            const cardId = observation.interactiveElements.find(
+                ({ attributes }) => attributes.id === 'card'
+            )?.candidateId;
+            assert.ok(cardId);
+            assert.equal(observation.interactiveElements.some(
+                ({ attributes }) => attributes.id === 'favorite'
+            ), false);
+            const box = await page.locator('#favorite svg').boundingBox();
+            assert.ok(box);
+
+            const result = await new PlaywrightCandidateMappingAdapter(
+                browser
+            ).map(
+                session,
+                createPerception(observation),
+                createClickAction(),
+                { source: 'visual', regions: [ createRegion(box) ] },
+                new AbortController().signal
+            );
+
+            assert.equal(result.status, 'mapped', result.summary);
+            assert.match(result.candidates[0].candidateId, /^visual-/u);
+            assert.notEqual(result.candidates[0].candidateId, cardId);
+            assert.equal(await page.locator('#favorite').getAttribute(
+                'data-ai-web-test-candidate'
+            ), result.candidates[0].candidateId);
+            assert.equal(await page.locator('svg').getAttribute(
+                'data-ai-web-test-candidate'
+            ), null);
+        } finally {
+            await browser.close(session);
+        }
+    }).timeout(15_000);
+
     it('真实 ariaSnapshot 经 ax-* transient target 完成浏览器执行', async () => {
         const browser = new PlaywrightBrowserAdapter();
         const session = await browser.start(START_OPTIONS);

@@ -165,14 +165,25 @@ export class CompositeTargetGrounder implements TargetGrounder {
             { nodes: exactMatches, source: 'accessibility' },
             signal
         );
-        if (
-            mapping.status !== 'mapped' ||
-            mapping.candidates.length !== 1 ||
-            !mapping.candidates[0].actionCompatible ||
-            mapping.candidates[0].candidateId === domDecision.target?.candidateId
-        ) {
+        if (mapping.status === 'unmapped') {
             return undefined;
         }
+        const candidate = mapping.candidates.length === 1
+            ? mapping.candidates[0]
+            : undefined;
+        if (mapping.status === 'mapped') {
+            if (!candidate?.actionCompatible) {
+                return undefined;
+            }
+            if (candidate.candidateId === domDecision.target?.candidateId) {
+                return undefined;
+            }
+        }
+        const sourcesUsed = [
+            'dom',
+            'accessibility',
+            ...(mapping.candidates.length > 0 ? [ 'hit-test' as const ] : [])
+        ] as const;
         return {
             status: 'ambiguous',
             confidence: 0,
@@ -181,11 +192,15 @@ export class CompositeTargetGrounder implements TargetGrounder {
                 ...domDecision.evidence,
                 ...mapping.evidence,
                 `DOM candidate=${ domDecision.target?.candidateId }`,
-                `A11y candidate=${ mapping.candidates[0].candidateId }`
+                ...candidate
+                    ? [ `A11y candidate=${ candidate.candidateId }` ]
+                    : [ `A11y mapping=${ mapping.status }` ]
             ],
-            summary: 'DOM 与强 exact accessibility 证据指向不同目标。',
+            summary: mapping.status === 'ambiguous'
+                ? '强 exact accessibility 证据映射到多个目标。'
+                : 'DOM 与强 exact accessibility 证据指向不同目标。',
             usage: {
-                sourcesUsed: [ 'dom', 'accessibility', 'hit-test' ],
+                sourcesUsed: [ ...sourcesUsed ],
                 visualModelCalls: 0
             }
         };

@@ -112,7 +112,10 @@ export const INTERACTIVE_ELEMENT_SCRIPT = String.raw`(() => {
             return false;
         }
         const parent = element.parentElement;
-        return !parent || window.getComputedStyle(parent).cursor !== 'pointer';
+        if (parent && window.getComputedStyle(parent).cursor === 'pointer') {
+            return false;
+        }
+        return !parent?.closest(selector);
     };
     const inferRole = (element, likelyInteractive) => {
         const explicitRole = element.getAttribute('role');

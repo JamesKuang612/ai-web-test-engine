@@ -82,6 +82,39 @@ describe('CompositeTargetGrounder 多模态顺序', () => {
         ]);
     });
 
+});
+
+describe('CompositeTargetGrounder 跨模态冲突', () => {
+    it('强 exact A11y 映射 ambiguous 时阻止 DOM fast path', async () => {
+        const mapper = new FakeCandidateMapper(undefined, 'ambiguous');
+        const visual = new FakeVisualGrounder();
+        const request = createRequest(
+            [ createElement('e1', '收藏') ],
+            createAction('收藏')
+        );
+        request.perception.accessibility.nodes.push({
+            id: 'ax-node-1',
+            ancestors: [{ name: '应用 11', role: 'group' }],
+            name: '收藏',
+            role: 'button'
+        });
+
+        const decision = await new CompositeTargetGrounder(
+            mapper,
+            visual
+        ).ground(request, signal());
+
+        assert.equal(decision.status, 'ambiguous');
+        assert.equal(decision.target, undefined);
+        assert.equal(visual.callCount, 0);
+        assert.deepEqual(decision.usage?.sourcesUsed, [
+            'dom', 'accessibility'
+        ]);
+    });
+
+});
+
+describe('CompositeTargetGrounder A11y fallback', () => {
     it('DOM 不足时使用 bounded A11y 证据映射到 live candidate', async () => {
         const mapper = new FakeCandidateMapper('ax-1');
         const visual = new FakeVisualGrounder();
@@ -205,7 +238,9 @@ class FakeCandidateMapper implements CandidateMappingPort {
     ) => {
         this.calls.push(evidence);
         return Promise.resolve({
-            status: this.candidateId ? this.status : 'unmapped',
+            status: this.status === 'ambiguous'
+                ? 'ambiguous'
+                : this.candidateId ? this.status : 'unmapped',
             candidates: this.candidateId ? [{
                 actionCompatible: true,
                 candidateId: this.candidateId,

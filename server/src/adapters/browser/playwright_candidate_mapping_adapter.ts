@@ -72,21 +72,28 @@ const VISUAL_MAPPING_SCRIPT = String.raw`(input) => {
             element.hasAttribute('onclick') ||
             element.hasAttribute('aria-haspopup');
     };
-    const pointerOwner = (element) => input.actionType === 'CLICK' &&
-        visible(element) &&
-        !['svg', 'path', 'use'].includes(element.tagName.toLowerCase()) &&
-        window.getComputedStyle(element).cursor === 'pointer';
+    const pointerOwner = (element) => {
+        if (
+            input.actionType !== 'CLICK' || !visible(element) ||
+            ['svg', 'path', 'use'].includes(element.tagName.toLowerCase()) ||
+            window.getComputedStyle(element).cursor !== 'pointer'
+        ) {
+            return false;
+        }
+        const parent = element.parentElement;
+        return !parent || window.getComputedStyle(parent).cursor !== 'pointer';
+    };
     const candidates = [];
     for (const hit of hits) {
         let current = hit;
         let pointerCandidate;
         for (let depth = 0; current && depth < 7; depth += 1) {
-            if (strongOwner(current)) {
-                candidates.push(current);
-                break;
-            }
             if (!pointerCandidate && pointerOwner(current)) {
                 pointerCandidate = current;
+            }
+            if (strongOwner(current)) {
+                candidates.push(pointerCandidate || current);
+                break;
             }
             current = current.parentElement;
         }
