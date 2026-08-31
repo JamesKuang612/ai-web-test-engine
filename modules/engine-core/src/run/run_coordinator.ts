@@ -67,6 +67,9 @@ import type {
 import type {
     VerdictEvaluator,
 } from '../verdict';
+import {
+    ActionEffectVerifier,
+} from './action_effect_verifier';
 
 const ANSI_ESCAPE_PATTERN = new RegExp(
     `${ String.fromCharCode(27) }\\[[0-?]*[ -/]*[@-~]`,
@@ -178,6 +181,7 @@ const DEFAULT_OPTIONS: RunCoordinatorOptions = {
  * 一次测试运行的总协调器，负责串联意图构建、浏览器执行、观察和产物存储。
  */
 export class RunCoordinator implements ExecutionEngine {
+    private readonly actionEffectVerifier = new ActionEffectVerifier();
     private readonly groundedActionBuilder = new GroundedActionBuilder();
     private readonly perceptionService: PerceptionService;
     private readonly targetGrounder: TargetGrounder;
@@ -1293,12 +1297,16 @@ export class RunCoordinator implements ExecutionEngine {
             context,
             runtime.browserSession
         );
-        const effect = this.createActionEffect(
-            grounded.command,
+        const effect = this.actionEffectVerifier.verify({
+            command: grounded.command,
             result,
-            beforeObservation,
-            after
-        );
+            before: beforeObservation,
+            after: after.observation,
+            evidence: [
+                after.observationReference,
+                after.screenshotReference
+            ]
+        });
         const execution = {
             command: grounded.command,
             result,
@@ -1406,177 +1414,6 @@ export class RunCoordinator implements ExecutionEngine {
             `observation-after-action-${ traceSequence }`,
             `screenshot-after-action-${ traceSequence }.png`
         );
-    }
-
-    /** 根据动作类型与前后状态验证页面是否产生可观察效果。 */
-    private createActionEffect(
-        command: ActionCommand,
-        result: ActionResult,
-        before: PageObservation | undefined,
-        after: ObservationEvidence
-    ): EffectVerification {
-        if (command.type === 'TYPE') {
-            return this.createTypeEffect(command, result, after);
-        }
-        if (command.type === 'SELECT') {
-            return this.createSelectEffect(command, result, after);
-        }
-        if (command.type === 'CHECK') {
-            return this.createCheckEffect(command, result, after);
-        }
-        if (command.type === 'WAIT') {
-            const confirmed = result.status === 'executed';
-            return {
-                status: confirmed ? 'confirmed' : 'contradicted',
-                expectedEffect: command.expectedEffect ?? '等待异步页面内容',
-                evidence: [
-                    after.observationReference,
-                    after.screenshotReference
-                ],
-                summary: confirmed
-                    ? '等待动作已经完成。'
-                    : '浏览器没有成功完成等待动作。'
-            };
-        }
-        return this.createGenericActionEffect(command, result, before, after);
-    }
-
-    /** 验证点击或悬浮是否产生与规划方向一致的可观察变化。 */
-    private createGenericActionEffect(
-        command: ActionCommand,
-        result: ActionResult,
-        before: PageObservation | undefined,
-        after: ObservationEvidence
-    ): EffectVerification {
-        const unexpectedNavigation = command.type === 'CLICK'
-            && result.browserSignals.urlChanged
-            && !this.isNavigationExpected(command);
-        const changed = before?.stateFingerprint !==
-            after.observation.stateFingerprint;
-        const pageReady = this.isObservationReady(after.observation);
-        const confirmed = result.status === 'executed'
-            && changed
-            && pageReady
-            && !unexpectedNavigation;
-        return {
-            status: result.status !== 'executed'
-                ? 'contradicted'
-                : confirmed
-                    ? 'confirmed'
-                    : 'not-observed',
-            expectedEffect: command.expectedEffect ?? '页面状态发生预期变化',
-            evidence: [
-                after.observationReference,
-                after.screenshotReference
-            ],
-            summary: unexpectedNavigation
-                ? '点击意外改变了页面地址，与规划的非导航效果不一致。'
-                : confirmed
-                    ? command.type === 'HOVER'
-                        ? '鼠标悬浮后页面出现了可观察变化。'
-                        : '页面状态在动作执行后发生了变化。'
-                : result.status === 'executed' && !pageReady
-                    ? '动作已执行，但页面在等待窗口内仍未完成可见内容渲染。'
-                : result.status === 'executed'
-                    ? '动作已执行，但页面观察未发现状态变化。'
-                    : '浏览器没有成功执行页面动作。'
-        };
-    }
-
-    /** 判断 Planner 是否明确预期点击后发生页面导航。 */
-    private isNavigationExpected(command: ActionCommand): boolean {
-        return /跳转|页面进入|进入.+页面|进入(?:工作台|应用)(?=$|[\s，。；,]|并|后)|导航|打开.+页面|打开(?:工作台|应用)(?=$|[\s，。；,]|并|后)|返回(?:.+页面|工作台|首页|上一页)|登录(?:成功)?(?:后|进入|跳转|完成)|URL|地址/iu.test([
-            command.expectedEffect ?? '',
-            command.reasonSummary
-        ].join(' '));
-    }
-
-    /** 根据候选输入框的值状态验证 TYPE 是否产生预期效果。 */
-    private createTypeEffect(
-        command: ActionCommand,
-        result: ActionResult,
-        after: ObservationEvidence
-    ): EffectVerification {
-        const candidateId = command.target?.candidateId;
-        const valueState = after.observation.interactiveElements.find(
-            (element) => element.candidateId === candidateId
-        )?.valueState;
-        const confirmed = result.status === 'executed' &&
-            (valueState === 'filled' || valueState === 'masked');
-        const status = result.status !== 'executed'
-            ? 'contradicted' as const
-            : confirmed
-                ? 'confirmed' as const
-                : 'not-observed' as const;
-        return {
-            status,
-            expectedEffect: command.expectedEffect ?? '目标输入框变为已填写',
-            evidence: [
-                after.observationReference,
-                after.screenshotReference
-            ],
-            summary: confirmed
-                ? '目标输入框已显示为填写状态。'
-                : result.status === 'executed'
-                    ? '输入动作已执行，但页面观察未确认填写状态。'
-                    : '浏览器没有成功执行输入动作。'
-        };
-    }
-
-    /** 根据目标下拉框的值状态验证 SELECT 是否产生预期效果。 */
-    private createSelectEffect(
-        command: ActionCommand,
-        result: ActionResult,
-        after: ObservationEvidence
-    ): EffectVerification {
-        const valueState = after.observation.interactiveElements.find(
-            (element) => element.candidateId === command.target?.candidateId
-        )?.valueState;
-        const confirmed = result.status === 'executed'
-            && valueState === 'filled';
-        return {
-            status: result.status !== 'executed'
-                ? 'contradicted'
-                : confirmed ? 'confirmed' : 'not-observed',
-            expectedEffect: command.expectedEffect ?? '目标下拉框完成选择',
-            evidence: [
-                after.observationReference,
-                after.screenshotReference
-            ],
-            summary: confirmed
-                ? '目标下拉框已显示为选中状态。'
-                : '选择动作后没有确认目标下拉框的选中状态。'
-        };
-    }
-
-    /** 根据目标元素的 checked 状态验证 CHECK 是否达到指定布尔值。 */
-    private createCheckEffect(
-        command: ActionCommand,
-        result: ActionResult,
-        after: ObservationEvidence
-    ): EffectVerification {
-        const checked = after.observation.interactiveElements.find(
-            (element) => element.candidateId === command.target?.candidateId
-        )?.checked;
-        const expected = command.value?.source === 'literal'
-            ? command.value.value
-            : undefined;
-        const confirmed = result.status === 'executed'
-            && typeof expected === 'boolean'
-            && checked === expected;
-        return {
-            status: result.status !== 'executed'
-                ? 'contradicted'
-                : confirmed ? 'confirmed' : 'not-observed',
-            expectedEffect: command.expectedEffect ?? '目标复选框状态正确',
-            evidence: [
-                after.observationReference,
-                after.screenshotReference
-            ],
-            summary: confirmed
-                ? `目标复选框已${ expected ? '勾选' : '取消勾选' }。`
-                : '操作后没有确认目标复选框的勾选状态。'
-        };
     }
 
     /** 追加本轮 Trace，并把安全命令引用加入 Planner 历史。 */
