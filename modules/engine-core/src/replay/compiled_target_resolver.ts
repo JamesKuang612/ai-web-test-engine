@@ -1,4 +1,5 @@
 import type {
+    CompiledActionType,
     CompiledTarget,
     ObservedElement,
     PageObservation,
@@ -16,10 +17,13 @@ export class CompiledTargetResolutionError extends Error {
 export class CompiledTargetResolver {
     public resolve(
         target: CompiledTarget,
-        observation: PageObservation
+        observation: PageObservation,
+        actionType?: CompiledActionType
     ): ObservedElement {
         const scored = observation.interactiveElements
-            .filter((element) => element.visible && !element.disabled)
+            .filter((element) => element.visible && (
+                actionType === 'HOVER' || !element.disabled
+            ))
             .map((element) => ({
                 element,
                 locatorScore: this.countMatchingHints(target, element),

@@ -1628,6 +1628,9 @@
                     "description": "当前核心领域数据契约的版本。",
                     "type": "number"
                 },
+                "semanticAction": {
+                    "$ref": "#/definitions/SemanticAction"
+                },
                 "sequence": {
                     "type": "number"
                 }

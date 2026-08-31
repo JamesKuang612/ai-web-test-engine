@@ -9,6 +9,9 @@ import type {
 import type {
     ObservedElement,
 } from './observation';
+import type {
+    SemanticAction,
+} from './semantic_action';
 
 /** Grounder 绑定目标时保存的完整元素证据，不包含瞬时候选编号。 */
 export type ResolvedElementSnapshot = Omit<ObservedElement, 'candidateId'>;
@@ -57,6 +60,7 @@ export interface TraceEvent {
     schemaVersion: EngineSchemaVersion;
     runId: string;
     sequence: number;
+    semanticAction?: SemanticAction;
     command: ActionCommand;
     resolvedTarget?: ResolvedTarget;
     beforeObservationRef: string;

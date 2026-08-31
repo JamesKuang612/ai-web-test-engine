@@ -908,6 +908,9 @@ export class RunCoordinator implements ExecutionEngine {
     ): CompilableTraceStep[] {
         return [{
             sequence: 1,
+            semanticAction: this.groundedActionBuilder.fromLegacyCommand(
+                execution.navigation.command
+            ),
             command: execution.navigation.command,
             actionResult: execution.navigation.result,
             effect: this.createNavigationEffect(execution.navigation),
@@ -915,7 +918,9 @@ export class RunCoordinator implements ExecutionEngine {
             afterObservation: execution.navigation.afterObservation
         }, ...execution.plannedActions.map((action, index) => ({
             sequence: index + 2,
+            semanticAction: action.semanticAction,
             command: action.command,
+            resolvedTarget: action.resolvedTarget,
             actionResult: action.result,
             effect: action.effect,
             beforeObservation: action.beforeObservation,
@@ -1025,7 +1030,12 @@ export class RunCoordinator implements ExecutionEngine {
                     schemaVersion: 1,
                     runId: context.runId,
                     sequence,
+                    semanticAction:
+                        this.groundedActionBuilder.fromLegacyCommand(
+                            execution.command
+                        ),
                     command: execution.command,
+                    resolvedTarget: execution.resolvedTarget,
                     beforeObservationRef: beforeReference.ref,
                     afterObservationRef: afterReference.ref,
                     actionResult: execution.result,
@@ -1652,6 +1662,7 @@ export class RunCoordinator implements ExecutionEngine {
             schemaVersion: 1,
             runId: context.runId,
             sequence: runtime.history.length + 1,
+            semanticAction: execution.semanticAction,
             command: execution.command,
             resolvedTarget: execution.resolvedTarget,
             beforeObservationRef: execution.beforeObservationReference.ref,
@@ -1788,6 +1799,9 @@ export class RunCoordinator implements ExecutionEngine {
             schemaVersion: 1,
             runId: context.runId,
             sequence: 1,
+            semanticAction: this.groundedActionBuilder.fromLegacyCommand(
+                navigation.command
+            ),
             command: navigation.command,
             beforeObservationRef: navigation.beforeObservationReference.ref,
             afterObservationRef: navigation.afterObservationReference.ref,

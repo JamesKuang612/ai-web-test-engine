@@ -12,13 +12,17 @@ import type {
     LocatorHint,
     ObservedElement,
     PageObservation,
+    ResolvedTarget,
+    SemanticAction,
     TestIntent,
 } from '../contracts';
 
 /** 编译器需要的真实轨迹及其动作前后页面状态。 */
 export interface CompilableTraceStep {
     sequence: number;
+    semanticAction?: SemanticAction;
     command: ActionCommand;
+    resolvedTarget?: ResolvedTarget;
     actionResult: ActionResult;
     effect: EffectVerification;
     beforeObservation: PageObservation;
@@ -267,28 +271,28 @@ export class TracePlanCompiler {
     }
 
     private compileTarget(step: CompilableTraceStep): CompiledTarget {
-        const candidateId = step.command.target?.candidateId;
+        const candidateId = step.resolvedTarget?.candidateId
+            ?? step.command.target?.candidateId;
         if (!candidateId) {
             throw new TracePlanCompileError(
                 `第 ${ step.sequence } 步缺少候选元素引用。`
             );
         }
-        const element = step.beforeObservation.interactiveElements.find(
-            (candidate) => candidate.candidateId === candidateId
+        const evidenceElement = this.resolveEvidenceElement(
+            step,
+            candidateId
         );
-        if (!element) {
-            throw new TracePlanCompileError(
-                `第 ${ step.sequence } 步候选元素不在动作前页面观察中。`
-            );
-        }
-        if (!element.visible || element.disabled) {
+        if (
+            !evidenceElement.visible
+            || evidenceElement.disabled && step.command.type !== 'HOVER'
+        ) {
             throw new TracePlanCompileError(
                 `第 ${ step.sequence } 步候选元素不是可操作状态。`
             );
         }
 
         const locatorHints = this.collectUniqueLocatorHints(
-            element,
+            evidenceElement,
             step.beforeObservation
         );
         if (locatorHints.length === 0) {
@@ -298,21 +302,57 @@ export class TracePlanCompiler {
         }
 
         return {
-            description: step.command.target?.description ?? element.name
-                ?? element.label ?? element.placeholder ?? element.tag,
+            description: step.semanticAction?.target?.description
+                ?? step.resolvedTarget?.description
+                ?? step.command.target?.description
+                ?? evidenceElement.name
+                ?? evidenceElement.label
+                ?? evidenceElement.placeholder
+                ?? evidenceElement.tag,
             locatorHints,
             identity: {
-                tag: element.tag,
-                ...element.role ? { role: element.role } : {},
-                ...element.name ? { name: element.name } : {},
-                ...element.text ? { text: element.text } : {},
-                ...element.label ? { label: element.label } : {},
-                ...element.placeholder ? { placeholder: element.placeholder } : {},
-                ...element.attributes.type
-                    ? { inputType: element.attributes.type }
+                tag: evidenceElement.tag,
+                ...evidenceElement.role ? { role: evidenceElement.role } : {},
+                ...evidenceElement.name ? { name: evidenceElement.name } : {},
+                ...evidenceElement.text ? { text: evidenceElement.text } : {},
+                ...evidenceElement.label ? { label: evidenceElement.label } : {},
+                ...evidenceElement.placeholder
+                    ? { placeholder: evidenceElement.placeholder }
+                    : {},
+                ...evidenceElement.attributes.type
+                    ? { inputType: evidenceElement.attributes.type }
                     : {}
             }
         };
+    }
+
+    private resolveEvidenceElement(
+        step: CompilableTraceStep,
+        candidateId: string
+    ): ObservedElement {
+        const element = step.beforeObservation.interactiveElements.find(
+            (candidate) => candidate.candidateId === candidateId
+        );
+        if (!element) {
+            throw new TracePlanCompileError(
+                `第 ${ step.sequence } 步候选元素不在动作前页面观察中。`
+            );
+        }
+        if (
+            step.resolvedTarget
+            && step.resolvedTarget.observationId !==
+                step.beforeObservation.observationId
+        ) {
+            throw new TracePlanCompileError(
+                `第 ${ step.sequence } 步 ResolvedTarget 不属于动作前页面观察。`
+            );
+        }
+        return step.resolvedTarget
+            ? {
+                candidateId,
+                ...structuredClone(step.resolvedTarget.elementSnapshot)
+            }
+            : element;
     }
 
     private collectUniqueLocatorHints(

@@ -16,6 +16,9 @@ import {
 import type {
     ActionCommand,
     BrowserSession,
+    ObservedElement,
+    PageObservation,
+    ResolvedTarget,
 } from '@ai-web-test-engine/core';
 import {
     PlaywrightBrowserAdapter,
@@ -275,6 +278,54 @@ describe('PlaywrightBrowserAdapter', () => {
                 after.interactiveElements[0]?.name,
                 '已登录'
             );
+        } finally {
+            if (session) {
+                await adapter.close(session);
+            }
+            await testServer.close();
+        }
+    }).timeout(15_000);
+
+    it('优先消费当前观察的 ResolvedTarget 并拒绝过期绑定', async () => {
+        const testServer = await startTestHttpServer([
+            '<!doctype html><title>物理目标测试页</title><body>',
+            '<button type="button" onclick="this.textContent = \'完成\'">执行</button>',
+            '</body>'
+        ].join(''));
+        const adapter = new PlaywrightBrowserAdapter();
+        let session: BrowserSession | undefined;
+
+        try {
+            session = await adapter.start(START_OPTIONS);
+            await adapter.execute(
+                session,
+                createNavigateCommand(testServer.url)
+            );
+            const before = await adapter.observe(session);
+            const button = before.interactiveElements.find(
+                (element) => element.name === '执行'
+            );
+            assert.ok(button);
+            const command: ActionCommand = {
+                type: 'CLICK',
+                target: { description: '执行按钮' },
+                expectedEffect: '按钮显示完成',
+                reasonSummary: '验证物理目标边界',
+                risk: 'side-effect'
+            };
+            const target = createResolvedTarget(before, button);
+
+            const stale = await adapter.execute(session, command, {
+                ...target,
+                observationId: '过期观察'
+            });
+            assert.equal(stale.status, 'rejected');
+            assert.equal(stale.error?.code, 'STALE_RESOLVED_TARGET');
+
+            const result = await adapter.execute(session, command, target);
+            const after = await adapter.observe(session);
+            assert.equal(result.status, 'executed');
+            assert.equal(after.interactiveElements[0]?.name, '完成');
         } finally {
             if (session) {
                 await adapter.close(session);
@@ -990,6 +1041,31 @@ function createNavigateCommand(url: string): ActionCommand {
         },
         reasonSummary: '打开测试页面',
         risk: 'read-only'
+    };
+}
+
+function createResolvedTarget(
+    observation: PageObservation,
+    element: ObservedElement
+): ResolvedTarget {
+    const {
+        candidateId: _candidateId,
+        ...elementSnapshot
+    } = structuredClone(element);
+    return {
+        description: element.name ?? element.tag,
+        observationId: observation.observationId,
+        candidateId: element.candidateId,
+        elementSnapshot,
+        strategy: 'candidate-id',
+        locatorData: {
+            observationId: observation.observationId,
+            candidateId: element.candidateId
+        },
+        confidence: 1,
+        unique: true,
+        actionable: true,
+        evidence: ['测试绑定']
     };
 }
 

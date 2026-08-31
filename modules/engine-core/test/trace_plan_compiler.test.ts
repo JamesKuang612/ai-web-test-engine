@@ -4,9 +4,12 @@ import type {
     CompilableTraceStep,
     ObservedElement,
     PageObservation,
+    ResolvedTarget,
     TestIntent,
 } from '../src';
 import {
+    createPlanCompilationSource,
+    parsePlanCompilationSource,
     TracePlanCompileError,
     TracePlanCompiler,
 } from '../src';
@@ -54,6 +57,56 @@ describe('TracePlanCompiler', () => {
         assert.equal(plan.steps[3]?.value?.source, 'literal');
         assert.equal(plan.steps[4]?.value?.source, 'literal');
         assert.equal(plan.steps[5]?.type, 'WAIT');
+    });
+
+    it('持久化并优先使用 Grounding 时的元素快照', () => {
+        const element = createSubmitElement();
+        const navigation = createStep(1, {
+            type: 'NAVIGATE',
+            value: {
+                source: 'literal',
+                value: 'https://test.jdydevelop.com/portal/signin'
+            },
+            expectedEffect: '打开登录页',
+            reasonSummary: '进入登录页',
+            risk: 'read-only'
+        }, []);
+        const click = createStep(2, {
+            type: 'CLICK',
+            target: {
+                candidateId: 'legacy-wrong-id',
+                description: '旧命令描述'
+            },
+            expectedEffect: '页面进入工作台',
+            reasonSummary: '提交登录',
+            risk: 'side-effect'
+        }, [ element ]);
+        click.semanticAction = {
+            type: 'CLICK',
+            target: { description: '语义登录按钮' },
+            expectedEffect: '页面进入工作台',
+            reasonSummary: '提交登录'
+        };
+        click.resolvedTarget = createResolvedTarget(
+            click.beforeObservation,
+            element
+        );
+        const source = parsePlanCompilationSource(
+            createPlanCompilationSource({
+                runId: 'run-snapshot',
+                testId: 'login-jiandaoyun',
+                testIntent: intent,
+                steps: [ navigation, click ]
+            })
+        );
+
+        assert.equal(
+            source.steps[1]?.resolvedTarget?.elementSnapshot.name,
+            '登录'
+        );
+        const plan = new TracePlanCompiler().compile(source);
+        assert.equal(plan.steps[1]?.target?.description, '语义登录按钮');
+        assert.equal(plan.steps[1]?.target?.identity.name, '登录');
     });
 
 });
@@ -322,6 +375,31 @@ function createStep(
         },
         beforeObservation: createObservation(`before-${ sequence }`, elements),
         afterObservation: createObservation(`after-${ sequence }`, elements)
+    };
+}
+
+function createResolvedTarget(
+    observation: PageObservation,
+    element: ObservedElement
+): ResolvedTarget {
+    const {
+        candidateId: _candidateId,
+        ...elementSnapshot
+    } = structuredClone(element);
+    return {
+        description: element.name ?? element.tag,
+        observationId: observation.observationId,
+        candidateId: element.candidateId,
+        elementSnapshot,
+        strategy: 'candidate-id',
+        locatorData: {
+            observationId: observation.observationId,
+            candidateId: element.candidateId
+        },
+        confidence: 1,
+        unique: true,
+        actionable: true,
+        evidence: ['测试快照']
     };
 }
 

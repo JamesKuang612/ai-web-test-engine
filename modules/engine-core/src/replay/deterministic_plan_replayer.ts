@@ -6,6 +6,7 @@ import type {
     EffectVerification,
     EnvironmentDefinition,
     PageObservation,
+    ResolvedTarget,
 } from '../contracts';
 import type {
     BrowserAdapter,
@@ -27,6 +28,7 @@ export interface ReplayPlanInput {
 export interface ReplayStepExecution {
     step: CompiledStep;
     command: ActionCommand;
+    resolvedTarget?: ResolvedTarget;
     result: ActionResult;
     effect: EffectVerification;
     beforeObservation: PageObservation;
@@ -81,14 +83,18 @@ export class DeterministicPlanReplayer {
                 const beforeObservation = await this.browserAdapter.observe(
                     session
                 );
-                const command = this.createSafeCommand(step, beforeObservation);
+                const grounded = this.createSafeCommand(
+                    step,
+                    beforeObservation
+                );
                 const executableCommand = await this.resolveCommandValue(
-                    command,
+                    grounded.command,
                     input.environment
                 );
                 const result = await this.browserAdapter.execute(
                     session,
-                    executableCommand
+                    executableCommand,
+                    grounded.resolvedTarget
                 );
                 actionCount += 1;
                 const afterObservation = await this.browserAdapter.observe(
@@ -98,7 +104,7 @@ export class DeterministicPlanReplayer {
                     await this.browserAdapter.captureScreenshot(session);
                 const effect = this.verifyEffect(
                     input.plan,
-                    command,
+                    grounded.command,
                     result,
                     beforeObservation,
                     afterObservation
@@ -121,7 +127,8 @@ export class DeterministicPlanReplayer {
                 }
                 executions.push({
                     step,
-                    command,
+                    command: grounded.command,
+                    resolvedTarget: grounded.resolvedTarget,
                     result,
                     effect,
                     beforeObservation,
@@ -176,17 +183,23 @@ export class DeterministicPlanReplayer {
     private createSafeCommand(
         step: CompiledStep,
         observation: PageObservation
-    ): ActionCommand {
-        const target = step.target
-            ? this.targetResolver.resolve(step.target, observation)
+    ): { command: ActionCommand, resolvedTarget?: ResolvedTarget } {
+        const element = step.target
+            ? this.targetResolver.resolve(
+                step.target,
+                observation,
+                step.type
+            )
             : undefined;
-
-        return {
+        const resolvedTarget = element && step.target
+            ? this.createResolvedTarget(step, observation, element)
+            : undefined;
+        const command: ActionCommand = {
             type: step.type,
-            ...target && step.target
+            ...element && step.target
                 ? {
                     target: {
-                        candidateId: target.candidateId,
+                        candidateId: element.candidateId,
                         description: step.target.description
                     }
                 }
@@ -195,6 +208,37 @@ export class DeterministicPlanReplayer {
             expectedEffect: step.expectedEffect,
             reasonSummary: `确定性回放已编译步骤 ${ step.sequence }`,
             risk: step.risk
+        };
+        return {
+            command,
+            ...resolvedTarget ? { resolvedTarget } : {}
+        };
+    }
+
+    /** 将稳定计划重新绑定的元素封装为 Browser 可校验的物理目标。 */
+    private createResolvedTarget(
+        step: CompiledStep,
+        observation: PageObservation,
+        element: PageObservation['interactiveElements'][number]
+    ): ResolvedTarget {
+        const {
+            candidateId: _candidateId,
+            ...elementSnapshot
+        } = structuredClone(element);
+        return {
+            description: step.target?.description ?? element.tag,
+            observationId: observation.observationId,
+            candidateId: element.candidateId,
+            elementSnapshot,
+            strategy: 'candidate-id',
+            locatorData: {
+                observationId: observation.observationId,
+                candidateId: element.candidateId
+            },
+            confidence: 1,
+            unique: true,
+            actionable: true,
+            evidence: [`编译步骤 ${ step.sequence } 已在当前观察中重新绑定。`]
         };
     }
 

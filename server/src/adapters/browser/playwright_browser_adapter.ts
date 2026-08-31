@@ -351,15 +351,24 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
     public execute = async (
         session: BrowserSession,
         command: ActionCommand,
-        _target?: ResolvedTarget
+        target?: ResolvedTarget
     ): Promise<ActionResult> => {
         const managedSession = this.requireSession(session);
         const startedAt = new Date().toISOString();
+        const targetRejection = target
+            ? this.validateResolvedTarget(managedSession, target, startedAt)
+            : undefined;
+        if (targetRejection) {
+            return targetRejection;
+        }
+        const candidateId = target?.candidateId
+            ?? command.target?.candidateId;
 
         if (command.type === 'TYPE') {
             return await this.executeType(
                 managedSession,
                 command,
+                candidateId,
                 startedAt
             );
         }
@@ -368,18 +377,25 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
             return await this.executeClick(
                 managedSession,
                 command,
+                candidateId,
                 startedAt
             );
         }
 
         if (command.type === 'HOVER') {
-            return await this.executeHover(managedSession, command, startedAt);
+            return await this.executeHover(
+                managedSession,
+                command,
+                candidateId,
+                startedAt
+            );
         }
 
         if (command.type === 'SELECT') {
             return await this.executeSelect(
                 managedSession,
                 command,
+                candidateId,
                 startedAt
             );
         }
@@ -388,6 +404,7 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
             return await this.executeCheck(
                 managedSession,
                 command,
+                candidateId,
                 startedAt
             );
         }
@@ -400,6 +417,19 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
             );
         }
 
+        return await this.executeNavigation(
+            managedSession,
+            command,
+            startedAt
+        );
+    };
+
+    /** 执行无物理目标的页面导航，并拒绝尚未实现的动作类型。 */
+    private async executeNavigation(
+        session: ManagedBrowserSession,
+        command: ActionCommand,
+        startedAt: string
+    ): Promise<ActionResult> {
         if (command.type !== 'NAVIGATE') {
             return this.createActionResult(
                 startedAt,
@@ -425,11 +455,11 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
             );
         }
 
-        const previousUrl = managedSession.page.url();
-        managedSession.elementIndex = undefined;
+        const previousUrl = session.page.url();
+        session.elementIndex = undefined;
 
         try {
-            await managedSession.page.goto(navigationUrl, {
+            await session.page.goto(navigationUrl, {
                 timeout: NAVIGATION_TIMEOUT_MS,
                 // 起始页提交响应后即可交给 observe 处理后续加载和重定向。
                 waitUntil: 'commit'
@@ -438,7 +468,7 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
             return this.createActionResult(
                 startedAt,
                 'executed',
-                managedSession.page.url() !== previousUrl
+                session.page.url() !== previousUrl
             );
         } catch (error) {
             const timedOut = error instanceof errors.TimeoutError;
@@ -448,7 +478,7 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
                 timedOut
                     ? 'timed-out'
                     : 'failed',
-                managedSession.page.url() !== previousUrl,
+                session.page.url() !== previousUrl,
                 {
                     code: timedOut
                         ? 'NAVIGATION_TIMEOUT'
@@ -459,7 +489,7 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
                 }
             );
         }
-    };
+    }
 
     /** 截取当前页面并返回 PNG 字节，不在浏览器层决定保存路径。 */
     public captureScreenshot = async (
@@ -548,13 +578,34 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
         return managedSession;
     }
 
+    /** 只接受基于当前 observation 解析出的唯一目标，拒绝复用瞬时候选地址。 */
+    private validateResolvedTarget(
+        session: ManagedBrowserSession,
+        target: ResolvedTarget,
+        startedAt: string
+    ): ActionResult | undefined {
+        if (session.elementIndex?.observationId !== target.observationId) {
+            return this.createActionResult(startedAt, 'rejected', false, {
+                code: 'STALE_RESOLVED_TARGET',
+                message: 'ResolvedTarget 不属于当前页面观察，已拒绝执行。'
+            });
+        }
+        if (!target.unique) {
+            return this.createActionResult(startedAt, 'rejected', false, {
+                code: 'INVALID_RESOLVED_TARGET',
+                message: 'ResolvedTarget 未证明目标唯一，已拒绝执行。'
+            });
+        }
+        return undefined;
+    }
+
     /** 执行一次候选元素输入，并将字面量限制在浏览器调用边界内。 */
     private async executeType(
         session: ManagedBrowserSession,
         command: ActionCommand,
+        candidateId: string | undefined,
         startedAt: string
     ): Promise<ActionResult> {
-        const candidateId = command.target?.candidateId;
         const value = command.value?.source === 'literal'
             ? command.value.value
             : undefined;
@@ -626,9 +677,9 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
     private async executeClick(
         session: ManagedBrowserSession,
         command: ActionCommand,
+        candidateId: string | undefined,
         startedAt: string
     ): Promise<ActionResult> {
-        const candidateId = command.target?.candidateId;
         if (!candidateId) {
             return this.createActionResult(
                 startedAt,
@@ -714,9 +765,9 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
     private async executeHover(
         session: ManagedBrowserSession,
         command: ActionCommand,
+        candidateId: string | undefined,
         startedAt: string
     ): Promise<ActionResult> {
-        const candidateId = command.target?.candidateId;
         if (!candidateId) {
             return this.createActionResult(
                 startedAt,
@@ -785,9 +836,9 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
     private async executeSelect(
         session: ManagedBrowserSession,
         command: ActionCommand,
+        candidateId: string | undefined,
         startedAt: string
     ): Promise<ActionResult> {
-        const candidateId = command.target?.candidateId;
         const value = command.value?.source === 'literal'
             ? command.value.value
             : undefined;
@@ -874,9 +925,9 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
     private async executeCheck(
         session: ManagedBrowserSession,
         command: ActionCommand,
+        candidateId: string | undefined,
         startedAt: string
     ): Promise<ActionResult> {
-        const candidateId = command.target?.candidateId;
         const checked = command.value?.source === 'literal'
             ? command.value.value
             : undefined;

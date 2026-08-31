@@ -610,6 +610,7 @@ function assertCompletedAiRun(state: CompletedRunState): void {
     assert.equal(browserAdapter.resolvedTargets[1]?.candidateId, 'e1');
     assert.equal(browserAdapter.resolvedTargets[2]?.candidateId, 'e2');
     assert.equal(browserAdapter.resolvedTargets[3]?.candidateId, 'e3');
+    assertGroundingEvidencePersisted(artifactStore);
     assert.deepEqual(valueResolver.resolvedNames, [
         'username',
         'password'
@@ -623,6 +624,21 @@ function assertCompletedAiRun(state: CompletedRunState): void {
         eventPublisher.events.map((_event, index) => index + 1)
     );
     assert.equal(eventPublisher.events.at(-1)?.type, 'run.completed');
+}
+
+function assertGroundingEvidencePersisted(
+    artifactStore: FakeArtifactStore
+): void {
+    const groundedTrace = artifactStore.traces[1];
+    assert.equal(
+        groundedTrace?.semanticAction?.target?.description,
+        '账号输入框'
+    );
+    assert.equal(groundedTrace?.resolvedTarget?.elementSnapshot.name, '账号');
+    assert.equal(
+        'candidateId' in (groundedTrace?.resolvedTarget?.elementSnapshot ?? {}),
+        false
+    );
 }
 
 function assertObservationEventsIncludeScreenshot(events: RunEvent[]): void {

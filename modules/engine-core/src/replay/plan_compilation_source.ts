@@ -2,10 +2,12 @@ import type {
     ActionResult,
     EffectVerification,
     EvidenceRef,
+    JsonValue,
     LocatorHint,
     ObservedElement,
     PageNotice,
     PageObservation,
+    ResolvedTarget,
     TabSummary,
 } from '../contracts';
 import {
@@ -13,6 +15,7 @@ import {
 } from '../intent';
 import {
     actionCommandSchema,
+    semanticActionSchema,
 } from '../planning';
 import type {
     CompilableTraceStep,
@@ -82,7 +85,22 @@ function parseStep(value: unknown, path: string): CompilableTraceStep {
     const object = requireObject(value, path);
     return {
         sequence: requirePositiveInteger(object.sequence, `${ path }.sequence`),
+        ...object.semanticAction === undefined
+            ? {}
+            : {
+                semanticAction: semanticActionSchema.parse(
+                    object.semanticAction
+                )
+            },
         command: actionCommandSchema.parse(object.command),
+        ...object.resolvedTarget === undefined
+            ? {}
+            : {
+                resolvedTarget: parseResolvedTarget(
+                    object.resolvedTarget,
+                    `${ path }.resolvedTarget`
+                )
+            },
         actionResult: parseActionResult(
             object.actionResult,
             `${ path }.actionResult`
@@ -96,6 +114,61 @@ function parseStep(value: unknown, path: string): CompilableTraceStep {
             object.afterObservation,
             `${ path }.afterObservation`
         )
+    };
+}
+
+function parseResolvedTarget(value: unknown, path: string): ResolvedTarget {
+    const object = requireObject(value, path);
+    const snapshotObject = requireObject(
+        object.elementSnapshot,
+        `${ path }.elementSnapshot`
+    );
+    const parsedSnapshotElement = parseObservedElement({
+        candidateId: '__snapshot__',
+        ...snapshotObject
+    }, `${ path }.elementSnapshot`);
+    const {
+        candidateId: _candidateId,
+        ...elementSnapshot
+    } = parsedSnapshotElement;
+    return {
+        description: requireString(
+            object.description,
+            `${ path }.description`
+        ),
+        observationId: requireString(
+            object.observationId,
+            `${ path }.observationId`
+        ),
+        candidateId: requireString(
+            object.candidateId,
+            `${ path }.candidateId`
+        ),
+        elementSnapshot,
+        strategy: requireEnum(object.strategy, [
+            'candidate-id',
+            'css',
+            'label',
+            'placeholder',
+            'role-name',
+            'test-id',
+            'text',
+            'vision'
+        ] as const, `${ path }.strategy`),
+        locatorData: parseJsonRecord(
+            object.locatorData,
+            `${ path }.locatorData`
+        ),
+        confidence: requireNumber(
+            object.confidence,
+            `${ path }.confidence`
+        ),
+        unique: requireBoolean(object.unique, `${ path }.unique`),
+        actionable: requireBoolean(
+            object.actionable,
+            `${ path }.actionable`
+        ),
+        evidence: parseStringArray(object.evidence, `${ path }.evidence`)
     };
 }
 
@@ -394,6 +467,39 @@ function parseStringRecord(
         key,
         requireString(item, `${ path }.${ key }`, true)
     ]));
+}
+
+function parseJsonRecord(
+    value: unknown,
+    path: string
+): Record<string, JsonValue> {
+    const object = requireObject(value, path);
+    return Object.fromEntries(Object.entries(object).map(([key, item]) => [
+        key,
+        parseJsonValue(item, `${ path }.${ key }`)
+    ]));
+}
+
+function parseJsonValue(value: unknown, path: string): JsonValue {
+    if (
+        value === null
+        || typeof value === 'boolean'
+        || typeof value === 'string'
+    ) {
+        return value;
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+    }
+    if (Array.isArray(value)) {
+        return value.map((item, index) =>
+            parseJsonValue(item, `${ path }[${ index }]`)
+        );
+    }
+    if (typeof value === 'object') {
+        return parseJsonRecord(value, path);
+    }
+    throw schemaError(path, '必须是合法 JSON 值');
 }
 
 function requireObject(

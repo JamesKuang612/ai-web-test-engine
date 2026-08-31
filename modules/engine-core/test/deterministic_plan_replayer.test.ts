@@ -11,6 +11,7 @@ import type {
     EnvironmentValueResolver,
     ObservedElement,
     PageObservation,
+    ResolvedTarget,
 } from '../src';
 import {
     CompiledTargetResolutionError,
@@ -70,6 +71,11 @@ describe('DeterministicPlanReplayer', () => {
             source: 'environment',
             key: 'username'
         });
+        assert.equal(browser.resolvedTargets[1]?.observationId, 'login-2');
+        assert.equal(
+            browser.resolvedTargets[1]?.elementSnapshot.label,
+            '账号'
+        );
         assert.equal(
             JSON.stringify(execution).includes('resolved-username'),
             false
@@ -614,6 +620,7 @@ class FakeValueResolver implements EnvironmentValueResolver {
 class FakeReplayBrowser implements BrowserAdapter {
     public closeCount = 0;
     public commands: ActionCommand[] = [];
+    public resolvedTargets: Array<ResolvedTarget | undefined> = [];
     public startCount = 0;
     private observationIndex = 0;
 
@@ -639,9 +646,11 @@ class FakeReplayBrowser implements BrowserAdapter {
 
     public execute = async (
         _session: BrowserSession,
-        command: ActionCommand
+        command: ActionCommand,
+        target?: ResolvedTarget
     ): Promise<ActionResult> => {
         this.commands.push(command);
+        this.resolvedTargets.push(target);
         const timestamp = '2026-08-26T06:00:00.000Z';
         return {
             status: 'executed',
