@@ -150,15 +150,16 @@ describe('ModelActionPlanner', () => {
         );
     });
 
-    it('提示模型在无法定位时保留业务语义目标供视觉恢复', async () => {
+    it('物理候选缺失时仍要求输出明确的业务语义动作', async () => {
         const adapter = new FakeModelAdapter({
-            type: 'UNCERTAIN',
+            type: 'CLICK',
             target: {
-                description: '当前页面内能够返回工作台的控件'
+                description: '应用11的收藏星标',
+                scope: '应用11卡片'
             },
             value: null,
-            expectedEffect: '返回工作台',
-            reasonSummary: '没有对应的 DOM 候选元素'
+            expectedEffect: '应用11变为已收藏',
+            reasonSummary: '下一业务动作明确，由 Grounder 解析物理目标'
         });
         const planner = new ModelActionPlanner(adapter, semanticActionSchema);
 
@@ -168,16 +169,20 @@ describe('ModelActionPlanner', () => {
         );
 
         assert.equal(
-            command.target?.description,
-            '当前页面内能够返回工作台的控件'
+            command.type,
+            'CLICK'
         );
         assert.match(
             adapter.lastRequest?.systemPrompt ?? '',
-            /业务语义目标/u
+            /即使 observation 暂时没有可定位元素/u
         );
         assert.match(
             adapter.lastRequest?.systemPrompt ?? '',
-            /不得猜测目标的外观、位置/u
+            /不得仅因为 observation 缺少物理候选/u
+        );
+        assert.match(
+            adapter.lastRequest?.systemPrompt ?? '',
+            /UNCERTAIN 只表示下一条业务语义动作本身不明确/u
         );
     });
 });

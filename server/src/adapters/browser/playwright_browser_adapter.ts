@@ -42,6 +42,9 @@ import type {
     VisualCandidateAnnotation,
     VisualCandidateAnnotator,
 } from '../visual';
+import type {
+    PlaywrightPageProvider,
+} from './playwright_page_provider';
 
 /** 保存 Playwright 运行时对象，不把这些对象暴露给核心引擎。 */
 interface ManagedBrowserSession {
@@ -108,7 +111,8 @@ export function shouldUseWindowsBrowserFallback(
  * 核心引擎只持有 sessionId，真正的 Browser、Context 和 Page
  * 统一保存在当前适配器内部。
  */
-export class PlaywrightBrowserAdapter implements BrowserAdapter {
+export class PlaywrightBrowserAdapter
+implements BrowserAdapter, PlaywrightPageProvider {
     private readonly sessions =
         new Map<string, ManagedBrowserSession>();
     private readonly pageContentWaitMs: number;
@@ -557,6 +561,43 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
         } finally {
             this.sessions.delete(session.sessionId);
         }
+    };
+
+    /** 只向 server 内感知适配器暴露当前 session 的 Playwright Page。 */
+    public getPage = (session: BrowserSession): Page =>
+        this.requireSession(session).page;
+
+    public isObservationCurrent = (
+        session: BrowserSession,
+        observationId: string
+    ): boolean => this.requireSession(session).elementIndex?.observationId ===
+        observationId;
+
+    public getCandidateLocator = (
+        session: BrowserSession,
+        observationId: string,
+        candidateId: string
+    ): Locator | undefined => {
+        const managed = this.requireSession(session);
+        return managed.elementIndex?.observationId === observationId
+            ? managed.elementIndex.locators.get(candidateId)
+            : undefined;
+    };
+
+    public registerTransientCandidate = (
+        session: BrowserSession,
+        observationId: string,
+        candidateId: string,
+        locator: Locator
+    ): void => {
+        const managed = this.requireSession(session);
+        if (managed.elementIndex?.observationId !== observationId) {
+            throw new Error('无法向过期 observation 注册 transient candidate。');
+        }
+        if (managed.elementIndex.locators.has(candidateId)) {
+            throw new Error(`Transient candidate 已存在：${ candidateId }`);
+        }
+        managed.elementIndex.locators.set(candidateId, locator);
     };
 
     /**

@@ -4,6 +4,7 @@ export * from './compiled_plan';
 export * from './grounding';
 export * from './intent';
 export * from './observation';
+export * from './perception';
 export * from './run_event';
 export * from './run';
 export * from './schema';

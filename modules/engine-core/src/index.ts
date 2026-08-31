@@ -1,6 +1,7 @@
 export * from './contracts';
 export * from './grounding';
 export * from './intent';
+export * from './perception';
 export * from './planning';
 export * from './ports';
 export * from './replay';
