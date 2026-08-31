@@ -10,8 +10,7 @@ describe('semanticActionSchema', () => {
             type: 'CLICK',
             target: {
                 description: '收藏星标',
-                scope: '应用 11',
-                relation: '应用名称左侧'
+                scope: '应用 11'
             },
             value: null,
             expectedEffect: '应用 11 变为已收藏',
@@ -20,12 +19,25 @@ describe('semanticActionSchema', () => {
             type: 'CLICK',
             target: {
                 description: '收藏星标',
-                scope: '应用 11',
-                relation: '应用名称左侧'
+                scope: '应用 11'
             },
             expectedEffect: '应用 11 变为已收藏',
             reasonSummary: '收藏目标应用'
         });
+    });
+
+    it('Phase 1 拒绝 Planner 输出空间 relation', () => {
+        assert.throws(() => semanticActionSchema.parse({
+            type: 'CLICK',
+            target: {
+                description: '收藏星标',
+                relation: '应用名称左侧'
+            },
+            value: null,
+            expectedEffect: '应用变为已收藏',
+            reasonSummary: '点击收藏'
+        }), (error: unknown) => error instanceof SemanticActionSchemaError
+            && error.path === 'SemanticAction.target.relation');
     });
 
     it('拒绝 Planner 输出 candidateId', () => {

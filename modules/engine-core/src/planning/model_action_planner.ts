@@ -67,7 +67,8 @@ export class ModelActionPlanner implements ActionPlanner {
             'SELECT 必须引用真实下拉框候选元素，并用字符串字面量提供页面显示的精确选项文本。',
             'CHECK 必须引用真实复选框候选元素，并用布尔字面量明确期望的勾选状态。',
             'WAIT 只用于页面正在加载或等待明确的异步内容，使用 100～5000 毫秒整数字面量，禁止连续等待。',
-            'target 只能描述业务语义目标，可以用 scope 或 relation 区分同名元素。',
+            'target 只能描述业务语义目标，Phase 1 仅可用 scope 区分同名元素。',
+            '不得输出 relation；空间关系将在后续感知阶段支持。',
             '优先沿用 observation 中可见的准确名称、标签或文本，不要改写成模糊同义词。',
             '不得输出 candidateId、Playwright API、CSS、XPath、坐标或 JavaScript。',
             '无法唯一描述目标时返回 UNCERTAIN，禁止猜测物理元素。',
@@ -168,9 +169,6 @@ function redactActionValue(action: SemanticAction): JsonValue {
                     description: action.target.description,
                     ...action.target.scope
                         ? { scope: action.target.scope }
-                        : {},
-                    ...action.target.relation
-                        ? { relation: action.target.relation }
                         : {}
                 }
             }

@@ -124,6 +124,59 @@
             ],
             "type": "string"
         },
+        "CandidateResolvedTarget": {
+            "additionalProperties": false,
+            "description": "Phase 1 基于当前 Observation candidate 索引解析出的物理目标。",
+            "properties": {
+                "actionable": {
+                    "type": "boolean"
+                },
+                "candidateId": {
+                    "type": "string"
+                },
+                "confidence": {
+                    "type": "number"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "elementSnapshot": {
+                    "$ref": "#/definitions/ResolvedElementSnapshot"
+                },
+                "evidence": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "locatorData": {
+                    "$ref": "#/definitions/Record<string,JsonValue>"
+                },
+                "observationId": {
+                    "type": "string"
+                },
+                "strategy": {
+                    "const": "candidate-id",
+                    "type": "string"
+                },
+                "unique": {
+                    "type": "boolean"
+                }
+            },
+            "required": [
+                "actionable",
+                "candidateId",
+                "confidence",
+                "description",
+                "elementSnapshot",
+                "evidence",
+                "locatorData",
+                "observationId",
+                "strategy",
+                "unique"
+            ],
+            "type": "object"
+        },
         "CompiledActionType": {
             "description": "可由确定性回放器执行的动作集合。",
             "enum": [
@@ -577,7 +630,7 @@
                     "type": "string"
                 },
                 "target": {
-                    "$ref": "#/definitions/ResolvedTarget"
+                    "$ref": "#/definitions/CandidateResolvedTarget"
                 }
             },
             "required": [
@@ -1010,68 +1063,6 @@
                 "nearbyText",
                 "tag",
                 "visible"
-            ],
-            "type": "object"
-        },
-        "ResolvedTarget": {
-            "additionalProperties": false,
-            "description": "将规划器的语义目标转换为浏览器可以实际操作的定位结果。",
-            "properties": {
-                "actionable": {
-                    "type": "boolean"
-                },
-                "candidateId": {
-                    "type": "string"
-                },
-                "confidence": {
-                    "type": "number"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "elementSnapshot": {
-                    "$ref": "#/definitions/ResolvedElementSnapshot"
-                },
-                "evidence": {
-                    "items": {
-                        "type": "string"
-                    },
-                    "type": "array"
-                },
-                "locatorData": {
-                    "$ref": "#/definitions/Record<string,JsonValue>"
-                },
-                "observationId": {
-                    "type": "string"
-                },
-                "strategy": {
-                    "enum": [
-                        "candidate-id",
-                        "css",
-                        "label",
-                        "placeholder",
-                        "role-name",
-                        "test-id",
-                        "text",
-                        "vision"
-                    ],
-                    "type": "string"
-                },
-                "unique": {
-                    "type": "boolean"
-                }
-            },
-            "required": [
-                "actionable",
-                "candidateId",
-                "confidence",
-                "description",
-                "elementSnapshot",
-                "evidence",
-                "locatorData",
-                "observationId",
-                "strategy",
-                "unique"
             ],
             "type": "object"
         },
@@ -1615,7 +1606,7 @@
                     "$ref": "#/definitions/EffectVerification"
                 },
                 "resolvedTarget": {
-                    "$ref": "#/definitions/ResolvedTarget"
+                    "$ref": "#/definitions/CandidateResolvedTarget"
                 },
                 "retryOf": {
                     "type": "number"

@@ -153,10 +153,10 @@ export class DeterministicTargetGrounder implements TargetGrounder {
             return undefined;
         }
 
-        const contextRequirements = [
-            target.scope,
-            target.relation
-        ].filter((value): value is string => Boolean(value));
+        // relation 是 Phase 2 的前向兼容元数据；当前没有空间感知能力，
+        // 因此不能把无法解释的 relation 当成目标不存在的证据。
+        const contextRequirements = [ target.scope ]
+            .filter((value): value is string => Boolean(value));
         const contextValues = [
             element.name,
             element.label,

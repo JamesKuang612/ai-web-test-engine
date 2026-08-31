@@ -62,8 +62,7 @@ const JSON_SCHEMA: Record<string, JsonValue> = {
                 required: ['description'],
                 properties: {
                     description: { type: 'string', minLength: 1 },
-                    scope: { type: 'string', minLength: 1 },
-                    relation: { type: 'string', minLength: 1 }
+                    scope: { type: 'string', minLength: 1 }
                 }
             }, { type: 'null' }]
         },
@@ -154,8 +153,7 @@ function parseTarget(value: unknown): SemanticTarget {
     const object = requireObject(value, path);
     requireAllowedFields(object, [
         'description',
-        'scope',
-        'relation'
+        'scope'
     ], path);
     return {
         description: requireNonEmptyString(
@@ -164,15 +162,7 @@ function parseTarget(value: unknown): SemanticTarget {
         ),
         ...object.scope === undefined
             ? {}
-            : { scope: requireNonEmptyString(object.scope, `${ path }.scope`) },
-        ...object.relation === undefined
-            ? {}
-            : {
-                relation: requireNonEmptyString(
-                    object.relation,
-                    `${ path }.relation`
-                )
-            }
+            : { scope: requireNonEmptyString(object.scope, `${ path }.scope`) }
     };
 }
 

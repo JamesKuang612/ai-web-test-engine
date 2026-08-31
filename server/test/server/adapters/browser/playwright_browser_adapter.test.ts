@@ -322,6 +322,16 @@ describe('PlaywrightBrowserAdapter', () => {
             assert.equal(stale.status, 'rejected');
             assert.equal(stale.error?.code, 'STALE_RESOLVED_TARGET');
 
+            const notActionable = await adapter.execute(session, command, {
+                ...target,
+                actionable: false
+            });
+            assert.equal(notActionable.status, 'rejected');
+            assert.equal(
+                notActionable.error?.code,
+                'INVALID_RESOLVED_TARGET'
+            );
+
             const result = await adapter.execute(session, command, target);
             const after = await adapter.observe(session);
             assert.equal(result.status, 'executed');

@@ -584,6 +584,12 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
         target: ResolvedTarget,
         startedAt: string
     ): ActionResult | undefined {
+        if (target.strategy !== 'candidate-id') {
+            return this.createActionResult(startedAt, 'rejected', false, {
+                code: 'INVALID_RESOLVED_TARGET',
+                message: 'Phase 1 只接受 candidate-id ResolvedTarget。'
+            });
+        }
         if (session.elementIndex?.observationId !== target.observationId) {
             return this.createActionResult(startedAt, 'rejected', false, {
                 code: 'STALE_RESOLVED_TARGET',
@@ -594,6 +600,12 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
             return this.createActionResult(startedAt, 'rejected', false, {
                 code: 'INVALID_RESOLVED_TARGET',
                 message: 'ResolvedTarget 未证明目标唯一，已拒绝执行。'
+            });
+        }
+        if (!target.actionable) {
+            return this.createActionResult(startedAt, 'rejected', false, {
+                code: 'INVALID_RESOLVED_TARGET',
+                message: 'ResolvedTarget 当前不可执行，已拒绝执行。'
             });
         }
         return undefined;

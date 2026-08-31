@@ -16,19 +16,22 @@ import type {
 /** Grounder 绑定目标时保存的完整元素证据，不包含瞬时候选编号。 */
 export type ResolvedElementSnapshot = Omit<ObservedElement, 'candidateId'>;
 
-/** 将规划器的语义目标转换为浏览器可以实际操作的定位结果。 */
-export interface ResolvedTarget {
+/** Phase 1 基于当前 Observation candidate 索引解析出的物理目标。 */
+export interface CandidateResolvedTarget {
     description: string;
     observationId: string;
     candidateId: string;
     elementSnapshot: ResolvedElementSnapshot;
-    strategy: 'candidate-id' | 'css' | 'label' | 'placeholder' | 'role-name' | 'test-id' | 'text' | 'vision';
+    strategy: 'candidate-id';
     locatorData: Record<string, JsonValue>;
     confidence: number;
     unique: boolean;
     actionable: boolean;
     evidence: string[];
 }
+
+/** 为 Phase 2 的 discriminated union 保留统一物理目标名称。 */
+export type ResolvedTarget = CandidateResolvedTarget;
 
 /** 浏览器执行一个动作后返回的状态、时间和页面信号。 */
 export interface ActionResult {

@@ -99,6 +99,30 @@ describe('DeterministicTargetGrounder 消歧与阻塞', () => {
         assert.equal(decision.target?.candidateId, 'e2');
     });
 
+    it('忽略历史对象中的 relation 前向兼容元数据', async () => {
+        const action: SemanticAction = {
+            ...createAction('CLICK', '收藏', '应用 11'),
+            target: {
+                description: '收藏',
+                scope: '应用 11',
+                relation: '应用名称左侧'
+            }
+        };
+        const decision = await grounder.ground(
+            action,
+            createObservation([
+                createElement('e1', {
+                    name: '收藏',
+                    nearbyText: ['应用 11']
+                })
+            ]),
+            new AbortController().signal
+        );
+
+        assert.equal(decision.status, 'grounded');
+        assert.equal(decision.target?.candidateId, 'e1');
+    });
+
     it('同等级重复目标在没有 scope 时返回 ambiguous', async () => {
         const decision = await grounder.ground(
             createAction('CLICK', '收藏'),

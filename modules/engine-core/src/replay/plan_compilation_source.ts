@@ -8,6 +8,7 @@ import type {
     PageNotice,
     PageObservation,
     ResolvedTarget,
+    SemanticAction,
     TabSummary,
 } from '../contracts';
 import {
@@ -88,8 +89,9 @@ function parseStep(value: unknown, path: string): CompilableTraceStep {
         ...object.semanticAction === undefined
             ? {}
             : {
-                semanticAction: semanticActionSchema.parse(
-                    object.semanticAction
+                semanticAction: parsePersistedSemanticAction(
+                    object.semanticAction,
+                    `${ path }.semanticAction`
                 )
             },
         command: actionCommandSchema.parse(object.command),
@@ -114,6 +116,39 @@ function parseStep(value: unknown, path: string): CompilableTraceStep {
             object.afterObservation,
             `${ path }.afterObservation`
         )
+    };
+}
+
+/** 历史数据允许保留 Phase 2 relation 元数据，但不放宽 Planner Schema。 */
+function parsePersistedSemanticAction(
+    value: unknown,
+    path: string
+): SemanticAction {
+    const object = requireObject(value, path);
+    const target = object.target === undefined || object.target === null
+        ? undefined
+        : requireObject(object.target, `${ path }.target`);
+    const relation = target?.relation === undefined
+        ? undefined
+        : requireString(target.relation, `${ path }.target.relation`);
+    const plannerCompatible = target
+        ? {
+            ...object,
+            target: Object.fromEntries(
+                Object.entries(target).filter(([key]) => key !== 'relation')
+            )
+        }
+        : object;
+    const parsed = semanticActionSchema.parse(plannerCompatible);
+    if (!relation || !parsed.target) {
+        return parsed;
+    }
+    return {
+        ...parsed,
+        target: {
+            ...parsed.target,
+            relation
+        }
     };
 }
 
@@ -145,16 +180,11 @@ function parseResolvedTarget(value: unknown, path: string): ResolvedTarget {
             `${ path }.candidateId`
         ),
         elementSnapshot,
-        strategy: requireEnum(object.strategy, [
-            'candidate-id',
-            'css',
-            'label',
-            'placeholder',
-            'role-name',
-            'test-id',
-            'text',
-            'vision'
-        ] as const, `${ path }.strategy`),
+        strategy: requireEnum(
+            object.strategy,
+            [ 'candidate-id' ] as const,
+            `${ path }.strategy`
+        ),
         locatorData: parseJsonRecord(
             object.locatorData,
             `${ path }.locatorData`

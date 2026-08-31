@@ -83,7 +83,10 @@ describe('TracePlanCompiler', () => {
         }, [ element ]);
         click.semanticAction = {
             type: 'CLICK',
-            target: { description: '语义登录按钮' },
+            target: {
+                description: '语义登录按钮',
+                relation: '表单底部'
+            },
             expectedEffect: '页面进入工作台',
             reasonSummary: '提交登录'
         };
@@ -103,6 +106,10 @@ describe('TracePlanCompiler', () => {
         assert.equal(
             source.steps[1]?.resolvedTarget?.elementSnapshot.name,
             '登录'
+        );
+        assert.equal(
+            source.steps[1]?.semanticAction?.target?.relation,
+            '表单底部'
         );
         const plan = new TracePlanCompiler().compile(source);
         assert.equal(plan.steps[1]?.target?.description, '语义登录按钮');

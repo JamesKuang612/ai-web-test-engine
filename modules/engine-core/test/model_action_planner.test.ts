@@ -182,6 +182,31 @@ describe('ModelActionPlanner', () => {
     });
 });
 
+describe('ModelActionPlanner Phase 1 relation 边界', () => {
+    it('通过 Prompt 和 Schema 同时禁止 Planner 输出 relation', async () => {
+        const adapter = new FakeModelAdapter({
+            type: 'CLICK',
+            target: { description: '收藏星标' },
+            value: null,
+            expectedEffect: '应用变为已收藏',
+            reasonSummary: '点击收藏'
+        });
+        const planner = new ModelActionPlanner(adapter, semanticActionSchema);
+
+        await planner.plan(planInput, new AbortController().signal);
+
+        assert.match(
+            adapter.lastRequest?.systemPrompt ?? '',
+            /不得输出 relation/u
+        );
+        assert.equal(
+            JSON.stringify(semanticActionSchema.jsonSchema)
+                .includes('relation'),
+            false
+        );
+    });
+});
+
 /** 用固定输出模拟结构化模型调用。 */
 class FakeModelAdapter implements ModelAdapter {
     public lastRequest?: ModelRequest;
