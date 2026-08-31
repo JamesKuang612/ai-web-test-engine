@@ -11,7 +11,6 @@ import type {
     JsonValue,
     PageObservation,
     ResolvedTarget,
-    VisualGroundingResult,
 } from '@ai-web-test-engine/core';
 import {
     CompiledTargetResolver,
@@ -178,24 +177,6 @@ export class JiandaoyunLoginBrowserAdapter implements BrowserAdapter {
             throw new Error('当前浏览器不支持导出登录态。');
         }
         return await this.delegate.captureStorageState(session);
-    };
-
-    public enhanceObservationWithVision = async (
-        session: BrowserSession,
-        observation: PageObservation,
-        signal: AbortSignal
-    ): Promise<VisualGroundingResult> => {
-        if (!this.delegate.enhanceObservationWithVision) {
-            return {
-                status: 'unsupported',
-                summary: '当前浏览器未接入视觉定位。'
-            };
-        }
-        return await this.delegate.enhanceObservationWithVision(
-            session,
-            observation,
-            signal
-        );
     };
 
     public reset: BrowserAdapter['reset'] = (session) =>

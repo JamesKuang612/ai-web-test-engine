@@ -26,7 +26,6 @@ import type {
     ObservedElement,
     PageObservation,
     ResolvedTarget,
-    VisualGroundingResult,
 } from '@ai-web-test-engine/core';
 
 import {
@@ -38,10 +37,6 @@ import {
 import type {
     CapturedInteractiveElement,
 } from './interactive_element_script';
-import type {
-    VisualCandidateAnnotation,
-    VisualCandidateAnnotator,
-} from '../visual';
 import type {
     PlaywrightPageProvider,
 } from './playwright_page_provider';
@@ -72,7 +67,6 @@ interface CapturedPageState {
 /** 允许测试缩短页面内容等待时间，生产环境继续使用稳健默认值。 */
 export interface PlaywrightBrowserAdapterOptions {
     pageContentWaitMs?: number;
-    visualCandidateAnnotator?: VisualCandidateAnnotator;
 }
 
 const NAVIGATION_TIMEOUT_MS = 30_000;
@@ -116,12 +110,10 @@ implements BrowserAdapter, PlaywrightPageProvider {
     private readonly sessions =
         new Map<string, ManagedBrowserSession>();
     private readonly pageContentWaitMs: number;
-    private readonly visualCandidateAnnotator?: VisualCandidateAnnotator;
 
     constructor(options: PlaywrightBrowserAdapterOptions = {}) {
         this.pageContentWaitMs = options.pageContentWaitMs ??
             DEFAULT_PAGE_CONTENT_WAIT_MS;
-        this.visualCandidateAnnotator = options.visualCandidateAnnotator;
     }
 
     /**
@@ -274,78 +266,6 @@ implements BrowserAdapter, PlaywrightPageProvider {
         };
     };
 
-    /** 用 Midscene 一次性识别已有候选框，并把视觉语义合并回同一份观察。 */
-    public enhanceObservationWithVision = async (
-        session: BrowserSession,
-        observation: PageObservation,
-        signal: AbortSignal
-    ): Promise<VisualGroundingResult> => {
-        if (!this.visualCandidateAnnotator) {
-            return {
-                status: 'unsupported',
-                summary: '当前浏览器适配器未配置候选元素视觉标注能力。'
-            };
-        }
-        const managedSession = this.requireSession(session);
-        signal.throwIfAborted();
-        if (
-            managedSession.page.url() !== observation.page.url ||
-            managedSession.elementIndex?.observationId !==
-                observation.observationId
-        ) {
-            return {
-                status: 'not-found',
-                summary: '页面状态已变化，已拒绝对过期候选框进行视觉标注。'
-            };
-        }
-        const candidates = observation.interactiveElements.filter(
-            (element) => element.visible && element.inViewport &&
-                !element.disabled && element.boundingBox
-        );
-        if (candidates.length === 0) {
-            return {
-                status: 'not-found',
-                summary: '当前视口没有可供视觉模型标注的候选框。'
-            };
-        }
-
-        try {
-            const annotations = await this.visualCandidateAnnotator.annotate(
-                managedSession.page,
-                candidates,
-                signal
-            );
-            signal.throwIfAborted();
-            if (annotations.length === 0) {
-                return {
-                    status: 'not-found',
-                    summary: '视觉模型未能为当前候选框返回有效名称。'
-                };
-            }
-            const enhancedObservation = this.mergeVisualAnnotations(
-                observation,
-                annotations
-            );
-            return {
-                status: 'grounded',
-                summary: `视觉模型已批量标注 ${
-                    annotations.length
-                } 个候选元素。`,
-                candidateIds: annotations.map(
-                    ({ candidateId }) => candidateId
-                ),
-                observation: enhancedObservation
-            };
-        } catch (error) {
-            signal.throwIfAborted();
-            return {
-                status: 'not-found',
-                summary: `视觉候选标注失败：${
-                    error instanceof Error ? error.message : '未知错误'
-                }`
-            };
-        }
-    };
 
     /**
      * 执行导航、点击、输入等受控浏览器动作。
@@ -1162,48 +1082,6 @@ implements BrowserAdapter, PlaywrightPageProvider {
         return {
             elements: observed,
             truncated
-        };
-    }
-
-    /** 保留 DOM 语义和 Locator，只补充每个确定候选框的视觉名称。 */
-    private mergeVisualAnnotations(
-        observation: PageObservation,
-        annotations: VisualCandidateAnnotation[]
-    ): PageObservation {
-        const annotationById = new Map(annotations.map((annotation) => [
-            annotation.candidateId,
-            annotation
-        ]));
-        const interactiveElements = observation.interactiveElements.map(
-            (element): ObservedElement => {
-                const annotation = annotationById.get(element.candidateId);
-                if (!annotation) {
-                    return element;
-                }
-                return {
-                    ...element,
-                    discoverySource: 'vision-assisted',
-                    visualDescription: [
-                        annotation.visualDescription,
-                        ...annotation.elementType
-                            ? [ `类型：${ annotation.elementType }` ]
-                            : [],
-                        ...annotation.confidence === undefined
-                            ? []
-                            : [ `置信度：${ annotation.confidence }` ]
-                    ].join('；')
-                };
-            }
-        );
-        return {
-            ...observation,
-            interactiveElements,
-            stateFingerprint: createHash('sha256')
-                .update(JSON.stringify({
-                    base: observation.stateFingerprint,
-                    visualAnnotations: annotations
-                }))
-                .digest('hex')
         };
     }
 

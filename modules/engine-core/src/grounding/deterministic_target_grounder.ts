@@ -2,9 +2,7 @@ import type {
     ActionType,
     GroundingDecision,
     ObservedElement,
-    PageObservation,
     ResolvedElementSnapshot,
-    SemanticAction,
     SemanticTarget,
 } from '../contracts';
 import type {
@@ -49,10 +47,15 @@ const TARGET_ACTIONS = new Set<ActionType>([
 /** 只使用当前 PageObservation，保守地完成第一阶段语义目标绑定。 */
 export class DeterministicTargetGrounder implements TargetGrounder {
     public async ground(
-        action: SemanticAction,
-        observation: PageObservation,
+        request: Parameters<TargetGrounder['ground']>[0],
         signal: AbortSignal
     ): Promise<GroundingDecision> {
+        const {
+            action,
+            perception: {
+                dom: observation
+            }
+        } = request;
         signal.throwIfAborted();
         if (!TARGET_ACTIONS.has(action.type) || !action.target) {
             return this.notFound('当前语义动作不需要或没有提供页面目标。');

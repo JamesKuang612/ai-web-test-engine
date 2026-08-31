@@ -274,7 +274,7 @@ describe('RunCoordinator', () => {
 });
 
 describe('RunCoordinator 最终观察', () => {
-    it('最终 Verdict 使用视觉批量标注后保存的最新页面观察', async () => {
+    it('最终 Verdict 使用动作后保存的最新页面观察', async () => {
         const retryObservation = createObservation(
             'https://test.jdydevelop.com/dashboard#/',
             false,
@@ -282,19 +282,12 @@ describe('RunCoordinator 最终观察', () => {
             true
         );
         retryObservation.visibleText = [ '应用列表', '蒋捷欣' ];
-        const staleObservation = {
-            ...structuredClone(retryObservation),
-            visibleText: [],
-            interactiveElements: [],
-            stateFingerprint: 'stale-observation'
-        };
         const artifactStore = new FakeArtifactStore();
         const eventPublisher = new FakeRunEventPublisher();
         const browserAdapter = new FakeBrowserAdapter(
             false,
             false,
-            retryObservation,
-            [ undefined, undefined, staleObservation ]
+            [ undefined, undefined, retryObservation ]
         );
         const actionPlanner = new FakeActionPlanner([
             plannedClickCommand,
@@ -330,13 +323,13 @@ describe('RunCoordinator 最终观察', () => {
         );
         assert.equal(
             artifactStore.updatedSnapshots.at(-1)?.metadata.observationRef,
-            `${ result.runId }/json/observation-after-visual-retry-1.json`
+            `${ result.runId }/json/observation-after-action-2.json`
         );
         assert.equal(
             eventPublisher.events.find(
                 (event) => event.type === 'verdict.completed'
             )?.payload.observationRef,
-            `${ result.runId }/json/observation-after-visual-retry-1.json`
+            `${ result.runId }/json/observation-after-action-2.json`
         );
     });
 });
@@ -401,8 +394,8 @@ describe('RunCoordinator 扩展动作', () => {
     });
 });
 
-describe('RunCoordinator 视觉恢复', () => {
-    it('首次不确定时直接用视觉批量命名候选并交回 Planner', async () => {
+describe('RunCoordinator Planner UNCERTAIN 语义', () => {
+    it('下一语义动作不明确时终止，不再触发浏览器侧视觉重试', async () => {
         const unresolvedCommand: ActionCommand = {
             type: 'UNCERTAIN',
             target: {
@@ -412,26 +405,8 @@ describe('RunCoordinator 视觉恢复', () => {
             reasonSummary: '当前观察缺少返回工作台的候选元素',
             risk: 'read-only'
         };
-        const visualObservation = createVisualRecoveryObservation();
-        const browserAdapter = new FakeBrowserAdapter(
-            false,
-            false,
-            visualObservation
-        );
-        const actionPlanner = new FakeActionPlanner([
-            unresolvedCommand,
-            {
-                type: 'CLICK',
-                target: {
-                    candidateId: 'e4',
-                    description: '当前页面内能够返回工作台的控件'
-                },
-                expectedEffect: '返回工作台并显示应用列表',
-                reasonSummary: '选择视觉补充的返回控件',
-                risk: 'read-only'
-            },
-            finishCommand
-        ]);
+        const browserAdapter = new FakeBrowserAdapter();
+        const actionPlanner = new FakeActionPlanner([ unresolvedCommand ]);
         const artifactStore = new FakeArtifactStore();
         const coordinator = new RunCoordinator(
             artifactStore,
@@ -452,32 +427,10 @@ describe('RunCoordinator 视觉恢复', () => {
 
         assert.equal(result.lifecycle, 'COMPLETED', result.summary);
         assert.equal(result.result, 'UNCERTAIN');
-        assert.equal(result.metrics.modelCallCount, 6);
-        assert.equal(browserAdapter.visualGroundingCount, 1);
-        assert.equal(
-            browserAdapter.lastVisualObservation?.observationId,
-            actionPlanner.inputs[0]?.observation.observationId
-        );
-        assert.equal(
-            actionPlanner.inputs[1]?.observation.interactiveElements.some(
-                (element) => element.candidateId === 'e4' &&
-                    element.discoverySource === 'vision-assisted'
-            ),
-            true
-        );
-        assert.equal(
-            browserAdapter.commands.some(
-                (command) => command.target?.candidateId === 'e4'
-            ),
-            true
-        );
-        assert.equal(
-            artifactStore.savedJson.some(
-                ({ name }) =>
-                    name === 'visual-candidate-annotations-retry-1'
-            ),
-            true
-        );
+        assert.equal(result.metrics.modelCallCount, 3);
+        assert.equal(actionPlanner.callCount, 1);
+        assert.equal(browserAdapter.executeCount, 1);
+        assert.equal(artifactStore.traces.length, 1);
     });
 });
 
@@ -563,10 +516,13 @@ function assertCompletedAiRun(state: CompletedRunState): void {
             'intent',
             'observation-before-navigation',
             'observation-after-navigation',
+            'page-perception-1',
             'grounding-decision-1',
             'observation-after-action-2',
+            'page-perception-2',
             'grounding-decision-2',
             'observation-after-action-3',
+            'page-perception-3',
             'grounding-decision-3',
             'observation-after-action-4',
             'verdict',
@@ -1249,12 +1205,6 @@ class FakeBrowserAdapter implements BrowserAdapter {
     public executeCount = 0;
     public closeCount = 0;
     public captureScreenshotCount = 0;
-    public visualGroundingCount = 0;
-    public lastVisualObservation?: Parameters<
-        NonNullable<BrowserAdapter['enhanceObservationWithVision']>
-    >[1];
-    public enhanceObservationWithVision?:
-        BrowserAdapter['enhanceObservationWithVision'];
     public readonly commands: ActionCommand[] = [];
     public readonly resolvedTargets: Array<ResolvedTarget | undefined> = [];
     private readonly sessionCommands = new Map<string, ActionCommand[]>();
@@ -1262,35 +1212,10 @@ class FakeBrowserAdapter implements BrowserAdapter {
     constructor(
         private readonly failReplay = false,
         private readonly unreadyAfterLogin = false,
-        visualObservation?: PageObservation,
         private readonly observationOverrides: Array<
             PageObservation | undefined
         > = []
-    ) {
-        if (visualObservation) {
-            this.enhanceObservationWithVision = (
-                _session,
-                observation,
-                signal
-            ) => {
-                signal.throwIfAborted();
-                this.visualGroundingCount += 1;
-                this.lastVisualObservation = observation;
-                const candidateIds = visualObservation.interactiveElements
-                    .filter(
-                        (element) =>
-                            element.discoverySource === 'vision-assisted'
-                    )
-                    .map(({ candidateId }) => candidateId);
-                return Promise.resolve({
-                    status: 'grounded',
-                    summary: '视觉模型已批量标注测试候选。',
-                    candidateIds,
-                    observation: structuredClone(visualObservation)
-                });
-            };
-        }
-    }
+    ) {}
 
     /** 返回一段固定的浏览器会话。 */
     public start = (): Promise<BrowserSession> => {
@@ -1471,36 +1396,6 @@ function createObservation(
         ].join('-'),
         truncated: false
     };
-}
-
-/** 创建视觉补充候选后的页面观察。 */
-function createVisualRecoveryObservation(): PageObservation {
-    const observation = createObservation(startInput.test.startUrl ?? '');
-    observation.interactiveElements.push({
-        candidateId: 'e4',
-        discoverySource: 'vision-assisted',
-        visualDescription: '当前页面内能够返回工作台的控件',
-        tag: 'div',
-        role: 'button',
-        disabled: false,
-        visible: true,
-        inViewport: true,
-        boundingBox: {
-            x: 10,
-            y: 10,
-            width: 100,
-            height: 32
-        },
-        attributes: {
-            class: 'workspace-back'
-        },
-        nearbyText: ['当前页面内能够返回工作台的控件'],
-        locatorHints: [{
-            strategy: 'css',
-            value: '.workspace-back'
-        }]
-    });
-    return observation;
 }
 
 /** 创建登录页的三个确定性候选元素。 */

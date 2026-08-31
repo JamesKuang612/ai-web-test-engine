@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import type {
     ActionType,
+    GroundingRequest,
     ObservedElement,
     PageObservation,
     SemanticAction,
@@ -20,8 +21,10 @@ describe('DeterministicTargetGrounder 物理绑定', () => {
             nearbyText: ['我的应用']
         });
         const decision = await grounder.ground(
-            createAction('CLICK', '新建应用', '我的应用'),
-            createObservation([element]),
+            createRequest(
+                createAction('CLICK', '新建应用', '我的应用'),
+                createObservation([element])
+            ),
             new AbortController().signal
         );
 
@@ -45,12 +48,14 @@ describe('DeterministicTargetGrounder 物理绑定', () => {
 
     it('允许普通可见容器作为 HOVER 目标', async () => {
         const decision = await grounder.ground(
-            createAction('HOVER', '应用 11 卡片'),
-            createObservation([createElement('e1', {
-                tag: 'div',
-                role: undefined,
-                name: '应用 11 卡片'
-            })]),
+            createRequest(
+                createAction('HOVER', '应用 11 卡片'),
+                createObservation([createElement('e1', {
+                    tag: 'div',
+                    role: undefined,
+                    name: '应用 11 卡片'
+                })])
+            ),
             new AbortController().signal
         );
 
@@ -66,8 +71,10 @@ describe('DeterministicTargetGrounder 物理绑定', () => {
             boundingBox: undefined
         });
         const decision = await grounder.ground(
-            createAction('HOVER', '应用 11 卡片'),
-            createObservation([element]),
+            createRequest(
+                createAction('HOVER', '应用 11 卡片'),
+                createObservation([element])
+            ),
             new AbortController().signal
         );
 
@@ -81,17 +88,19 @@ describe('DeterministicTargetGrounder 消歧与阻塞', () => {
 
     it('使用 scope 区分多个同名元素', async () => {
         const decision = await grounder.ground(
-            createAction('CLICK', '收藏', '应用 11'),
-            createObservation([
-                createElement('e1', {
-                    name: '收藏',
-                    nearbyText: ['应用 10']
-                }),
-                createElement('e2', {
-                    name: '收藏',
-                    nearbyText: ['应用 11']
-                })
-            ]),
+            createRequest(
+                createAction('CLICK', '收藏', '应用 11'),
+                createObservation([
+                    createElement('e1', {
+                        name: '收藏',
+                        nearbyText: ['应用 10']
+                    }),
+                    createElement('e2', {
+                        name: '收藏',
+                        nearbyText: ['应用 11']
+                    })
+                ])
+            ),
             new AbortController().signal
         );
 
@@ -109,13 +118,15 @@ describe('DeterministicTargetGrounder 消歧与阻塞', () => {
             }
         };
         const decision = await grounder.ground(
-            action,
-            createObservation([
-                createElement('e1', {
-                    name: '收藏',
-                    nearbyText: ['应用 11']
-                })
-            ]),
+            createRequest(
+                action,
+                createObservation([
+                    createElement('e1', {
+                        name: '收藏',
+                        nearbyText: ['应用 11']
+                    })
+                ])
+            ),
             new AbortController().signal
         );
 
@@ -125,11 +136,13 @@ describe('DeterministicTargetGrounder 消歧与阻塞', () => {
 
     it('同等级重复目标在没有 scope 时返回 ambiguous', async () => {
         const decision = await grounder.ground(
-            createAction('CLICK', '收藏'),
-            createObservation([
-                createElement('e1', { name: '收藏' }),
-                createElement('e2', { name: '收藏' })
-            ]),
+            createRequest(
+                createAction('CLICK', '收藏'),
+                createObservation([
+                    createElement('e1', { name: '收藏' }),
+                    createElement('e2', { name: '收藏' })
+                ])
+            ),
             new AbortController().signal
         );
 
@@ -139,11 +152,13 @@ describe('DeterministicTargetGrounder 消歧与阻塞', () => {
 
     it('只把能够证明的 disabled 状态分类为 blocked', async () => {
         const decision = await grounder.ground(
-            createAction('CLICK', '提交'),
-            createObservation([createElement('e1', {
-                name: '提交',
-                disabled: true
-            })]),
+            createRequest(
+                createAction('CLICK', '提交'),
+                createObservation([createElement('e1', {
+                    name: '提交',
+                    disabled: true
+                })])
+            ),
             new AbortController().signal
         );
 
@@ -165,6 +180,28 @@ function createAction(
         },
         expectedEffect: '页面产生预期变化',
         reasonSummary: '执行测试动作'
+    };
+}
+
+function createRequest(
+    action: SemanticAction,
+    observation: PageObservation
+): GroundingRequest {
+    return {
+        action,
+        perception: {
+            perceptionId: 'perception-1',
+            capturedAt: observation.capturedAt,
+            accessibility: {
+                nodes: [],
+                source: 'playwright-aria-snapshot',
+                truncated: false
+            },
+            dom: observation,
+            interactionStates: {}
+        },
+        session: { sessionId: 'session-1' },
+        visualAllowed: false
     };
 }
 

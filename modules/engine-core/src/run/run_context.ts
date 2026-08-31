@@ -1,6 +1,7 @@
 import type {
     EvidenceRef,
     PageObservation,
+    PagePerception,
     RunBudgets,
     RunLifecycleState,
     StartRunInput,
@@ -21,6 +22,7 @@ export interface RunContext {
     browserSession: BrowserSession;
     latestObservation?: PageObservation;
     latestObservationReference?: EvidenceRef;
+    latestPerception?: PagePerception;
     history: PlannerHistoryEntry[];
     budgets: RunBudgets;
     lifecycle: RunLifecycleState;

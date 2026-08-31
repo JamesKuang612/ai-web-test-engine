@@ -34,6 +34,9 @@ import type {
 import type {
     IntentBuilder,
 } from '../intent';
+import {
+    PerceptionService,
+} from '../perception';
 import type {
     ArtifactStore,
     BrowserAdapter,
@@ -86,6 +89,7 @@ export interface RunCoordinatorOptions {
 /** RunCoordinator 使用的规划与独立判定能力。 */
 export interface RunCoordinatorDecisionServices {
     actionPlanner: ActionPlanner;
+    perceptionService?: PerceptionService;
     targetGrounder?: TargetGrounder;
     verdictEvaluator: VerdictEvaluator;
 }
@@ -147,12 +151,6 @@ interface ObservationEvidence {
     screenshotReference: EvidenceRef;
 }
 
-/** 视觉恢复可能生成增强观察，也可能给出可解释的停止原因。 */
-interface VisualRetryOutcome {
-    evidence?: ObservationEvidence;
-    failureSummary?: string;
-}
-
 /** 初始空白页只保存观察，不额外截取无业务价值的截图。 */
 interface InitialObservationEvidence {
     observation: PageObservation;
@@ -181,6 +179,7 @@ const DEFAULT_OPTIONS: RunCoordinatorOptions = {
  */
 export class RunCoordinator implements ExecutionEngine {
     private readonly groundedActionBuilder = new GroundedActionBuilder();
+    private readonly perceptionService: PerceptionService;
     private readonly targetGrounder: TargetGrounder;
 
     /** 注入运行产物存储、事件发布、意图构建和浏览器能力。 */
@@ -195,6 +194,17 @@ export class RunCoordinator implements ExecutionEngine {
     ) {
         this.targetGrounder = decisionServices.targetGrounder
             ?? new DeterministicTargetGrounder();
+        this.perceptionService = decisionServices.perceptionService ??
+            new PerceptionService({
+                capture: async () => ({
+                    accessibility: {
+                        nodes: [],
+                        source: 'playwright-aria-snapshot',
+                        truncated: false
+                    },
+                    interactionStates: {}
+                })
+            });
     }
 
     /** 创建一次运行，并执行受预算约束的多轮浏览器 Agent 闭环。 */
@@ -466,9 +476,6 @@ export class RunCoordinator implements ExecutionEngine {
         const plannedActions: PlannedActionExecution[] = [];
         let beforeObservationReference =
             navigation.afterObservationReference;
-        let visualRecoveryApplied = false;
-        let visualRetrySequence = 0;
-
         while (true) {
             const budgetStop = this.createBudgetStopCommand(context);
             if (budgetStop) {
@@ -480,31 +487,6 @@ export class RunCoordinator implements ExecutionEngine {
             }
 
             const semanticAction = await this.planNextAction(context, runtime);
-            const visualRetry =
-                semanticAction.type === 'UNCERTAIN' && !visualRecoveryApplied
-                    ? await this.retryWithVision(
-                        context,
-                        runtime,
-                        visualRetrySequence + 1
-                    )
-                    : undefined;
-            if (visualRetry?.evidence) {
-                visualRecoveryApplied = true;
-                visualRetrySequence += 1;
-                beforeObservationReference =
-                    visualRetry.evidence.observationReference;
-                continue;
-            }
-            if (visualRetry?.failureSummary) {
-                return {
-                    navigation,
-                    plannedActions,
-                    stopCommand: this.createStopCommand(
-                        'UNCERTAIN',
-                        visualRetry.failureSummary
-                    )
-                };
-            }
             const plannerStop = this.createPlannerStopCommand(
                 semanticAction,
                 plannedActions.at(-1)?.semanticAction
@@ -538,7 +520,6 @@ export class RunCoordinator implements ExecutionEngine {
                 beforeObservationReference
             );
             plannedActions.push(execution);
-            visualRecoveryApplied = false;
             if (semanticAction.type !== 'WAIT') {
                 this.updateRepeatedStateCount(
                     context,
@@ -634,11 +615,29 @@ export class RunCoordinator implements ExecutionEngine {
             'RESOLVING',
             '正在把语义目标绑定到当前页面元素'
         );
-        const decision = await this.targetGrounder.ground(
-            semanticAction,
+        const perception = await this.perceptionService.capture(
+            runtime.browserSession,
             observation,
+            runtime.latestPerception,
             context.signal
         );
+        runtime.latestPerception = perception;
+        const perceptionReference = await this.artifactStore.saveJson(
+            context.runId,
+            `page-perception-${ runtime.history.length }`,
+            toJsonValue(perception)
+        );
+        context.evidence.push(perceptionReference);
+        const remaining = this.getRemainingBudgets(context);
+        const decision = await this.targetGrounder.ground({
+            action: semanticAction,
+            perception,
+            session: runtime.browserSession,
+            visualAllowed: remaining.maxModelCalls > 0
+        }, context.signal);
+        const visualModelCalls = decision.usage?.visualModelCalls ?? 0;
+        context.modelCallCount += visualModelCalls;
+        runtime.counters.modelCallCount = context.modelCallCount;
         context.signal.throwIfAborted();
         const reference = await this.artifactStore.saveJson(
             context.runId,
@@ -658,72 +657,6 @@ export class RunCoordinator implements ExecutionEngine {
             semanticAction,
             decision.target
         );
-    }
-
-    /** 首次证据不足时用视觉模型批量命名当前候选，再交回 Planner。 */
-    private async retryWithVision(
-        context: RunExecutionContext,
-        runtime: RunContext,
-        sequence: number
-    ): Promise<VisualRetryOutcome> {
-        const observation = runtime.latestObservation;
-        if (!observation) {
-            return {
-                failureSummary: '当前没有可供视觉模型标注的页面观察。'
-            };
-        }
-        const enhance = this.browserAdapter.enhanceObservationWithVision;
-        if (!enhance) {
-            return {
-                failureSummary: '当前浏览器未接入候选元素视觉标注能力。'
-            };
-        }
-        const remaining = this.getRemainingBudgets(context);
-        if (remaining.maxModelCalls <= 2 || remaining.maxDurationMs <= 0) {
-            return {
-                failureSummary: '剩余预算不足以完成视觉标注、再次规划和最终判定。'
-            };
-        }
-        await this.transition(
-            context,
-            'OBSERVING',
-            '当前页面证据不足，正在使用视觉模型批量标注候选元素'
-        );
-        context.modelCallCount += 1;
-        runtime.counters.modelCallCount = context.modelCallCount;
-        const result = await enhance(
-            runtime.browserSession,
-            observation,
-            context.signal
-        );
-        context.signal.throwIfAborted();
-        const groundingReference = await this.artifactStore.saveJson(
-            context.runId,
-            `visual-candidate-annotations-retry-${ sequence }`,
-            toJsonValue({
-                status: result.status,
-                summary: result.summary,
-                candidateIds: result.candidateIds ?? []
-            })
-        );
-        context.evidence.push(groundingReference);
-        if (result.status !== 'grounded' || !result.observation) {
-            return {
-                failureSummary: result.summary
-            };
-        }
-        const evidence = await this.persistObservationEvidence(
-            context,
-            runtime.browserSession,
-            result.observation,
-            `observation-after-visual-retry-${ sequence }`,
-            `screenshot-after-visual-retry-${ sequence }.png`
-        );
-        runtime.latestObservation = evidence.observation;
-        runtime.latestObservationReference = evidence.observationReference;
-        return {
-            evidence
-        };
     }
 
     /** 记录浏览器执行导航前的空白页状态。 */

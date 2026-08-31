@@ -22,7 +22,6 @@ import { resolveArtifactRootDirectories } from '../adapters/storage/artifact_roo
 import { LocalEnvironmentValueResolver } from '../adapters/environment';
 import { LoggingRunEventPublisher } from '../adapters/events';
 import { LocalArtifactStore } from '../adapters/storage/local_artifact_store';
-import { MidsceneVisualCandidateAnnotator } from '../adapters/visual';
 import { config } from '../config';
 import {
     createConfiguredIntentBuilder,
@@ -72,16 +71,7 @@ function createConfiguredExecutionEngine(
         config.storage.artifact_root
     )[0];
     const modelAdapter = createConfiguredModelAdapter();
-    const visualGroundingEnabled =
-        config.components.visual_grounding?.enabled !== false;
-    const baseBrowserAdapter = new PlaywrightBrowserAdapter({
-        ...visualGroundingEnabled
-            ? {
-                visualCandidateAnnotator:
-                    new MidsceneVisualCandidateAnnotator()
-            }
-            : {}
-    });
+    const baseBrowserAdapter = new PlaywrightBrowserAdapter();
     const browserAdapter = setupModules.includes(JIANDAOYUN_LOGIN_MODULE_ID)
         ? new JiandaoyunLoginBrowserAdapter(baseBrowserAdapter, {
             cacheRoot: path.join(
