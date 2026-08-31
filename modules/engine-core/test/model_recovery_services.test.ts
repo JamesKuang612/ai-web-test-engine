@@ -32,7 +32,7 @@ describe('Phase 3 model recovery services', () => {
         assert.equal(decision.kind, 'recover');
         [
             'candidateId', 'domCandidateId', 'locatorHints', 'boundingBox',
-            'coordinates', 'attributes', 'secret-value'
+            'coordinates', 'attributes', 'secret-value', 'https://'
         ].forEach((field) => assert.equal(prompt.includes(field), false));
     });
 
@@ -95,7 +95,7 @@ function recoveryInput(): RecoveryPlannerInput {
             page: {
                 loading: false,
                 title: '工作台',
-                url: 'https://example.test/workbench'
+                urlChanged: false
             },
             visibleText: [ '应用 11' ],
             notices: [],

@@ -139,6 +139,51 @@ describe('DeterministicPlanReplayer literal inputs', () => {
             value: '2026.8.27'
         });
     });
+
+    it('productive CLEAR 编译为 TYPE 空串后确认 empty 状态', async () => {
+        const browser = new FakeReplayBrowser([
+            createObservation('blank', 'about:blank', []),
+            createObservation('search-1', workspaceUrl, [
+                createSearchElement('search-current', 'filled')
+            ]),
+            createObservation('search-2', workspaceUrl, [
+                createSearchElement('search-current', 'filled')
+            ]),
+            createObservation('search-3', workspaceUrl, [
+                createSearchElement('search-current', 'empty')
+            ])
+        ]);
+        const plan = createPlan();
+        plan.steps = [ plan.steps[0], {
+            id: 'step-2',
+            sequence: 2,
+            type: 'TYPE',
+            target: {
+                description: '搜索框',
+                locatorHints: [{ strategy: 'label', value: '搜索' }],
+                identity: {
+                    tag: 'input',
+                    label: '搜索',
+                    inputType: 'text'
+                }
+            },
+            value: { source: 'literal', value: '' },
+            expectedEffect: '目标输入框被清空',
+            risk: 'reversible'
+        }];
+
+        const execution = await new DeterministicPlanReplayer(
+            browser,
+            new FakeValueResolver()
+        ).replay({
+            plan,
+            environment,
+            signal: new AbortController().signal
+        });
+
+        assert.equal(execution.steps[1]?.effect.status, 'confirmed');
+        assert.match(execution.steps[1]?.effect.summary ?? '', /为空/u);
+    });
 });
 
 describe('DeterministicPlanReplayer failures and advanced actions', () => {
@@ -608,6 +653,17 @@ function createApplicationNameElement(
             strategy: 'label',
             value: '名称'
         }]
+    };
+}
+
+function createSearchElement(
+    candidateId: string,
+    valueState: ObservedElement['valueState']
+): ObservedElement {
+    return {
+        ...createApplicationNameElement(candidateId, valueState),
+        label: '搜索',
+        locatorHints: [{ strategy: 'label', value: '搜索' }]
     };
 }
 

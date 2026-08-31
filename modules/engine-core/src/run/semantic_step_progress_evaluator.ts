@@ -127,11 +127,14 @@ export class SemanticStepProgressEvaluator {
             if (
                 input.attemptedAction.type === 'CLICK'
                 && input.after.delta?.urlChanged
-                && isNavigationEffect(input.step.expectedEffect)
+                && hasExplicitTargetPageEvidence(
+                    input.step.expectedEffect,
+                    input.after
+                )
             ) {
                 return progress(
                     'complete',
-                    '页面导航与明确的 expectedEffect 一致。',
+                    '页面内容明确匹配 expectedEffect 指定的目标页面。',
                     evidence
                 );
             }
@@ -151,9 +154,16 @@ export class SemanticStepProgressEvaluator {
     }
 }
 
-function isNavigationEffect(expectedEffect: string | undefined): boolean {
-    return Boolean(expectedEffect &&
-        /跳转|进入|打开.+页面|返回|导航|URL|地址/iu.test(expectedEffect));
+function hasExplicitTargetPageEvidence(
+    expectedEffect: string | undefined,
+    after: PagePerception
+): boolean {
+    if (!expectedEffect) {
+        return false;
+    }
+    return [ after.dom.page.title, ...after.dom.visibleText ].some((text) => (
+        text.trim().length >= 3 && expectedEffect.includes(text.trim())
+    ));
 }
 
 function isDeterministicControlAction(type: string): boolean {
@@ -171,7 +181,7 @@ export function createRecoveryPlanningView(
         page: {
             loading: perception.dom.page.loading,
             title: perception.dom.page.title,
-            url: perception.dom.page.url
+            urlChanged: perception.delta?.urlChanged ?? false
         },
         visibleText: [ ...perception.dom.visibleText ],
         notices: structuredClone(perception.dom.notices),

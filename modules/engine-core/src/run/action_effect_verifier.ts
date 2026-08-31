@@ -175,4 +175,3 @@ function isNavigationExpected(command: ActionCommand): boolean {
         command.reasonSummary
     ].join(' '));
 }
-

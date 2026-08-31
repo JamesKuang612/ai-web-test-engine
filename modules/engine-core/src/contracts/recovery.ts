@@ -71,7 +71,7 @@ export interface RecoveryPlanningView {
     page: {
         loading: boolean,
         title: string,
-        url: string
+        urlChanged: boolean
     };
     visibleText: string[];
     notices: Array<{
@@ -152,7 +152,10 @@ export interface RecoverySafetyInput {
     testIntent: TestIntent;
     recoveryIntent: string;
     resolvedSnapshot?: ResolvedElementSnapshot;
-    recoveryCausedNavigation: boolean;
+    recoveryNavigation?: {
+        fromUrl: string,
+        toUrl: string
+    };
 }
 
 export type RecoverySafetyDecision =

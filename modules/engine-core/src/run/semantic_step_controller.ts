@@ -16,6 +16,9 @@ import type {
     SemanticStepProgress,
     TestIntent,
 } from '../contracts';
+import {
+    hasMeaningfulPerceptionDelta,
+} from '../contracts';
 import type {
     SemanticStepProgressEvaluator,
 } from './semantic_step_progress_evaluator';
@@ -209,6 +212,7 @@ export class SemanticStepController<TRecord> {
             const recoveryOutcome = classifyRecoveryProgress(
                 beforeGrounding,
                 state.primaryGrounding,
+                recovery.after,
                 recovery.execution
             );
             if (recovery.execution) {
@@ -223,6 +227,9 @@ export class SemanticStepController<TRecord> {
                 summary: recovery.execution?.effect.summary ??
                     '重新观察了当前页面。'
             });
+            state.lastRecoveryNavigation = recoveryOutcome === 'wrong-state'
+                ? recoveryNavigationFrom(recovery.execution)
+                : undefined;
             state.wrongStateActive = recoveryOutcome === 'wrong-state';
             state.consecutiveNoProgress = recoveryOutcome === 'no-progress'
                 ? state.consecutiveNoProgress + 1
@@ -429,7 +436,9 @@ export class SemanticStepController<TRecord> {
             testIntent,
             recoveryIntent: action.reasonSummary,
             ...target ? { resolvedSnapshot: target.elementSnapshot } : {},
-            recoveryCausedNavigation: state.wrongStateActive
+            ...state.lastRecoveryNavigation
+                ? { recoveryNavigation: state.lastRecoveryNavigation }
+                : {}
         });
         if (!safety.allowed) {
             state.attempts.push({
@@ -604,6 +613,10 @@ interface ControllerState<TRecord> {
     progressModelCalls: number;
     consecutiveNoProgress: number;
     wrongStateActive: boolean;
+    lastRecoveryNavigation?: {
+        fromUrl: string,
+        toUrl: string
+    };
 }
 
 function toRecoverySemanticAction(action: RecoveryAction): SemanticAction {
@@ -655,6 +668,7 @@ function toRecoverySemanticAction(action: RecoveryAction): SemanticAction {
 function classifyRecoveryProgress<TRecord>(
     before: GroundingDecision,
     after: GroundingDecision,
+    afterPerception: PagePerception,
     execution: SemanticStepActionExecution<TRecord> | undefined
 ): 'progress' | 'no-progress' | 'wrong-state' {
     if (
@@ -665,17 +679,60 @@ function classifyRecoveryProgress<TRecord>(
     ) {
         return 'wrong-state';
     }
+    if (
+        afterPerception.delta?.overlayState.before === 'clear'
+        && afterPerception.delta.overlayState.after === 'blocked'
+        && !execution?.restorative
+    ) {
+        return 'wrong-state';
+    }
     if (after.status === 'grounded' && before.status !== 'grounded') {
         return 'progress';
     }
-    if (
-        execution?.after.delta
-        && JSON.stringify(execution.after.delta) !==
-            JSON.stringify(execution.before.delta)
-    ) {
+    if (groundingActionabilityImproved(before, after)) {
+        return 'progress';
+    }
+    if (overlayImproved(afterPerception.delta)) {
+        return 'progress';
+    }
+    if (hasMeaningfulPerceptionDelta(afterPerception.delta)) {
         return 'progress';
     }
     return 'no-progress';
+}
+
+function groundingActionabilityImproved(
+    before: GroundingDecision,
+    after: GroundingDecision
+): boolean {
+    return before.status === 'blocked' && after.status !== 'blocked'
+        || before.status === 'not-visible' &&
+            after.status !== 'not-visible' && after.status !== 'not-found'
+        || before.status === 'not-actionable' &&
+            after.target?.actionable === true
+        || before.target?.actionable === false && after.target?.actionable === true;
+}
+
+function overlayImproved(
+    delta: PagePerception['delta'] | undefined
+): boolean {
+    return delta?.overlayState.before === 'blocked'
+        && delta.overlayState.after === 'clear';
+}
+
+function recoveryNavigationFrom<TRecord>(
+    execution: SemanticStepActionExecution<TRecord> | undefined
+): {fromUrl: string, toUrl: string} | undefined {
+    if (
+        !execution?.actionResult.browserSignals.urlChanged
+        || execution.before.dom.page.url === execution.after.dom.page.url
+    ) {
+        return undefined;
+    }
+    return {
+        fromUrl: execution.before.dom.page.url,
+        toUrl: execution.after.dom.page.url
+    };
 }
 
 function contributionForRecovery<TRecord>(

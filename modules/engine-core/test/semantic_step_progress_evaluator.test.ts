@@ -81,6 +81,67 @@ describe('SemanticStepProgressEvaluator', () => {
 
         assert.equal(progress.status, 'complete');
     });
+});
+
+describe('SemanticStepProgressEvaluator correctness', () => {
+    it('CLICK New App 实际进入 settings 时不能直接判 complete', async () => {
+        const before = createPerception('before');
+        const after = createPerception('after', before);
+        after.dom.page.url = 'https://example.test/settings';
+        after.delta!.urlChanged = true;
+        let modelCalls = 0;
+        const evaluator = new SemanticStepProgressEvaluator({
+            modelFallback: {
+                evaluate: async () => {
+                    modelCalls += 1;
+                    return {
+                        status: 'unknown',
+                        basis: 'model',
+                        summary: '没有目标页面匹配证据。',
+                        evidence: []
+                    };
+                }
+            }
+        });
+        const progress = await evaluator.evaluate({
+            step: {
+                id: 'step-1',
+                primaryAction: {
+                    type: 'CLICK',
+                    target: { description: '新建应用' },
+                    expectedEffect: '进入新建应用页面',
+                    reasonSummary: '创建应用'
+                },
+                expectedEffect: '进入新建应用页面',
+                source: 'runtime-wrapper'
+            },
+            attemptedAction: {
+                type: 'CLICK',
+                target: { description: '新建应用' },
+                expectedEffect: '进入新建应用页面',
+                reasonSummary: '创建应用'
+            },
+            before,
+            after,
+            actionResult: {
+                ...executedResult(),
+                browserSignals: {
+                    ...executedResult().browserSignals,
+                    urlChanged: true
+                }
+            },
+            effect: {
+                status: 'confirmed',
+                expectedEffect: '进入新建应用页面',
+                evidence: [],
+                summary: '页面地址发生变化。'
+            }
+        }, new AbortController().signal, true);
+
+        assert.notEqual(progress.status, 'complete');
+        assert.equal(progress.status, 'unknown');
+        assert.equal(modelCalls, 1);
+    });
 
     it('模型安全视图不包含物理定位和输入真实值', () => {
         const perception = createPerception('after');
@@ -93,7 +154,8 @@ describe('SemanticStepProgressEvaluator', () => {
             'attributes',
             'boundingBox',
             'coordinates',
-            'secret-value'
+            'secret-value',
+            'https://'
         ].forEach((forbidden) => assert.equal(
             serialized.includes(forbidden),
             false,
@@ -200,4 +262,3 @@ function executedResult() {
         }
     };
 }
-

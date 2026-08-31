@@ -15,6 +15,9 @@ import type {
     EnvironmentValueResolver,
 } from '../ports';
 import {
+    ActionEffectVerifier,
+} from '../run/action_effect_verifier';
+import {
     CompiledTargetResolver,
 } from './compiled_target_resolver';
 
@@ -64,6 +67,8 @@ const DEFAULT_BROWSER_OPTIONS: BrowserStartOptions = {
 
 /** 在全新浏览器会话中逐步解析和执行 CompiledPlan。 */
 export class DeterministicPlanReplayer {
+    private readonly effectVerifier = new ActionEffectVerifier();
+
     constructor(
         private readonly browserAdapter: BrowserAdapter,
         private readonly environmentValueResolver: EnvironmentValueResolver,
@@ -281,58 +286,13 @@ export class DeterministicPlanReplayer {
         if (command.type === 'NAVIGATE') {
             return this.verifyNavigationEffect(plan, command, result, after);
         }
-        if (command.type === 'TYPE') {
-            return this.verifyTypeEffect(command, result, after);
-        }
-        if (command.type === 'SELECT') {
-            return this.verifySelectEffect(command, result, after);
-        }
-        if (command.type === 'CHECK') {
-            return this.verifyCheckEffect(command, result, after);
-        }
-        if (command.type === 'WAIT') {
-            return this.createEffect(
-                command,
-                result.status === 'executed',
-                result.status,
-                result.status === 'executed'
-                    ? '等待动作已经按计划完成。'
-                    : '等待动作未能正常完成。'
-            );
-        }
-
-        const unexpectedNavigation = command.type === 'CLICK'
-            && result.browserSignals.urlChanged
-            && !this.isNavigationExpected(command);
-        const changed = result.browserSignals.urlChanged
-            || before.stateFingerprint !== after.stateFingerprint;
-        const pageReady = !after.page.loading;
-        const confirmed = result.status === 'executed'
-            && changed
-            && pageReady
-            && !unexpectedNavigation;
-        return this.createEffect(
+        return this.effectVerifier.verify({
             command,
-            confirmed,
-            result.status,
-            unexpectedNavigation
-                ? '点击意外改变了页面地址，与计划的非导航效果不一致。'
-                : confirmed
-                    ? command.type === 'HOVER'
-                        ? '鼠标悬浮后页面出现了可观察变化。'
-                        : '点击后页面状态发生了变化。'
-                : !pageReady
-                    ? '点击后页面未在等待窗口内渲染出可验证内容。'
-                    : '点击后页面状态没有产生可观察变化。'
-        );
-    }
-
-    /** 判断结构化步骤是否明确预期发生页面导航。 */
-    private isNavigationExpected(command: ActionCommand): boolean {
-        return /跳转|页面进入|进入(?:.+页面|工作台|应用)|导航|打开(?:.+页面|工作台|应用)|返回(?:.+页面|工作台|首页|上一页)|登录(?:成功)?(?:后|进入|跳转|完成)|URL|地址/iu.test([
-            command.expectedEffect ?? '',
-            command.reasonSummary
-        ].join(' '));
+            result,
+            before,
+            after,
+            evidence: []
+        });
     }
 
     private verifyNavigationEffect(
@@ -359,73 +319,6 @@ export class DeterministicPlanReplayer {
             confirmed
                 ? '浏览器已进入计划允许的目标站点。'
                 : '导航后页面不在计划允许的目标站点。'
-        );
-    }
-
-    private verifyTypeEffect(
-        command: ActionCommand,
-        result: ActionResult,
-        after: PageObservation
-    ): EffectVerification {
-        const valueState = after.interactiveElements.find(
-            (element) => element.candidateId === command.target?.candidateId
-        )?.valueState;
-        const confirmed = result.status === 'executed'
-            && (valueState === 'filled' || valueState === 'masked');
-
-        return this.createEffect(
-            command,
-            confirmed,
-            result.status,
-            confirmed
-                ? '目标输入框已显示为填写状态。'
-                : '输入后没有确认目标输入框的填写状态。'
-        );
-    }
-
-    private verifySelectEffect(
-        command: ActionCommand,
-        result: ActionResult,
-        after: PageObservation
-    ): EffectVerification {
-        const valueState = after.interactiveElements.find(
-            (element) => element.candidateId === command.target?.candidateId
-        )?.valueState;
-        const confirmed = result.status === 'executed'
-            && valueState === 'filled';
-
-        return this.createEffect(
-            command,
-            confirmed,
-            result.status,
-            confirmed
-                ? '目标下拉框已显示为选中状态。'
-                : '选择后没有确认目标下拉框的选中状态。'
-        );
-    }
-
-    private verifyCheckEffect(
-        command: ActionCommand,
-        result: ActionResult,
-        after: PageObservation
-    ): EffectVerification {
-        const checked = after.interactiveElements.find(
-            (element) => element.candidateId === command.target?.candidateId
-        )?.checked;
-        const expected = command.value?.source === 'literal'
-            ? command.value.value
-            : undefined;
-        const confirmed = result.status === 'executed'
-            && typeof expected === 'boolean'
-            && checked === expected;
-
-        return this.createEffect(
-            command,
-            confirmed,
-            result.status,
-            confirmed
-                ? `目标复选框已${ expected ? '勾选' : '取消勾选' }。`
-                : '操作后没有确认目标复选框的勾选状态。'
         );
     }
 

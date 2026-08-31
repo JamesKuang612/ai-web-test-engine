@@ -57,4 +57,3 @@ export type SemanticStepExecutionOutcome =
         reason: string,
         progress?: SemanticStepProgress
     };
-

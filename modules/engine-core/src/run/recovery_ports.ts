@@ -15,4 +15,3 @@ export interface RecoveryPlannerPort {
 export interface RecoverySafetyPolicy {
     evaluate: (input: RecoverySafetyInput) => RecoverySafetyDecision;
 }
-

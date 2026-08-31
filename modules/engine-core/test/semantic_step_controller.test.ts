@@ -29,7 +29,8 @@ describe('SemanticStepController', () => {
         });
         const done = perception('done', {
             previous: cleared,
-            url: 'https://example.test/new-app'
+            url: 'https://example.test/new-app',
+            title: '新建应用页面'
         });
         const runtime = new FakeRuntime(initial, (action, current) => {
             if (action.type === 'TYPE') {
@@ -118,7 +119,8 @@ describe('SemanticStepController', () => {
         });
         const done = perception('done', {
             previous: restored,
-            url: 'https://example.test/new-app'
+            url: 'https://example.test/new-app',
+            title: '新建应用页面'
         });
         const model = new SequenceRecoveryPlanner([{
             kind: 'recover',
@@ -240,6 +242,79 @@ describe('SemanticStepController', () => {
         assert.equal(runtime.executedTypes.length, 2);
         assert.equal(runtime.executedTypes.every((type) => type === 'HOVER'), true);
         assert.equal(result.executions[0]?.actionResult.status, 'executed');
+    });
+
+    it('历史 delta 存在但本次 recovery 无变化时判 no-progress', async () => {
+        const historical = perception('historical');
+        const initial = perception('initial', { previous: historical });
+        const unchanged = perception('unchanged', {
+            previous: initial,
+            delta: emptyDelta()
+        });
+        const model = new SequenceRecoveryPlanner([{
+            kind: 'recover',
+            action: {
+                type: 'CLICK',
+                target: { description: '关闭菜单' },
+                reasonSummary: '关闭临时菜单'
+            }
+        }]);
+        const runtime = new FakeRuntime(
+            initial,
+            (action, current) => action.target?.description === '关闭菜单'
+                ? grounded('close', current, '关闭菜单')
+                : decision('not-found'),
+            () => unchanged
+        );
+
+        const result = await controller(
+            runtime,
+            new SemanticStepProgressEvaluator(),
+            model
+        ).execute(step({
+            type: 'CLICK',
+            target: { description: '新建应用' },
+            reasonSummary: '创建应用'
+        }), intent, signal());
+
+        assert.equal(result.executions[0]?.recoveryOutcome, 'no-progress');
+        assert.equal(
+            result.executions[0]?.compilationContribution,
+            'non-productive'
+        );
+    });
+
+    it('非导航 wrong-state 不会授权 BACK', () => {
+        const policy = new DeterministicRecoverySafetyPolicy();
+        const common = {
+            action: {
+                type: 'BACK' as const,
+                reasonSummary: '撤销错误状态'
+            },
+            step: step({
+                type: 'CLICK',
+                target: { description: '新建应用' },
+                reasonSummary: '创建应用'
+            }),
+            testIntent: intent,
+            recoveryIntent: '撤销错误状态'
+        };
+
+        assert.equal(policy.evaluate(common).allowed, false);
+        assert.equal(policy.evaluate({
+            ...common,
+            recoveryNavigation: {
+                fromUrl: 'https://example.test/workbench',
+                toUrl: 'https://example.test/settings'
+            }
+        }).allowed, true);
+        assert.equal(policy.evaluate({
+            ...common,
+            recoveryNavigation: {
+                fromUrl: 'https://example.test/workbench',
+                toUrl: 'https://outside.test/settings'
+            }
+        }).allowed, false);
     });
 });
 
@@ -405,8 +480,10 @@ function grounded(
 
 function perception(id: string, options: {
     previous?: PagePerception,
+    delta?: PagePerception['delta'],
     elements?: ReturnType<typeof element>[],
     visibleText?: string[],
+    title?: string,
     url?: string,
     loading?: boolean,
     blocked?: boolean
@@ -421,7 +498,7 @@ function perception(id: string, options: {
             capturedAt: '2026-08-31T00:00:00.000Z',
             page: {
                 loading: options.loading ?? false,
-                title: id,
+                title: options.title ?? id,
                 url: options.url ?? 'https://example.test/workbench',
                 viewport: { width: 1280, height: 720 }
             },
@@ -447,7 +524,9 @@ function perception(id: string, options: {
                 visible: true
             }
         ])),
-        ...options.previous
+        ...options.delta
+            ? { delta: options.delta }
+            : options.previous
             ? {
                 delta: {
                     accessibility: {
@@ -474,6 +553,25 @@ function perception(id: string, options: {
                 }
             }
             : {}
+    };
+}
+
+function emptyDelta(): NonNullable<PagePerception['delta']> {
+    return {
+        accessibility: {
+            added: [], changed: [], removed: [], truncated: false
+        },
+        candidates: {
+            added: [], removed: [], truncated: false
+        },
+        overlayState: {
+            before: 'clear', after: 'clear', changed: false
+        },
+        titleChanged: false,
+        urlChanged: false,
+        visibleText: {
+            added: [], removed: [], truncated: false
+        }
     };
 }
 

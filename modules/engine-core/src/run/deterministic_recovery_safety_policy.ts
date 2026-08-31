@@ -20,9 +20,9 @@ implements RecoverySafetyPolicy {
             return allow('只改变可逆的页面展示状态。');
         }
         if (action.type === 'BACK') {
-            return input.recoveryCausedNavigation
+            return isAllowedRecoveryNavigation(input)
                 ? allow('只撤销 Recovery 自己造成的同源错误导航。')
-                : deny('BACK 不能撤销用户原始业务动作。');
+                : deny('BACK 只允许立即撤销上一条 Recovery 造成的允许域内错误导航。');
         }
         const description = snapshotText(input);
         if (FORBIDDEN_SIDE_EFFECT.test(description)) {
@@ -46,6 +46,26 @@ implements RecoverySafetyPolicy {
                 : deny('Recovery CLICK 目标不是已知的低风险临时控件。');
         }
         return deny('Recovery 动作不在允许范围内。');
+    }
+}
+
+function isAllowedRecoveryNavigation(input: RecoverySafetyInput): boolean {
+    const navigation = input.recoveryNavigation;
+    if (!navigation) {
+        return false;
+    }
+    try {
+        const from = new URL(navigation.fromUrl);
+        const to = new URL(navigation.toUrl);
+        const allowedHosts = input.testIntent.allowedHosts.map(
+            (host) => host.toLowerCase()
+        );
+        return from.href !== to.href
+            && from.hostname.toLowerCase() === to.hostname.toLowerCase()
+            && allowedHosts.includes(from.hostname.toLowerCase())
+            && allowedHosts.includes(to.hostname.toLowerCase());
+    } catch {
+        return false;
     }
 }
 
@@ -80,4 +100,3 @@ function allow(reason: string): RecoverySafetyDecision {
 function deny(reason: string): RecoverySafetyDecision {
     return { allowed: false, reason };
 }
-

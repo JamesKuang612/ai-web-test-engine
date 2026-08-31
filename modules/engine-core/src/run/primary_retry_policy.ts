@@ -38,4 +38,3 @@ function isIdempotent(action: SemanticAction): boolean {
         || action.type === 'SELECT'
         || action.type === 'TYPE';
 }
-
