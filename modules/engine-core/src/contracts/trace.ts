@@ -6,11 +6,20 @@ import type {
     EvidenceRef,
     JsonValue,
 } from './common';
+import type {
+    ObservedElement,
+} from './observation';
+
+/** Grounder 绑定目标时保存的完整元素证据，不包含瞬时候选编号。 */
+export type ResolvedElementSnapshot = Omit<ObservedElement, 'candidateId'>;
 
 /** 将规划器的语义目标转换为浏览器可以实际操作的定位结果。 */
 export interface ResolvedTarget {
     description: string;
-    strategy: 'css' | 'label' | 'placeholder' | 'role-name' | 'test-id' | 'text' | 'vision';
+    observationId: string;
+    candidateId: string;
+    elementSnapshot: ResolvedElementSnapshot;
+    strategy: 'candidate-id' | 'css' | 'label' | 'placeholder' | 'role-name' | 'test-id' | 'text' | 'vision';
     locatorData: Record<string, JsonValue>;
     confidence: number;
     unique: boolean;

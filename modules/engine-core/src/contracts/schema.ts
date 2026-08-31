@@ -5,8 +5,14 @@ import type {
     CompiledPlan,
 } from './compiled_plan';
 import type {
+    GroundingDecision,
+} from './grounding';
+import type {
     TestIntent,
 } from './intent';
+import type {
+    SemanticAction,
+} from './semantic_action';
 import type {
     PageObservation,
 } from './observation';
@@ -36,10 +42,12 @@ export interface EngineContracts {
     actionCommand: ActionCommand;
     compiledPlan: CompiledPlan;
     environmentDefinition: EnvironmentDefinition;
+    groundingDecision: GroundingDecision;
     pageObservation: PageObservation;
     runEvent: RunEvent;
     runResult: RunResult;
     runSnapshot: RunSnapshot;
+    semanticAction: SemanticAction;
     startRunInput: StartRunInput;
     testDefinition: TestDefinition;
     testIntent: TestIntent;

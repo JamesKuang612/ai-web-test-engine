@@ -551,6 +551,43 @@
             ],
             "type": "object"
         },
+        "GroundingDecision": {
+            "additionalProperties": false,
+            "description": "Grounder 对一次语义目标绑定的确定性结论。",
+            "properties": {
+                "confidence": {
+                    "type": "number"
+                },
+                "evidence": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "status": {
+                    "enum": [
+                        "ambiguous",
+                        "blocked",
+                        "grounded",
+                        "not-found"
+                    ],
+                    "type": "string"
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "target": {
+                    "$ref": "#/definitions/ResolvedTarget"
+                }
+            },
+            "required": [
+                "confidence",
+                "evidence",
+                "status",
+                "summary"
+            ],
+            "type": "object"
+        },
         "JsonValue": {
             "anyOf": [
                 {
@@ -870,6 +907,112 @@
             "additionalProperties": false,
             "type": "object"
         },
+        "ResolvedElementSnapshot": {
+            "additionalProperties": false,
+            "description": "Grounder 绑定目标时保存的完整元素证据，不包含瞬时候选编号。",
+            "properties": {
+                "attributes": {
+                    "$ref": "#/definitions/Record<string,string>"
+                },
+                "boundingBox": {
+                    "additionalProperties": false,
+                    "properties": {
+                        "height": {
+                            "type": "number"
+                        },
+                        "width": {
+                            "type": "number"
+                        },
+                        "x": {
+                            "type": "number"
+                        },
+                        "y": {
+                            "type": "number"
+                        }
+                    },
+                    "required": [
+                        "height",
+                        "width",
+                        "x",
+                        "y"
+                    ],
+                    "type": "object"
+                },
+                "checked": {
+                    "type": "boolean"
+                },
+                "disabled": {
+                    "type": "boolean"
+                },
+                "discoverySource": {
+                    "description": "元素由常规 DOM 采集发现，或由视觉模型批量补充了外观语义。",
+                    "enum": [
+                        "dom",
+                        "vision-assisted"
+                    ],
+                    "type": "string"
+                },
+                "inViewport": {
+                    "type": "boolean"
+                },
+                "label": {
+                    "type": "string"
+                },
+                "locatorHints": {
+                    "items": {
+                        "$ref": "#/definitions/LocatorHint"
+                    },
+                    "type": "array"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "nearbyText": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "placeholder": {
+                    "type": "string"
+                },
+                "role": {
+                    "type": "string"
+                },
+                "tag": {
+                    "type": "string"
+                },
+                "text": {
+                    "type": "string"
+                },
+                "valueState": {
+                    "enum": [
+                        "empty",
+                        "filled",
+                        "masked",
+                        "unknown"
+                    ],
+                    "type": "string"
+                },
+                "visible": {
+                    "type": "boolean"
+                },
+                "visualDescription": {
+                    "description": "视觉模型根据候选框独立识别的外观和用途，不替代 DOM 语义。",
+                    "type": "string"
+                }
+            },
+            "required": [
+                "attributes",
+                "disabled",
+                "inViewport",
+                "locatorHints",
+                "nearbyText",
+                "tag",
+                "visible"
+            ],
+            "type": "object"
+        },
         "ResolvedTarget": {
             "additionalProperties": false,
             "description": "将规划器的语义目标转换为浏览器可以实际操作的定位结果。",
@@ -877,11 +1020,17 @@
                 "actionable": {
                     "type": "boolean"
                 },
+                "candidateId": {
+                    "type": "string"
+                },
                 "confidence": {
                     "type": "number"
                 },
                 "description": {
                     "type": "string"
+                },
+                "elementSnapshot": {
+                    "$ref": "#/definitions/ResolvedElementSnapshot"
                 },
                 "evidence": {
                     "items": {
@@ -892,8 +1041,12 @@
                 "locatorData": {
                     "$ref": "#/definitions/Record<string,JsonValue>"
                 },
+                "observationId": {
+                    "type": "string"
+                },
                 "strategy": {
                     "enum": [
+                        "candidate-id",
                         "css",
                         "label",
                         "placeholder",
@@ -910,10 +1063,13 @@
             },
             "required": [
                 "actionable",
+                "candidateId",
                 "confidence",
                 "description",
+                "elementSnapshot",
                 "evidence",
                 "locatorData",
+                "observationId",
                 "strategy",
                 "unique"
             ],
@@ -1165,6 +1321,51 @@
                 "summary",
                 "testId",
                 "updatedAt"
+            ],
+            "type": "object"
+        },
+        "SemanticAction": {
+            "additionalProperties": false,
+            "description": "Planner 表达想完成的单步交互；风险授权不属于 Planner 职责。",
+            "properties": {
+                "expectedEffect": {
+                    "type": "string"
+                },
+                "reasonSummary": {
+                    "type": "string"
+                },
+                "target": {
+                    "$ref": "#/definitions/SemanticTarget"
+                },
+                "type": {
+                    "$ref": "#/definitions/ActionType"
+                },
+                "value": {
+                    "$ref": "#/definitions/ValueReference"
+                }
+            },
+            "required": [
+                "reasonSummary",
+                "type"
+            ],
+            "type": "object"
+        },
+        "SemanticTarget": {
+            "additionalProperties": false,
+            "description": "Planner 用业务语义描述目标，不包含候选编号或浏览器定位信息。",
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "relation": {
+                    "type": "string"
+                },
+                "scope": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "description"
             ],
             "type": "object"
         },
@@ -1540,6 +1741,9 @@
         "environmentDefinition": {
             "$ref": "#/definitions/EnvironmentDefinition"
         },
+        "groundingDecision": {
+            "$ref": "#/definitions/GroundingDecision"
+        },
         "pageObservation": {
             "$ref": "#/definitions/PageObservation"
         },
@@ -1551,6 +1755,9 @@
         },
         "runSnapshot": {
             "$ref": "#/definitions/RunSnapshot"
+        },
+        "semanticAction": {
+            "$ref": "#/definitions/SemanticAction"
         },
         "startRunInput": {
             "$ref": "#/definitions/StartRunInput"
@@ -1572,10 +1779,12 @@
         "actionCommand",
         "compiledPlan",
         "environmentDefinition",
+        "groundingDecision",
         "pageObservation",
         "runEvent",
         "runResult",
         "runSnapshot",
+        "semanticAction",
         "startRunInput",
         "testDefinition",
         "testIntent",
