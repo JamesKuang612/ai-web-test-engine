@@ -325,11 +325,35 @@ export class ModelVerdictEvaluator implements VerdictEvaluator {
 /** 历史动作只保留逻辑值引用和页面结果。 */
 function toSafeHistoryEntry(entry: PlannerHistoryEntry) {
     return {
-        command: toSafeCommand(entry.command),
+        semanticAction: toSafeSemanticAction(entry.semanticAction),
         actionResult: entry.actionResult,
         effect: entry.effect,
         beforeObservationRef: entry.beforeObservationRef,
         afterObservationRef: entry.afterObservationRef
+    };
+}
+
+/** Verdict 只接收 Planner 的语义动作，不接收运行时物理目标。 */
+function toSafeSemanticAction(action: PlannerHistoryEntry['semanticAction']) {
+    return {
+        type: action.type,
+        target: action.target ? structuredClone(action.target) : null,
+        value: action.value
+            ? action.value.source === 'literal'
+                ? {
+                    source: 'literal',
+                    value: action.type === 'NAVIGATE'
+                        && typeof action.value.value === 'string'
+                        ? action.value.value
+                        : '[REDACTED]'
+                }
+                : {
+                    source: action.value.source,
+                    key: action.value.key
+                }
+            : null,
+        expectedEffect: action.expectedEffect ?? '',
+        reasonSummary: action.reasonSummary
     };
 }
 

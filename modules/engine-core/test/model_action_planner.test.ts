@@ -8,7 +8,7 @@ import type {
 } from '../src';
 import {
     ModelActionPlanner,
-    actionCommandSchema,
+    semanticActionSchema,
 } from '../src';
 
 const planInput: PlanActionInput = {
@@ -80,33 +80,34 @@ const planInput: PlanActionInput = {
 };
 
 describe('ModelActionPlanner', () => {
-    it('生成引用当前候选元素的单步动作', async () => {
+    it('生成不包含物理候选编号的语义动作', async () => {
         const adapter = new FakeModelAdapter({
             type: 'TYPE',
             target: {
-                candidateId: 'element-1',
-                description: '手机号或邮箱输入框'
+                description: '手机号或邮箱'
             },
             value: {
                 source: 'environment',
                 key: 'username'
             },
             expectedEffect: '账号输入框变为已填写',
-            reasonSummary: '填写登录账号',
-            risk: 'reversible'
+            reasonSummary: '填写登录账号'
         });
         const planner = new ModelActionPlanner(
             adapter,
-            actionCommandSchema
+            semanticActionSchema
         );
 
-        const command = await planner.plan(
+        const action = await planner.plan(
             planInput,
             new AbortController().signal
         );
 
-        assert.equal(command.target?.candidateId, 'element-1');
-        assert.match(adapter.lastRequest?.userPrompt ?? '', /element-1/u);
+        assert.deepEqual(action.target, {
+            description: '手机号或邮箱'
+        });
+        assert.doesNotMatch(adapter.lastRequest?.userPrompt ?? '', /element-1/u);
+        assert.doesNotMatch(adapter.lastRequest?.userPrompt ?? '', /candidateId/u);
         assert.doesNotMatch(
             adapter.lastRequest?.userPrompt ?? '',
             /JIANDAOYUN_USERNAME/u
@@ -125,7 +126,7 @@ describe('ModelActionPlanner', () => {
         );
     });
 
-    it('拒绝模型虚构 candidateId', async () => {
+    it('通过语义 Schema 拒绝模型输出 candidateId', async () => {
         const planner = new ModelActionPlanner(
             new FakeModelAdapter({
                 type: 'TYPE',
@@ -137,15 +138,15 @@ describe('ModelActionPlanner', () => {
                     source: 'environment',
                     key: 'username'
                 },
-                reasonSummary: '填写登录账号',
-                risk: 'reversible'
+                expectedEffect: '输入框变为已填写',
+                reasonSummary: '填写登录账号'
             }),
-            actionCommandSchema
+            semanticActionSchema
         );
 
         await assert.rejects(
             planner.plan(planInput, new AbortController().signal),
-            /未知 candidateId/u
+            /candidateId/u
         );
     });
 
@@ -153,15 +154,13 @@ describe('ModelActionPlanner', () => {
         const adapter = new FakeModelAdapter({
             type: 'UNCERTAIN',
             target: {
-                candidateId: null,
                 description: '当前页面内能够返回工作台的控件'
             },
             value: null,
             expectedEffect: '返回工作台',
-            reasonSummary: '没有对应的 DOM 候选元素',
-            risk: 'read-only'
+            reasonSummary: '没有对应的 DOM 候选元素'
         });
-        const planner = new ModelActionPlanner(adapter, actionCommandSchema);
+        const planner = new ModelActionPlanner(adapter, semanticActionSchema);
 
         const command = await planner.plan(
             planInput,

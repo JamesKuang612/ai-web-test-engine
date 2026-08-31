@@ -21,6 +21,8 @@ import type {
     RunEventPublisher,
     RunResult,
     RunSnapshot,
+    ResolvedTarget,
+    SemanticAction,
     StartRunInput,
     TestIntent,
     TraceEvent,
@@ -251,7 +253,7 @@ describe('RunCoordinator', () => {
             new AbortController().signal
         );
 
-        assert.equal(result.lifecycle, 'COMPLETED');
+        assert.equal(result.lifecycle, 'COMPLETED', result.summary);
         assert.equal(result.result, 'UNCERTAIN');
         assert.equal(result.metrics.actionCount, 1);
         assert.equal(result.metrics.modelCallCount, 3);
@@ -410,29 +412,7 @@ describe('RunCoordinator 视觉恢复', () => {
             reasonSummary: '当前观察缺少返回工作台的候选元素',
             risk: 'read-only'
         };
-        const visualObservation = createObservation(
-            startInput.test.startUrl ?? ''
-        );
-        visualObservation.interactiveElements.push({
-            candidateId: 'e4',
-            discoverySource: 'vision-assisted',
-            visualDescription: '当前页面内能够返回工作台的控件',
-            tag: 'div',
-            role: 'button',
-            disabled: false,
-            visible: true,
-            inViewport: true,
-            attributes: {
-                class: 'workspace-back'
-            },
-            nearbyText: [
-                '当前页面内能够返回工作台的控件'
-            ],
-            locatorHints: [{
-                strategy: 'css',
-                value: '.workspace-back'
-            }]
-        });
+        const visualObservation = createVisualRecoveryObservation();
         const browserAdapter = new FakeBrowserAdapter(
             false,
             false,
@@ -444,7 +424,7 @@ describe('RunCoordinator 视觉恢复', () => {
                 type: 'CLICK',
                 target: {
                     candidateId: 'e4',
-                    description: '返回工作台控件'
+                    description: '当前页面内能够返回工作台的控件'
                 },
                 expectedEffect: '返回工作台并显示应用列表',
                 reasonSummary: '选择视觉补充的返回控件',
@@ -470,7 +450,7 @@ describe('RunCoordinator 视觉恢复', () => {
             new AbortController().signal
         );
 
-        assert.equal(result.lifecycle, 'COMPLETED');
+        assert.equal(result.lifecycle, 'COMPLETED', result.summary);
         assert.equal(result.result, 'UNCERTAIN');
         assert.equal(result.metrics.modelCallCount, 6);
         assert.equal(browserAdapter.visualGroundingCount, 1);
@@ -501,6 +481,44 @@ describe('RunCoordinator 视觉恢复', () => {
     });
 });
 
+describe('RunCoordinator Grounding 边界', () => {
+    it('目标无法唯一绑定时不调用浏览器执行该业务动作', async () => {
+        const artifactStore = new FakeArtifactStore();
+        const browserAdapter = new FakeBrowserAdapter();
+        const coordinator = new RunCoordinator(
+            artifactStore,
+            new FakeRunEventPublisher(),
+            new FakeIntentBuilder(testIntent),
+            browserAdapter,
+            {
+                actionPlanner: new FakeActionPlanner({
+                    type: 'CLICK',
+                    target: {
+                        description: '页面中不存在的操作按钮'
+                    },
+                    expectedEffect: '页面产生变化',
+                    reasonSummary: '尝试执行目标动作'
+                }),
+                verdictEvaluator: new FakeVerdictEvaluator(uncertainVerdict)
+            },
+            new FakeEnvironmentValueResolver()
+        );
+
+        const result = await coordinator.start(
+            startInput,
+            new AbortController().signal
+        );
+
+        assert.equal(result.lifecycle, 'COMPLETED', result.summary);
+        assert.equal(result.result, 'UNCERTAIN');
+        assert.equal(browserAdapter.executeCount, 1);
+        assert.equal(artifactStore.traces.length, 1);
+        assert.equal(artifactStore.savedJson.some(
+            ({ name }) => name === 'grounding-decision-1'
+        ), true);
+    });
+});
+
 interface CompletedRunState {
     actionPlanner: FakeActionPlanner;
     artifactStore: FakeArtifactStore;
@@ -526,7 +544,7 @@ function assertCompletedAiRun(state: CompletedRunState): void {
         valueResolver,
         verdictEvaluator,
     } = state;
-    assert.equal(result.lifecycle, 'COMPLETED');
+    assert.equal(result.lifecycle, 'COMPLETED', result.summary);
     assert.equal(result.result, 'PASS');
     assert.equal(result.summary, passVerdict.summary);
     assert.equal(result.metrics.actionCount, 4);
@@ -545,8 +563,11 @@ function assertCompletedAiRun(state: CompletedRunState): void {
             'intent',
             'observation-before-navigation',
             'observation-after-navigation',
+            'grounding-decision-1',
             'observation-after-action-2',
+            'grounding-decision-2',
             'observation-after-action-3',
+            'grounding-decision-3',
             'observation-after-action-4',
             'verdict',
             'plan-compilation-source'
@@ -586,6 +607,9 @@ function assertCompletedAiRun(state: CompletedRunState): void {
         value: 'test-password'
     });
     assert.equal(browserAdapter.commands[3]?.type, 'CLICK');
+    assert.equal(browserAdapter.resolvedTargets[1]?.candidateId, 'e1');
+    assert.equal(browserAdapter.resolvedTargets[2]?.candidateId, 'e2');
+    assert.equal(browserAdapter.resolvedTargets[3]?.candidateId, 'e3');
     assert.deepEqual(valueResolver.resolvedNames, [
         'username',
         'password'
@@ -1112,29 +1136,57 @@ class FakeActionPlanner implements ActionPlanner {
     public lastInput?: PlanActionInput;
     public readonly inputs: PlanActionInput[] = [];
 
-    private readonly commands: ActionCommand[];
+    private readonly actions: SemanticAction[];
 
-    constructor(command: ActionCommand | ActionCommand[]) {
-        this.commands = Array.isArray(command)
-            ? command
-            : [command];
+    constructor(
+        command: ActionCommand | SemanticAction |
+        Array<ActionCommand | SemanticAction>
+    ) {
+        this.actions = (Array.isArray(command) ? command : [command])
+            .map(toSemanticActionFixture);
     }
 
     /** 模拟一次受控的单步规划。 */
     public plan = (
         input: PlanActionInput,
         signal: AbortSignal
-    ): Promise<ActionCommand> => {
+    ): Promise<SemanticAction> => {
         signal.throwIfAborted();
         this.callCount += 1;
         this.lastInput = input;
         this.inputs.push(input);
-        const command = this.commands[this.callCount - 1] ??
-            this.commands.at(-1);
-        if (!command) {
+        const action = this.actions[this.callCount - 1] ??
+            this.actions.at(-1);
+        if (!action) {
             return Promise.reject(new Error('Fake Planner 没有预设动作。'));
         }
-        return Promise.resolve(command);
+        return Promise.resolve(action);
+    };
+}
+
+function toSemanticActionFixture(
+    command: ActionCommand | SemanticAction
+): SemanticAction {
+    return {
+        type: command.type,
+        ...command.target
+            ? {
+                target: {
+                    description: command.target.description,
+                    ...'scope' in command.target && command.target.scope
+                        ? { scope: command.target.scope }
+                        : {},
+                    ...'relation' in command.target && command.target.relation
+                        ? { relation: command.target.relation }
+                        : {}
+                }
+            }
+            : {},
+        ...command.value ? { value: structuredClone(command.value) } : {},
+        ...command.expectedEffect
+            ? { expectedEffect: command.expectedEffect }
+            : {},
+        reasonSummary: command.reasonSummary
     };
 }
 
@@ -1188,6 +1240,7 @@ class FakeBrowserAdapter implements BrowserAdapter {
     public enhanceObservationWithVision?:
         BrowserAdapter['enhanceObservationWithVision'];
     public readonly commands: ActionCommand[] = [];
+    public readonly resolvedTargets: Array<ResolvedTarget | undefined> = [];
     private readonly sessionCommands = new Map<string, ActionCommand[]>();
 
     constructor(
@@ -1291,10 +1344,12 @@ class FakeBrowserAdapter implements BrowserAdapter {
     /** 模拟一次成功的起始页导航。 */
     public execute = (
         session: BrowserSession,
-        command: ActionCommand
+        command: ActionCommand,
+        target?: ResolvedTarget
     ): Promise<ActionResult> => {
         this.executeCount += 1;
         this.commands.push(command);
+        this.resolvedTargets.push(target);
         const commands = this.sessionCommands.get(session.sessionId);
         if (!commands) {
             return Promise.reject(new Error('测试浏览器会话不存在。'));
@@ -1384,57 +1439,7 @@ function createObservation(
                 : ['登录'],
         interactiveElements: url === 'about:blank' || workspaceVisible
             ? []
-            : [
-                {
-                    candidateId: 'e1',
-                    tag: 'input',
-                    role: 'textbox',
-                    name: '账号',
-                    valueState: usernameFilled ? 'filled' : 'empty',
-                    disabled: false,
-                    visible: true,
-                    inViewport: true,
-                    attributes: {},
-                    nearbyText: [],
-                    locatorHints: [{
-                        strategy: 'role-name',
-                        value: 'textbox::账号'
-                    }]
-                },
-                {
-                    candidateId: 'e2',
-                    tag: 'input',
-                    role: 'textbox',
-                    name: '密码',
-                    valueState: passwordFilled ? 'masked' : 'empty',
-                    disabled: false,
-                    visible: true,
-                    inViewport: true,
-                    attributes: {
-                        type: 'password'
-                    },
-                    nearbyText: [],
-                    locatorHints: [{
-                        strategy: 'role-name',
-                        value: 'textbox::密码'
-                    }]
-                },
-                {
-                    candidateId: 'e3',
-                    tag: 'button',
-                    role: 'button',
-                    name: '登录',
-                    disabled: false,
-                    visible: true,
-                    inViewport: true,
-                    attributes: {},
-                    nearbyText: [],
-                    locatorHints: [{
-                        strategy: 'role-name',
-                        value: 'button::登录'
-                    }]
-                }
-            ],
+            : createLoginElements(usernameFilled, passwordFilled),
         notices: [],
         tabs: [{
             active: true,
@@ -1450,4 +1455,93 @@ function createObservation(
         ].join('-'),
         truncated: false
     };
+}
+
+/** 创建视觉补充候选后的页面观察。 */
+function createVisualRecoveryObservation(): PageObservation {
+    const observation = createObservation(startInput.test.startUrl ?? '');
+    observation.interactiveElements.push({
+        candidateId: 'e4',
+        discoverySource: 'vision-assisted',
+        visualDescription: '当前页面内能够返回工作台的控件',
+        tag: 'div',
+        role: 'button',
+        disabled: false,
+        visible: true,
+        inViewport: true,
+        boundingBox: {
+            x: 10,
+            y: 10,
+            width: 100,
+            height: 32
+        },
+        attributes: {
+            class: 'workspace-back'
+        },
+        nearbyText: ['当前页面内能够返回工作台的控件'],
+        locatorHints: [{
+            strategy: 'css',
+            value: '.workspace-back'
+        }]
+    });
+    return observation;
+}
+
+/** 创建登录页的三个确定性候选元素。 */
+function createLoginElements(
+    usernameFilled: boolean,
+    passwordFilled: boolean
+): PageObservation['interactiveElements'] {
+    return [
+        {
+            candidateId: 'e1',
+            tag: 'input',
+            role: 'textbox',
+            name: '账号',
+            valueState: usernameFilled ? 'filled' : 'empty',
+            disabled: false,
+            visible: true,
+            inViewport: true,
+            boundingBox: { x: 10, y: 10, width: 200, height: 32 },
+            attributes: {},
+            nearbyText: [],
+            locatorHints: [{
+                strategy: 'role-name',
+                value: 'textbox::账号'
+            }]
+        },
+        {
+            candidateId: 'e2',
+            tag: 'input',
+            role: 'textbox',
+            name: '密码',
+            valueState: passwordFilled ? 'masked' : 'empty',
+            disabled: false,
+            visible: true,
+            inViewport: true,
+            boundingBox: { x: 10, y: 52, width: 200, height: 32 },
+            attributes: { type: 'password' },
+            nearbyText: [],
+            locatorHints: [{
+                strategy: 'role-name',
+                value: 'textbox::密码'
+            }]
+        },
+        {
+            candidateId: 'e3',
+            tag: 'button',
+            role: 'button',
+            name: '登录',
+            disabled: false,
+            visible: true,
+            inViewport: true,
+            boundingBox: { x: 10, y: 94, width: 100, height: 32 },
+            attributes: {},
+            nearbyText: [],
+            locatorHints: [{
+                strategy: 'role-name',
+                value: 'button::登录'
+            }]
+        }
+    ];
 }

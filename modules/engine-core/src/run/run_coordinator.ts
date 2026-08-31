@@ -13,11 +13,20 @@ import type {
     RunLifecycleState,
     RunResult,
     RunSnapshot,
+    ResolvedTarget,
+    SemanticAction,
     StartRunInput,
     TestIntent,
     TraceEvent,
     VerdictDecision,
 } from '../contracts';
+import type {
+    TargetGrounder,
+} from '../grounding';
+import {
+    DeterministicTargetGrounder,
+    GroundedActionBuilder,
+} from '../grounding';
 import type {
     ActionPlanner,
     PlannerHistoryEntry,
@@ -60,7 +69,7 @@ const ANSI_ESCAPE_PATTERN = new RegExp(
     `${ String.fromCharCode(27) }\\[[0-?]*[ -/]*[@-~]`,
     'gu'
 );
-const EXECUTABLE_PLANNED_ACTIONS = new Set<ActionCommand['type']>([
+const EXECUTABLE_PLANNED_ACTIONS = new Set<SemanticAction['type']>([
     'CHECK',
     'CLICK',
     'HOVER',
@@ -77,6 +86,7 @@ export interface RunCoordinatorOptions {
 /** RunCoordinator 使用的规划与独立判定能力。 */
 export interface RunCoordinatorDecisionServices {
     actionPlanner: ActionPlanner;
+    targetGrounder?: TargetGrounder;
     verdictEvaluator: VerdictEvaluator;
 }
 
@@ -118,7 +128,9 @@ interface PlannedActionExecution {
     beforeObservationReference: EvidenceRef;
     command: ActionCommand;
     effect: EffectVerification;
+    resolvedTarget?: ResolvedTarget;
     result: ActionResult;
+    semanticAction: SemanticAction;
 }
 
 /** 浏览器阶段完成后交给最终判定的数据。 */
@@ -168,6 +180,9 @@ const DEFAULT_OPTIONS: RunCoordinatorOptions = {
  * 一次测试运行的总协调器，负责串联意图构建、浏览器执行、观察和产物存储。
  */
 export class RunCoordinator implements ExecutionEngine {
+    private readonly groundedActionBuilder = new GroundedActionBuilder();
+    private readonly targetGrounder: TargetGrounder;
+
     /** 注入运行产物存储、事件发布、意图构建和浏览器能力。 */
     constructor(
         private readonly artifactStore: ArtifactStore,
@@ -177,7 +192,10 @@ export class RunCoordinator implements ExecutionEngine {
         private readonly decisionServices: RunCoordinatorDecisionServices,
         private readonly environmentValueResolver: EnvironmentValueResolver,
         private readonly options: RunCoordinatorOptions = DEFAULT_OPTIONS
-    ) {}
+    ) {
+        this.targetGrounder = decisionServices.targetGrounder
+            ?? new DeterministicTargetGrounder();
+    }
 
     /** 创建一次运行，并执行受预算约束的多轮浏览器 Agent 闭环。 */
     public async start(
@@ -461,9 +479,9 @@ export class RunCoordinator implements ExecutionEngine {
                 };
             }
 
-            let command = await this.planNextAction(context, runtime);
+            const semanticAction = await this.planNextAction(context, runtime);
             const visualRetry =
-                command.type === 'UNCERTAIN' && !visualRecoveryApplied
+                semanticAction.type === 'UNCERTAIN' && !visualRecoveryApplied
                     ? await this.retryWithVision(
                         context,
                         runtime,
@@ -478,14 +496,18 @@ export class RunCoordinator implements ExecutionEngine {
                 continue;
             }
             if (visualRetry?.failureSummary) {
-                command = this.createStopCommand(
-                    'UNCERTAIN',
-                    visualRetry.failureSummary
-                );
+                return {
+                    navigation,
+                    plannedActions,
+                    stopCommand: this.createStopCommand(
+                        'UNCERTAIN',
+                        visualRetry.failureSummary
+                    )
+                };
             }
             const plannerStop = this.createPlannerStopCommand(
-                command,
-                plannedActions.at(-1)?.command
+                semanticAction,
+                plannedActions.at(-1)?.semanticAction
             );
             if (plannerStop) {
                 return {
@@ -497,15 +519,27 @@ export class RunCoordinator implements ExecutionEngine {
 
             const previousFingerprint =
                 runtime.latestObservation?.stateFingerprint;
+            const grounded = await this.groundSemanticAction(
+                context,
+                runtime,
+                semanticAction
+            );
+            if ('stopCommand' in grounded) {
+                return {
+                    navigation,
+                    plannedActions,
+                    stopCommand: grounded.stopCommand
+                };
+            }
             const execution = await this.executePlannedAction(
                 context,
                 runtime,
-                command,
+                grounded,
                 beforeObservationReference
             );
             plannedActions.push(execution);
             visualRecoveryApplied = false;
-            if (command.type !== 'WAIT') {
+            if (semanticAction.type !== 'WAIT') {
                 this.updateRepeatedStateCount(
                     context,
                     runtime,
@@ -554,25 +588,76 @@ export class RunCoordinator implements ExecutionEngine {
 
     /** 把 Planner 终止建议和当前不支持的动作统一转换成停止命令。 */
     private createPlannerStopCommand(
-        command: ActionCommand,
-        previousCommand: ActionCommand | undefined
+        action: SemanticAction,
+        previousAction: SemanticAction | undefined
     ): ActionCommand | undefined {
-        if (this.isTerminalCommand(command)) {
-            return command;
+        if (this.isTerminalAction(action)) {
+            return this.createStopCommand(action.type, action.reasonSummary);
         }
-        if (!EXECUTABLE_PLANNED_ACTIONS.has(command.type)) {
+        if (!EXECUTABLE_PLANNED_ACTIONS.has(action.type)) {
             return this.createStopCommand(
                 'UNCERTAIN',
-                `当前执行阶段不支持 Planner 返回的 ${ command.type } 动作。`
+                `当前执行阶段不支持 Planner 返回的 ${ action.type } 动作。`
             );
         }
-        if (command.type === 'WAIT' && previousCommand?.type === 'WAIT') {
+        if (action.type === 'WAIT' && previousAction?.type === 'WAIT') {
             return this.createStopCommand(
                 'UNCERTAIN',
                 'Planner 连续返回 WAIT，已停止无效等待。'
             );
         }
         return undefined;
+    }
+
+    /** 将语义动作绑定为唯一物理目标，并保存 Grounding 证据。 */
+    private async groundSemanticAction(
+        context: RunExecutionContext,
+        runtime: RunContext,
+        semanticAction: SemanticAction
+    ): Promise<ReturnType<GroundedActionBuilder['build']> | {
+        stopCommand: ActionCommand
+    }> {
+        if (!semanticAction.target) {
+            return this.groundedActionBuilder.build(semanticAction);
+        }
+        const observation = runtime.latestObservation;
+        if (!observation) {
+            return {
+                stopCommand: this.createStopCommand(
+                    'UNCERTAIN',
+                    'Grounder 缺少最新页面观察。'
+                )
+            };
+        }
+        await this.transition(
+            context,
+            'RESOLVING',
+            '正在把语义目标绑定到当前页面元素'
+        );
+        const decision = await this.targetGrounder.ground(
+            semanticAction,
+            observation,
+            context.signal
+        );
+        context.signal.throwIfAborted();
+        const reference = await this.artifactStore.saveJson(
+            context.runId,
+            `grounding-decision-${ runtime.history.length }`,
+            toJsonValue(decision)
+        );
+        context.evidence.push(reference);
+        if (decision.status !== 'grounded' || !decision.target) {
+            return {
+                stopCommand: this.createStopCommand(
+                    'UNCERTAIN',
+                    decision.summary
+                )
+            };
+        }
+        return this.groundedActionBuilder.build(
+            semanticAction,
+            decision.target
+        );
     }
 
     /** 首次证据不足时用视觉模型批量命名当前候选，再交回 Planner。 */
@@ -927,7 +1012,9 @@ export class RunCoordinator implements ExecutionEngine {
                 evidence: [ afterReference, screenshotReference ]
             };
             history.push({
-                command: execution.command,
+                semanticAction: this.groundedActionBuilder.fromLegacyCommand(
+                    execution.command
+                ),
                 actionResult: execution.result,
                 effect,
                 beforeObservationRef: beforeReference.ref,
@@ -1061,7 +1148,9 @@ export class RunCoordinator implements ExecutionEngine {
         navigation: NavigationExecution
     ): RunContext {
         const historyEntry: PlannerHistoryEntry = {
-            command: navigation.command,
+            semanticAction: this.groundedActionBuilder.fromLegacyCommand(
+                navigation.command
+            ),
             actionResult: navigation.result,
             effect: this.createNavigationEffect(navigation),
             beforeObservationRef: navigation.beforeObservationReference.ref,
@@ -1090,7 +1179,7 @@ export class RunCoordinator implements ExecutionEngine {
     private async planNextAction(
         context: RunExecutionContext,
         runtime: RunContext
-    ): Promise<ActionCommand> {
+    ): Promise<SemanticAction> {
         if (context.lifecycle.current() !== 'OBSERVING') {
             await this.transition(
                 context,
@@ -1112,7 +1201,7 @@ export class RunCoordinator implements ExecutionEngine {
         context.modelCallCount += 1;
         runtime.counters.modelCallCount = context.modelCallCount;
         runtime.lifecycle = context.lifecycle.current();
-        const command = await this.decisionServices.actionPlanner.plan(
+        const action = await this.decisionServices.actionPlanner.plan(
             {
                 testIntent: runtime.testIntent,
                 observation,
@@ -1129,11 +1218,11 @@ export class RunCoordinator implements ExecutionEngine {
             context.runId,
             this.nextSequence(context),
             'action.planned', {
-                actionType: command.type,
-                reasonSummary: command.reasonSummary
+                actionType: action.type,
+                reasonSummary: action.reasonSummary
             }
         );
-        return command;
+        return action;
     }
 
     /** 计算当前协调流程还允许消费的预算。 */
@@ -1189,10 +1278,12 @@ export class RunCoordinator implements ExecutionEngine {
     }
 
     /** 判断 Planner 是否建议停止页面执行。 */
-    private isTerminalCommand(command: ActionCommand): boolean {
-        return command.type === 'FINISH' ||
-            command.type === 'FAIL' ||
-            command.type === 'UNCERTAIN';
+    private isTerminalAction(action: SemanticAction): action is SemanticAction & {
+        type: 'FAIL' | 'FINISH' | 'UNCERTAIN'
+    } {
+        return action.type === 'FINISH' ||
+            action.type === 'FAIL' ||
+            action.type === 'UNCERTAIN';
     }
 
     /** 创建不引用页面元素的内部终止命令。 */
@@ -1237,7 +1328,7 @@ export class RunCoordinator implements ExecutionEngine {
     private async executePlannedAction(
         context: RunExecutionContext,
         runtime: RunContext,
-        command: ActionCommand,
+        grounded: ReturnType<GroundedActionBuilder['build']>,
         beforeObservationReference: EvidenceRef
     ): Promise<PlannedActionExecution> {
         const beforeObservation = runtime.latestObservation;
@@ -1246,12 +1337,13 @@ export class RunCoordinator implements ExecutionEngine {
         }
         const executableCommand = await this.resolveCommandValue(
             context,
-            command
+            grounded.command
         );
         const result = await this.actPlannedCommand(
             context,
             runtime.browserSession,
-            executableCommand
+            executableCommand,
+            grounded.resolvedTarget
         );
         runtime.counters.actionCount = context.actionCount;
         const after = await this.observeAfterPlannedAction(
@@ -1259,15 +1351,17 @@ export class RunCoordinator implements ExecutionEngine {
             runtime.browserSession
         );
         const effect = this.createActionEffect(
-            command,
+            grounded.command,
             result,
             beforeObservation,
             after
         );
         const execution = {
-            command,
+            command: grounded.command,
             result,
             effect,
+            resolvedTarget: grounded.resolvedTarget,
+            semanticAction: grounded.semanticAction,
             beforeObservation,
             beforeObservationReference,
             afterObservation: after.observation,
@@ -1283,11 +1377,13 @@ export class RunCoordinator implements ExecutionEngine {
         context: RunExecutionContext,
         command: ActionCommand
     ): Promise<ActionCommand> {
-        await this.transition(
-            context,
-            'RESOLVING',
-            '正在解析输入值并绑定页面候选元素'
-        );
+        if (context.lifecycle.current() !== 'RESOLVING') {
+            await this.transition(
+                context,
+                'RESOLVING',
+                '正在解析动作输入值'
+            );
+        }
         const value = command.value;
         if (!value || value.source === 'literal') {
             return command;
@@ -1316,7 +1412,8 @@ export class RunCoordinator implements ExecutionEngine {
     private async actPlannedCommand(
         context: RunExecutionContext,
         session: BrowserSession,
-        executableCommand: ActionCommand
+        executableCommand: ActionCommand,
+        resolvedTarget?: ResolvedTarget
     ): Promise<ActionResult> {
         await this.transition(
             context,
@@ -1333,7 +1430,8 @@ export class RunCoordinator implements ExecutionEngine {
         context.actionCount += 1;
         const result = await this.browserAdapter.execute(
             session,
-            executableCommand
+            executableCommand,
+            resolvedTarget
         );
         await this.publishEvent(
             context.runId,
@@ -1555,6 +1653,7 @@ export class RunCoordinator implements ExecutionEngine {
             runId: context.runId,
             sequence: runtime.history.length + 1,
             command: execution.command,
+            resolvedTarget: execution.resolvedTarget,
             beforeObservationRef: execution.beforeObservationReference.ref,
             afterObservationRef: execution.afterObservationReference.ref,
             actionResult: execution.result,
@@ -1575,7 +1674,7 @@ export class RunCoordinator implements ExecutionEngine {
         runtime.latestObservation = execution.afterObservation;
         runtime.latestObservationReference = execution.afterObservationReference;
         runtime.history.push({
-            command: execution.command,
+            semanticAction: execution.semanticAction,
             actionResult: execution.result,
             effect: execution.effect,
             beforeObservationRef: execution.beforeObservationReference.ref,
@@ -1937,7 +2036,9 @@ export class RunCoordinator implements ExecutionEngine {
     ): PlannerHistoryEntry[] {
         return [
             {
-                command: execution.navigation.command,
+                semanticAction: this.groundedActionBuilder.fromLegacyCommand(
+                    execution.navigation.command
+                ),
                 actionResult: execution.navigation.result,
                 effect: this.createNavigationEffect(execution.navigation),
                 beforeObservationRef:
@@ -1946,7 +2047,7 @@ export class RunCoordinator implements ExecutionEngine {
                     execution.navigation.afterObservationReference.ref
             },
             ...execution.plannedActions.map((action) => ({
-                command: action.command,
+                semanticAction: action.semanticAction,
                 actionResult: action.result,
                 effect: action.effect,
                 beforeObservationRef: action.beforeObservationReference.ref,

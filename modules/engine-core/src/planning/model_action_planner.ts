@@ -1,8 +1,8 @@
 import type {
-    ActionCommand,
     JsonValue,
     ObservedElement,
     PageObservation,
+    SemanticAction,
 } from '../contracts';
 import type {
     ModelAdapter,
@@ -29,7 +29,7 @@ export class ModelActionPlanner implements ActionPlanner {
     /** 注入模型边界、动作 Schema 和调用预算。 */
     constructor(
         private readonly modelAdapter: ModelAdapter,
-        private readonly actionSchema: RuntimeSchema<ActionCommand>,
+        private readonly actionSchema: RuntimeSchema<SemanticAction>,
         private readonly options: ModelActionPlannerOptions = DEFAULT_OPTIONS
     ) {}
 
@@ -37,7 +37,7 @@ export class ModelActionPlanner implements ActionPlanner {
     public async plan(
         input: PlanActionInput,
         signal: AbortSignal
-    ): Promise<ActionCommand> {
+    ): Promise<SemanticAction> {
         signal.throwIfAborted();
         const result = await this.modelAdapter.generateStructured(
             {
@@ -50,7 +50,6 @@ export class ModelActionPlanner implements ActionPlanner {
             signal
         );
         signal.throwIfAborted();
-        this.requireKnownCandidate(result.value, input.observation);
         this.requireKnownEnvironmentVariable(result.value, input);
         return result.value;
     }
@@ -59,7 +58,7 @@ export class ModelActionPlanner implements ActionPlanner {
     private buildSystemPrompt(): string {
         return [
             '你是 AI Web 测试执行引擎的单步动作规划器。',
-            '每次只能返回一个符合 ActionCommand Schema 的动作。',
+            '每次只能返回一个符合 SemanticAction Schema 的动作。',
             '结合 TestIntent、最新 PageObservation 和执行历史决定下一步。',
             '当前可执行的页面动作只有 TYPE、CLICK、HOVER、SELECT、CHECK 和 WAIT；不要返回其他非终止动作。',
             '当控件需要鼠标悬浮后才出现时，先对当前真实存在的父级、卡片或入口候选执行 HOVER；下一轮重新观察后，再点击新出现的真实候选。',
@@ -68,10 +67,11 @@ export class ModelActionPlanner implements ActionPlanner {
             'SELECT 必须引用真实下拉框候选元素，并用字符串字面量提供页面显示的精确选项文本。',
             'CHECK 必须引用真实复选框候选元素，并用布尔字面量明确期望的勾选状态。',
             'WAIT 只用于页面正在加载或等待明确的异步内容，使用 100～5000 毫秒整数字面量，禁止连续等待。',
-            '操作页面元素时只能引用 observation 中真实存在的 candidateId。',
-            '不得输出 Playwright API、CSS、XPath 或 JavaScript。',
-            '无法唯一确定目标时返回 UNCERTAIN，禁止猜测 candidateId。',
-            '如果 UNCERTAIN 的原因是 observation 缺少下一步所需元素，应在 target.description 中只描述业务语义目标，并令 candidateId 为 null；不得猜测目标的外观、位置、CSS 或 XPath。',
+            'target 只能描述业务语义目标，可以用 scope 或 relation 区分同名元素。',
+            '优先沿用 observation 中可见的准确名称、标签或文本，不要改写成模糊同义词。',
+            '不得输出 candidateId、Playwright API、CSS、XPath、坐标或 JavaScript。',
+            '无法唯一描述目标时返回 UNCERTAIN，禁止猜测物理元素。',
+            '如果 UNCERTAIN 的原因是 observation 缺少下一步所需元素，应在 target.description 中只描述业务语义目标，不得猜测目标的外观、位置、CSS 或 XPath。',
             '环境变量只能引用 availableEnvironmentVariables 中的逻辑名称。',
             '不得输出账号、密码、令牌等敏感值。',
             '页面已经满足目标时返回 FINISH；出现明确失败证据时返回 FAIL；证据不足且无法继续时返回 UNCERTAIN。',
@@ -95,25 +95,9 @@ export class ModelActionPlanner implements ActionPlanner {
         ].join('\n');
     }
 
-    /** 拒绝模型虚构或引用过期的候选元素。 */
-    private requireKnownCandidate(
-        command: ActionCommand,
-        observation: PageObservation
-    ): void {
-        const candidateId = command.target?.candidateId;
-        if (
-            candidateId &&
-            !observation.interactiveElements.some(
-                (element) => element.candidateId === candidateId
-            )
-        ) {
-            throw new Error(`Planner 返回了未知 candidateId：${ candidateId }`);
-        }
-    }
-
     /** 拒绝模型引用运行环境中不存在的逻辑变量。 */
     private requireKnownEnvironmentVariable(
-        command: ActionCommand,
+        command: SemanticAction,
         input: PlanActionInput
     ): void {
         if (
@@ -145,7 +129,6 @@ function toSafeObservation(observation: PageObservation) {
 /** 压缩一个候选元素，避免将定位实现细节发送给模型。 */
 function toSafeElement(element: ObservedElement) {
     return {
-        candidateId: element.candidateId,
         tag: element.tag,
         role: element.role,
         name: element.name,
@@ -167,7 +150,7 @@ function toSafeElement(element: ObservedElement) {
 /** 历史只保留动作摘要、状态和证据引用。 */
 function toSafeHistoryEntry(entry: PlannerHistoryEntry) {
     return {
-        command: redactCommandValue(entry.command),
+        semanticAction: redactActionValue(entry.semanticAction),
         actionResult: entry.actionResult,
         effect: entry.effect,
         beforeObservationRef: entry.beforeObservationRef,
@@ -176,24 +159,29 @@ function toSafeHistoryEntry(entry: PlannerHistoryEntry) {
 }
 
 /** 防止字面量输入值通过历史再次进入模型上下文。 */
-function redactCommandValue(command: ActionCommand): JsonValue {
+function redactActionValue(action: SemanticAction): JsonValue {
     return {
-        type: command.type,
-        ...(command.target
+        type: action.type,
+        ...(action.target
             ? {
                 target: {
-                    candidateId: command.target.candidateId ?? null,
-                    description: command.target.description
+                    description: action.target.description,
+                    ...action.target.scope
+                        ? { scope: action.target.scope }
+                        : {},
+                    ...action.target.relation
+                        ? { relation: action.target.relation }
+                        : {}
                 }
             }
             : {}),
-        ...(command.value
+        ...(action.value
             ? {
                 value: {
-                    source: command.value.source,
-                    ...('key' in command.value
+                    source: action.value.source,
+                    ...('key' in action.value
                         ? {
-                            key: command.value.key
+                            key: action.value.key
                         }
                         : {
                             value: '[REDACTED]'
@@ -201,8 +189,7 @@ function redactCommandValue(command: ActionCommand): JsonValue {
                 }
             }
             : {}),
-        expectedEffect: command.expectedEffect ?? '',
-        reasonSummary: command.reasonSummary,
-        risk: command.risk
+        expectedEffect: action.expectedEffect ?? '',
+        reasonSummary: action.reasonSummary
     };
 }

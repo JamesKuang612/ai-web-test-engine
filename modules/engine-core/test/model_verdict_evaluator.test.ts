@@ -61,14 +61,13 @@ const input: EvaluateVerdictInput = {
         truncated: false
     },
     history: [{
-        command: {
+        semanticAction: {
             type: 'NAVIGATE',
             value: {
                 source: 'literal',
                 value: 'https://test.jdydevelop.com/dashboard#/'
             },
-            reasonSummary: '进入测试起始页面',
-            risk: 'read-only'
+            reasonSummary: '进入测试起始页面'
         },
         actionResult: {
             status: 'executed',

@@ -1,15 +1,15 @@
 import type {
-    ActionCommand,
     ActionResult,
     EffectVerification,
     PageObservation,
     RunBudgets,
+    SemanticAction,
     TestIntent,
 } from '../contracts';
 
 /** Planner 可以看到的单步历史，不包含输入值明文或浏览器对象。 */
 export interface PlannerHistoryEntry {
-    command: ActionCommand;
+    semanticAction: SemanticAction;
     actionResult: ActionResult;
     effect?: EffectVerification;
     beforeObservationRef: string;
@@ -30,9 +30,9 @@ export interface PlanActionInput {
 
 /** 将当前运行状态转换为一个受控的下一步动作。 */
 export interface ActionPlanner {
-    /** 每次只返回一个 ActionCommand，不直接操作浏览器。 */
+    /** 每次只返回一个不含物理定位信息的 SemanticAction。 */
     plan: (
         input: PlanActionInput,
         signal: AbortSignal
-    ) => Promise<ActionCommand>;
+    ) => Promise<SemanticAction>;
 }

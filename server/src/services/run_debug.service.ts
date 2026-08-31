@@ -6,10 +6,11 @@ import type {
 } from '@ai-web-test-engine/core';
 import path from 'node:path';
 import {
-    actionCommandSchema,
+    DeterministicTargetGrounder,
     ModelActionPlanner,
     ModelVerdictEvaluator,
     RunCoordinator,
+    semanticActionSchema,
     verdictDecisionSchema,
 } from '@ai-web-test-engine/core';
 import { service } from 'nstarter-core';
@@ -100,12 +101,13 @@ function createConfiguredExecutionEngine(
         {
             actionPlanner: new ModelActionPlanner(
                 modelAdapter,
-                actionCommandSchema,
+                semanticActionSchema,
                 {
                     maxOutputTokens: 1_200,
                     timeoutMs: 300_000
                 }
             ),
+            targetGrounder: new DeterministicTargetGrounder(),
             verdictEvaluator: new ModelVerdictEvaluator(
                 modelAdapter,
                 verdictDecisionSchema,
