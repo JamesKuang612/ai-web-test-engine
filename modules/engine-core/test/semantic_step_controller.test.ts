@@ -1,0 +1,494 @@
+import assert from 'node:assert/strict';
+
+import type {
+    GroundingDecision,
+    PagePerception,
+    RecoveryDecision,
+    RecoveryPlannerPort,
+    RecoverySafetyPolicy,
+    SemanticAction,
+    SemanticStepActionExecution,
+    SemanticStepRuntimePort,
+    TestIntent,
+} from '../src';
+import {
+    DeterministicRecoverySafetyPolicy,
+    SemanticStepController,
+    SemanticStepProgressEvaluator,
+} from '../src';
+
+// eslint-disable-next-line max-lines-per-function
+describe('SemanticStepController', () => {
+    it('search overlay: blocked → CLEAR → original action succeeds', async () => {
+        const initial = perception('initial', {
+            elements: [ element('search', '搜索', 'filled') ]
+        });
+        const cleared = perception('cleared', {
+            previous: initial,
+            elements: [ element('search', '搜索', 'empty') ]
+        });
+        const done = perception('done', {
+            previous: cleared,
+            url: 'https://example.test/new-app'
+        });
+        const runtime = new FakeRuntime(initial, (action, current) => {
+            if (action.type === 'TYPE') {
+                return grounded('search', current, '搜索');
+            }
+            return current.dom.stateFingerprint === 'initial'
+                ? decision('blocked')
+                : grounded('new-app', current);
+        }, (action) => action.type === 'TYPE' ? cleared : done);
+
+        const result = await controller(runtime).execute(step({
+            type: 'CLICK',
+            target: { description: '新建应用' },
+            expectedEffect: '进入新建应用页面',
+            reasonSummary: '创建应用'
+        }), intent, signal());
+
+        assert.equal(result.outcome.status, 'completed');
+        assert.deepEqual(runtime.executedTypes, [ 'TYPE', 'CLICK' ]);
+        assert.equal(result.executions[0]?.recoveryAction?.type, 'CLEAR');
+    });
+
+    it('hover reveal: not-found → HOVER → original action succeeds', async () => {
+        const initial = perception('initial', {
+            elements: [ element('card', '应用 11') ]
+        });
+        const revealed = perception('revealed', {
+            previous: initial,
+            elements: [
+                element('card', '应用 11'),
+                element('star', '收藏星标')
+            ]
+        });
+        const favorited = perception('favorited', {
+            previous: revealed,
+            visibleText: [ '已收藏应用 11' ]
+        });
+        const runtime = new FakeRuntime(initial, (action, current) => {
+            if (action.type === 'HOVER') {
+                return grounded('card', current);
+            }
+            return current.dom.stateFingerprint === 'initial'
+                ? decision('not-found')
+                : grounded('star', current);
+        }, (action) => action.type === 'HOVER' ? revealed : favorited);
+        const progress = new SemanticStepProgressEvaluator({
+            modelFallback: {
+                evaluate: async () => ({
+                    status: 'complete',
+                    basis: 'model',
+                    summary: '收藏状态已经出现。',
+                    evidence: []
+                })
+            }
+        });
+
+        const result = await controller(runtime, progress).execute(step({
+            type: 'CLICK',
+            target: {
+                description: '收藏星标',
+                scope: '应用 11'
+            },
+            expectedEffect: '应用 11 进入我的收藏',
+            reasonSummary: '收藏应用'
+        }), intent, signal());
+
+        assert.equal(result.outcome.status, 'completed');
+        assert.deepEqual(runtime.executedTypes, [ 'HOVER', 'CLICK' ]);
+        assert.equal(runtime.modelPurposes.includes('step-progress'), true);
+    });
+
+    it('wrong transient action: executed wrong-state → restore → continue', async () => {
+        const initial = perception('initial');
+        const wrong = perception('wrong', {
+            previous: initial,
+            url: 'https://example.test/settings',
+            elements: [ element('close', '关闭菜单') ],
+            blocked: true
+        });
+        const restored = perception('restored', {
+            previous: wrong,
+            elements: [ element('new-app', '新建应用') ]
+        });
+        const done = perception('done', {
+            previous: restored,
+            url: 'https://example.test/new-app'
+        });
+        const model = new SequenceRecoveryPlanner([{
+            kind: 'recover',
+            action: {
+                type: 'CLICK',
+                target: { description: '设置菜单' },
+                reasonSummary: '打开临时菜单寻找入口'
+            }
+        }]);
+        const runtime = new FakeRuntime(initial, (action, current) => {
+            if (action.target?.description === '设置菜单') {
+                return grounded('gear', current, '设置菜单');
+            }
+            if (action.target?.description === '关闭菜单') {
+                return grounded('close', current, '关闭菜单');
+            }
+            return current.dom.stateFingerprint === 'restored' ||
+                current.dom.stateFingerprint === 'done'
+                ? grounded('new-app', current)
+                : decision('not-found');
+        }, (action, current) => {
+            if (action.target?.description === '设置菜单') {
+                return wrong;
+            }
+            if (action.target?.description === '关闭菜单') {
+                return restored;
+            }
+            return current.dom.stateFingerprint === 'restored' ? done : current;
+        });
+
+        const result = await controller(
+            runtime,
+            new SemanticStepProgressEvaluator(),
+            model
+        ).execute(step({
+            type: 'CLICK',
+            target: { description: '新建应用' },
+            expectedEffect: '进入新建应用页面',
+            reasonSummary: '创建应用'
+        }), intent, signal());
+
+        assert.equal(result.outcome.status, 'completed');
+        assert.deepEqual(runtime.executedTypes, [ 'CLICK', 'CLICK', 'CLICK' ]);
+        assert.equal(result.executions[1]?.restorative, true);
+        assert.equal(result.executions[1]?.recoveryOutcome, 'progress');
+    });
+
+    it('unsafe recovery: proposal rejected and Browser never called', async () => {
+        const initial = perception('initial');
+        const model = new SequenceRecoveryPlanner([{
+            kind: 'recover',
+            action: {
+                type: 'CLICK',
+                target: { description: '删除应用' },
+                reasonSummary: '尝试删除应用以恢复'
+            }
+        }]);
+        const runtime = new FakeRuntime(
+            initial,
+            (action, current) => action.target?.description === '删除应用'
+                ? grounded('delete', current, '删除应用')
+                : decision('not-found'),
+            () => initial
+        );
+
+        const result = await controller(
+            runtime,
+            new SemanticStepProgressEvaluator(),
+            model
+        ).execute(step({
+            type: 'CLICK',
+            target: { description: '新建应用' },
+            reasonSummary: '创建应用'
+        }), intent, signal());
+
+        assert.equal(result.outcome.status, 'unsafe');
+        assert.equal(runtime.executedTypes.length, 0);
+    });
+
+    it('recovery cycle: 相同状态与动作触发 bounded termination', async () => {
+        const loading = perception('loading', { loading: true });
+        const runtime = new FakeRuntime(
+            loading,
+            () => decision('not-found'),
+            () => loading
+        );
+
+        const result = await controller(runtime).execute(step({
+            type: 'CLICK',
+            target: { description: '新建应用' },
+            reasonSummary: '创建应用'
+        }), intent, signal());
+
+        assert.equal(result.outcome.status, 'cycle');
+        assert.deepEqual(runtime.executedTypes, [ 'WAIT' ]);
+    });
+
+    it('physical success != semantic success', async () => {
+        const initial = perception('initial', {
+            elements: [ element('card', '应用 11') ]
+        });
+        const unchanged = perception('unchanged', { previous: initial });
+        const runtime = new FakeRuntime(
+            initial,
+            (_action, current) => grounded('card', current),
+            () => unchanged
+        );
+
+        const result = await controller(runtime).execute(step({
+            type: 'HOVER',
+            target: { description: '应用 11' },
+            reasonSummary: '显示隐藏操作'
+        }), intent, signal());
+
+        assert.notEqual(result.outcome.status, 'completed');
+        assert.equal(runtime.executedTypes.length, 2);
+        assert.equal(runtime.executedTypes.every((type) => type === 'HOVER'), true);
+        assert.equal(result.executions[0]?.actionResult.status, 'executed');
+    });
+});
+
+const intent: TestIntent = {
+    schemaVersion: 1,
+    objective: '完成目标操作',
+    preconditions: [],
+    successCriteria: [{
+        id: 'done',
+        description: '目标完成',
+        preferredEvidence: [ 'dom' ],
+        required: true
+    }],
+    failureCriteria: [],
+    constraints: [],
+    allowedHosts: [ 'example.test' ],
+    dataPolicy: { generatedValues: {} }
+};
+
+class FakeRuntime implements SemanticStepRuntimePort<string> {
+    public executedTypes: string[] = [];
+    public modelPurposes: string[] = [];
+    private current: PagePerception;
+
+    constructor(
+        initial: PagePerception,
+        private readonly grounder: (
+            action: SemanticAction,
+            perception: PagePerception
+        ) => GroundingDecision,
+        private readonly transition: (
+            action: SemanticAction,
+            perception: PagePerception
+        ) => PagePerception
+    ) {
+        this.current = initial;
+    }
+
+    public canUseModel = () => true;
+    public perceive: SemanticStepRuntimePort<string>['perceive'] = async () =>
+        this.current;
+    public ground: SemanticStepRuntimePort<string>['ground'] = async (
+        action,
+        current
+    ) => this.grounder(action, current);
+    public execute: SemanticStepRuntimePort<string>['execute'] = async (input) => {
+        this.executedTypes.push(input.action.type);
+        const after = this.transition(input.action, this.current);
+        const urlChanged = after.dom.page.url !== this.current.dom.page.url;
+        const execution: SemanticStepActionExecution<string> = {
+            record: `${ input.origin }-${ this.executedTypes.length }`,
+            origin: input.origin,
+            semanticAction: input.action,
+            ...input.recoveryAction
+                ? { recoveryAction: input.recoveryAction }
+                : {},
+            actionResult: {
+                status: 'executed',
+                startedAt: '2026-08-31T00:00:00.000Z',
+                finishedAt: '2026-08-31T00:00:01.000Z',
+                browserSignals: {
+                    dialogOpened: false,
+                    downloadStarted: false,
+                    newTabOpened: false,
+                    urlChanged
+                }
+            },
+            effect: {
+                status: urlChanged && input.origin === 'recovery'
+                    ? 'contradicted'
+                    : 'confirmed',
+                expectedEffect: input.action.expectedEffect ?? '局部变化',
+                evidence: [],
+                summary: '浏览器已执行动作。'
+            },
+            before: this.current,
+            after,
+            resolvedTarget: input.resolvedTarget,
+            restorative: false
+        };
+        this.current = after;
+        return execution;
+    };
+    public recordReobserve = async () => {};
+    public consumeModelCalls: SemanticStepRuntimePort<string>['consumeModelCalls'] =
+        (_count, purpose) => this.modelPurposes.push(purpose);
+}
+
+class SequenceRecoveryPlanner implements RecoveryPlannerPort {
+    constructor(private readonly decisions: RecoveryDecision[]) {}
+    public plan: RecoveryPlannerPort['plan'] = async () =>
+        this.decisions.shift() ?? { kind: 'stop', reason: '没有更多恢复动作' };
+}
+
+function controller(
+    runtime: FakeRuntime,
+    progress = new SemanticStepProgressEvaluator(),
+    planner?: RecoveryPlannerPort,
+    safety: RecoverySafetyPolicy = new DeterministicRecoverySafetyPolicy()
+) {
+    return new SemanticStepController(runtime, progress, safety, planner);
+}
+
+function step(primaryAction: SemanticAction) {
+    return {
+        id: 'step-1',
+        primaryAction,
+        ...primaryAction.expectedEffect
+            ? { expectedEffect: primaryAction.expectedEffect }
+            : {},
+        source: 'runtime-wrapper' as const
+    };
+}
+
+function decision(status: GroundingDecision['status']): GroundingDecision {
+    return {
+        status,
+        confidence: 0,
+        evidence: [],
+        summary: status
+    };
+}
+
+function grounded(
+    candidateId: string,
+    current: PagePerception,
+    name = candidateId
+): GroundingDecision {
+    return {
+        status: 'grounded',
+        target: {
+            description: name,
+            observationId: current.dom.observationId,
+            candidateId,
+            elementSnapshot: {
+                tag: 'button',
+                role: 'button',
+                name,
+                valueState: name.includes('搜索') ? 'filled' : undefined,
+                disabled: false,
+                visible: true,
+                inViewport: true,
+                attributes: {},
+                nearbyText: [],
+                locatorHints: []
+            },
+            strategy: 'candidate-id',
+            locatorData: {},
+            confidence: 1,
+            confidenceBasis: 'deterministic',
+            unique: true,
+            actionable: true,
+            evidence: []
+        },
+        confidence: 1,
+        confidenceBasis: 'deterministic',
+        evidence: [],
+        summary: 'grounded'
+    };
+}
+
+function perception(id: string, options: {
+    previous?: PagePerception,
+    elements?: ReturnType<typeof element>[],
+    visibleText?: string[],
+    url?: string,
+    loading?: boolean,
+    blocked?: boolean
+} = {}): PagePerception {
+    const elements = options.elements ?? [];
+    return {
+        perceptionId: `p-${ id }`,
+        capturedAt: '2026-08-31T00:00:00.000Z',
+        dom: {
+            schemaVersion: 1,
+            observationId: `o-${ id }`,
+            capturedAt: '2026-08-31T00:00:00.000Z',
+            page: {
+                loading: options.loading ?? false,
+                title: id,
+                url: options.url ?? 'https://example.test/workbench',
+                viewport: { width: 1280, height: 720 }
+            },
+            visibleText: options.visibleText ?? [ id ],
+            interactiveElements: elements,
+            notices: [],
+            tabs: [],
+            stateFingerprint: id,
+            truncated: false
+        },
+        accessibility: {
+            source: 'playwright-aria-snapshot',
+            nodes: [],
+            truncated: false
+        },
+        interactionStates: Object.fromEntries(elements.map((item) => [
+            item.candidateId,
+            {
+                candidateId: item.candidateId,
+                enabled: true,
+                hitTest: options.blocked ? 'blocked' : 'receives-events',
+                inViewport: true,
+                visible: true
+            }
+        ])),
+        ...options.previous
+            ? {
+                delta: {
+                    accessibility: {
+                        added: [], changed: [], removed: [], truncated: false
+                    },
+                    candidates: {
+                        added: elements.map((item) => item.candidateId),
+                        removed: [],
+                        truncated: false
+                    },
+                    overlayState: {
+                        before: 'clear',
+                        after: options.blocked ? 'blocked' : 'clear',
+                        changed: Boolean(options.blocked)
+                    },
+                    titleChanged: true,
+                    urlChanged: options.previous.dom.page.url !==
+                        (options.url ?? 'https://example.test/workbench'),
+                    visibleText: {
+                        added: options.visibleText ?? [ id ],
+                        removed: [],
+                        truncated: false
+                    }
+                }
+            }
+            : {}
+    };
+}
+
+function element(
+    candidateId: string,
+    name: string,
+    valueState?: 'empty' | 'filled'
+) {
+    return {
+        candidateId,
+        tag: valueState ? 'input' : 'button',
+        role: valueState ? 'textbox' : 'button',
+        name,
+        ...valueState ? { valueState } : {},
+        disabled: false,
+        visible: true,
+        inViewport: true,
+        attributes: {},
+        nearbyText: [],
+        locatorHints: []
+    };
+}
+
+function signal(): AbortSignal {
+    return new AbortController().signal;
+}

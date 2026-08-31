@@ -525,6 +525,8 @@ function assertCompletedAiRun(state: CompletedRunState): void {
             'page-perception-3',
             'grounding-decision-3',
             'observation-after-action-4',
+            'page-perception-4',
+            'grounding-decision-4',
             'verdict',
             'plan-compilation-source'
         ]

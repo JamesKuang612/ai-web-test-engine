@@ -8,10 +8,13 @@ import path from 'node:path';
 import {
     CompositeTargetGrounder,
     ModelActionPlanner,
+    ModelRecoveryPlanner,
+    ModelStepProgressEvaluator,
     ModelVerdictEvaluator,
     PerceptionService,
     RunCoordinator,
     semanticActionSchema,
+    SemanticStepProgressEvaluator,
     verdictDecisionSchema,
 } from '@ai-web-test-engine/core';
 import { service } from 'nstarter-core';
@@ -116,6 +119,13 @@ function createConfiguredExecutionEngine(
                 }
             ),
             perceptionService,
+            recoveryPlanner: new ModelRecoveryPlanner(modelAdapter, {
+                maxOutputTokens: 800,
+                timeoutMs: 300_000
+            }),
+            stepProgressEvaluator: new SemanticStepProgressEvaluator({
+                modelFallback: new ModelStepProgressEvaluator(modelAdapter)
+            }),
             targetGrounder,
             verdictEvaluator: new ModelVerdictEvaluator(
                 modelAdapter,

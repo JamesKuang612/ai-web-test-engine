@@ -342,6 +342,14 @@ implements BrowserAdapter, PlaywrightPageProvider {
             );
         }
 
+        if (command.type === 'SCROLL') {
+            return await this.executeScroll(managedSession, command, startedAt);
+        }
+
+        if (command.type === 'BACK') {
+            return await this.executeBack(managedSession, startedAt);
+        }
+
         return await this.executeNavigation(
             managedSession,
             command,
@@ -413,6 +421,80 @@ implements BrowserAdapter, PlaywrightPageProvider {
                         : 'Playwright 无法完成页面导航。'
                 }
             );
+        }
+    }
+
+    /** Recovery-only BACK；授权由核心 SafetyPolicy 完成，浏览器只负责物理执行。 */
+    private async executeBack(
+        session: ManagedBrowserSession,
+        startedAt: string
+    ): Promise<ActionResult> {
+        const previousUrl = session.page.url();
+        session.elementIndex = undefined;
+        try {
+            await session.page.goBack({
+                timeout: NAVIGATION_TIMEOUT_MS,
+                waitUntil: 'commit'
+            });
+            return this.createActionResult(
+                startedAt,
+                'executed',
+                session.page.url() !== previousUrl
+            );
+        } catch (error) {
+            const timedOut = error instanceof errors.TimeoutError;
+            return this.createActionResult(
+                startedAt,
+                timedOut ? 'timed-out' : 'failed',
+                session.page.url() !== previousUrl,
+                {
+                    code: timedOut ? 'BACK_TIMEOUT' : 'BACK_FAILED',
+                    message: timedOut
+                        ? '返回上一页动作超时。'
+                        : 'Playwright 无法返回上一页。'
+                }
+            );
+        }
+    }
+
+    /** 将 semantic direction/amount 映射为固定 viewport 比例，不接受模型像素值。 */
+    private async executeScroll(
+        session: ManagedBrowserSession,
+        command: ActionCommand,
+        startedAt: string
+    ): Promise<ActionResult> {
+        const value = command.value?.source === 'literal'
+            ? command.value.value
+            : undefined;
+        if (!isScrollValue(value)) {
+            return this.createActionResult(startedAt, 'rejected', false, {
+                code: 'INVALID_SCROLL_COMMAND',
+                message: 'SCROLL 必须提供受控 direction 和 amount。'
+            });
+        }
+        const viewport = session.page.viewportSize();
+        if (!viewport) {
+            return this.createActionResult(startedAt, 'failed', false, {
+                code: 'SCROLL_VIEWPORT_MISSING',
+                message: '浏览器当前没有可用视口。'
+            });
+        }
+        const ratio = value.amount === 'small'
+            ? 0.25
+            : value.amount === 'medium' ? 0.55 : 0.9;
+        const delta = Math.round(
+            viewport.height * ratio * (value.direction === 'up' ? -1 : 1)
+        );
+        try {
+            await session.page.mouse.wheel(0, delta);
+            await session.page.waitForTimeout(150);
+            session.elementIndex = undefined;
+            return this.createActionResult(startedAt, 'executed', false);
+        } catch {
+            return this.createActionResult(startedAt, 'failed', false, {
+                code: 'SCROLL_FAILED',
+                message: 'Playwright 无法完成页面滚动。'
+            });
         }
     }
 
@@ -1334,4 +1416,19 @@ implements BrowserAdapter, PlaywrightPageProvider {
             }
         };
     }
+}
+
+function isScrollValue(value: JsonValue | undefined): value is {
+    direction: 'up' | 'down',
+    amount: 'small' | 'medium' | 'page'
+} {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        return false;
+    }
+    return (value.direction === 'up' || value.direction === 'down')
+        && (
+            value.amount === 'small'
+            || value.amount === 'medium'
+            || value.amount === 'page'
+        );
 }

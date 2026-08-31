@@ -7,14 +7,18 @@ import type {
     EvidenceRef,
     EffectVerification,
     FailureCategory,
+    GroundingDecision,
     JsonValue,
     PageObservation,
+    PagePerception,
+    RecoveryAction,
     RunEvent,
     RunLifecycleState,
     RunResult,
     RunSnapshot,
     ResolvedTarget,
     SemanticAction,
+    SemanticStep,
     StartRunInput,
     TestIntent,
     TraceEvent,
@@ -70,6 +74,19 @@ import type {
 import {
     ActionEffectVerifier,
 } from './action_effect_verifier';
+import {
+    DeterministicRecoverySafetyPolicy,
+} from './deterministic_recovery_safety_policy';
+import type {
+    RecoveryPlannerPort,
+} from './recovery_ports';
+import {
+    normalizeRecoveryCommand,
+    SemanticStepController,
+} from './semantic_step_controller';
+import {
+    SemanticStepProgressEvaluator,
+} from './semantic_step_progress_evaluator';
 
 const ANSI_ESCAPE_PATTERN = new RegExp(
     `${ String.fromCharCode(27) }\\[[0-?]*[ -/]*[@-~]`,
@@ -93,6 +110,8 @@ export interface RunCoordinatorOptions {
 export interface RunCoordinatorDecisionServices {
     actionPlanner: ActionPlanner;
     perceptionService?: PerceptionService;
+    recoveryPlanner?: RecoveryPlannerPort;
+    stepProgressEvaluator?: SemanticStepProgressEvaluator;
     targetGrounder?: TargetGrounder;
     verdictEvaluator: VerdictEvaluator;
 }
@@ -138,6 +157,10 @@ interface PlannedActionExecution {
     resolvedTarget?: ResolvedTarget;
     result: ActionResult;
     semanticAction: SemanticAction;
+    origin?: 'planner' | 'recovery';
+    recoveryAction?: RecoveryAction;
+    recoveryOutcome?: 'progress' | 'no-progress' | 'wrong-state';
+    restorative?: boolean;
 }
 
 /** 浏览器阶段完成后交给最终判定的数据。 */
@@ -184,6 +207,7 @@ export class RunCoordinator implements ExecutionEngine {
     private readonly actionEffectVerifier = new ActionEffectVerifier();
     private readonly groundedActionBuilder = new GroundedActionBuilder();
     private readonly perceptionService: PerceptionService;
+    private readonly stepProgressEvaluator: SemanticStepProgressEvaluator;
     private readonly targetGrounder: TargetGrounder;
 
     /** 注入运行产物存储、事件发布、意图构建和浏览器能力。 */
@@ -209,6 +233,8 @@ export class RunCoordinator implements ExecutionEngine {
                     interactionStates: {}
                 })
             });
+        this.stepProgressEvaluator = decisionServices.stepProgressEvaluator ??
+            new SemanticStepProgressEvaluator();
     }
 
     /** 创建一次运行，并执行受预算约束的多轮浏览器 Agent 闭环。 */
@@ -478,8 +504,6 @@ export class RunCoordinator implements ExecutionEngine {
         navigation: NavigationExecution
     ): Promise<BrowserExecution> {
         const plannedActions: PlannedActionExecution[] = [];
-        let beforeObservationReference =
-            navigation.afterObservationReference;
         while (true) {
             const budgetStop = this.createBudgetStopCommand(context);
             if (budgetStop) {
@@ -503,72 +527,68 @@ export class RunCoordinator implements ExecutionEngine {
                 };
             }
 
-            const previousFingerprint =
-                runtime.latestObservation?.stateFingerprint;
-            const grounded = await this.groundSemanticAction(
+            const step: SemanticStep = {
+                id: `runtime-step-${ plannedActions.length + 1 }`,
+                primaryAction: semanticAction,
+                ...semanticAction.expectedEffect
+                    ? { expectedEffect: semanticAction.expectedEffect }
+                    : {},
+                source: 'runtime-wrapper'
+            };
+            const previousFingerprint = runtime.latestObservation
+                ?.stateFingerprint;
+            const controller = this.createSemanticStepController(
                 context,
-                runtime,
-                semanticAction
+                runtime
             );
-            if ('stopCommand' in grounded) {
-                return {
-                    navigation,
-                    plannedActions,
-                    stopCommand: grounded.stopCommand
-                };
-            }
-            const execution = await this.executePlannedAction(
-                context,
-                runtime,
-                grounded,
-                beforeObservationReference
+            const stepResult = await controller.execute(
+                step,
+                runtime.testIntent,
+                context.signal
             );
-            plannedActions.push(execution);
-            if (semanticAction.type !== 'WAIT') {
+            const records = stepResult.executions.map(({ record, ...metadata }) => ({
+                ...record,
+                origin: metadata.origin,
+                recoveryAction: metadata.recoveryAction,
+                recoveryOutcome: metadata.recoveryOutcome,
+                restorative: metadata.restorative
+            }));
+            plannedActions.push(...records);
+            const last = records.at(-1);
+            if (last && semanticAction.type !== 'WAIT') {
                 this.updateRepeatedStateCount(
                     context,
                     runtime,
                     previousFingerprint,
-                    execution.afterObservation.stateFingerprint
+                    last.afterObservation.stateFingerprint
                 );
+                if (
+                    context.repeatedStateActionCount >
+                    context.input.budgets.maxRepeatedStateActions
+                ) {
+                    return {
+                        navigation,
+                        plannedActions,
+                        stopCommand: this.createStopCommand(
+                            'UNCERTAIN',
+                            '连续动作没有产生可观察的页面变化，已停止运行。'
+                        )
+                    };
+                }
             }
-            const executionStop = this.createExecutionStopCommand(
-                context,
-                execution
-            );
-            if (executionStop) {
+            if (stepResult.outcome.status !== 'completed') {
                 return {
                     navigation,
                     plannedActions,
-                    stopCommand: executionStop
+                    stopCommand: this.createStopCommand(
+                        stepResult.outcome.status === 'failed'
+                            ? 'FAIL'
+                            : 'UNCERTAIN',
+                        stepResult.outcome.reason
+                    )
                 };
             }
-
-            beforeObservationReference = execution.afterObservationReference;
         }
-    }
-
-    /** 把动作失败与重复状态预算统一转换成停止命令。 */
-    private createExecutionStopCommand(
-        context: RunExecutionContext,
-        execution: PlannedActionExecution
-    ): ActionCommand | undefined {
-        if (execution.result.status !== 'executed') {
-            return this.createStopCommand(
-                'FAIL',
-                execution.result.error?.message ?? '浏览器动作执行失败。'
-            );
-        }
-        if (
-            context.repeatedStateActionCount >
-            context.input.budgets.maxRepeatedStateActions
-        ) {
-            return this.createStopCommand(
-                'UNCERTAIN',
-                '连续动作没有产生可观察的页面变化，已停止运行。'
-            );
-        }
-        return undefined;
     }
 
     /** 把 Planner 终止建议和当前不支持的动作统一转换成停止命令。 */
@@ -594,73 +614,198 @@ export class RunCoordinator implements ExecutionEngine {
         return undefined;
     }
 
-    /** 将语义动作绑定为唯一物理目标，并保存 Grounding 证据。 */
-    private async groundSemanticAction(
+    /** 将当前 Planner 动作交给保持原目标不变的 bounded Step Controller。 */
+    private createSemanticStepController(
+        context: RunExecutionContext,
+        runtime: RunContext
+    ): SemanticStepController<PlannedActionExecution> {
+        return new SemanticStepController<PlannedActionExecution>({
+            canUseModel: () => this.getRemainingBudgets(context)
+                .maxModelCalls > 1,
+            perceive: async (previous, signal) => {
+                signal.throwIfAborted();
+                if (!previous && runtime.latestPerception) {
+                    return runtime.latestPerception;
+                }
+                if (previous) {
+                    await this.refreshRuntimeObservation(context, runtime);
+                }
+                return await this.captureRuntimePerception(
+                    context,
+                    runtime,
+                    previous ?? runtime.latestPerception
+                );
+            },
+            ground: async (action, perception, visualAllowed, signal) => {
+                return await this.groundWithPerception(
+                    context,
+                    runtime,
+                    action,
+                    perception,
+                    visualAllowed,
+                    signal
+                );
+            },
+            execute: async (input) => {
+                const command = input.recoveryAction
+                    ? normalizeRecoveryCommand(
+                        input.recoveryAction,
+                        input.resolvedTarget
+                    )
+                    : this.groundedActionBuilder.build(
+                        input.action,
+                        input.resolvedTarget
+                    ).command;
+                if (!command) {
+                    throw new Error('REOBSERVE 不能进入 Browser execute。');
+                }
+                const beforeReference = runtime.latestObservationReference;
+                if (!beforeReference) {
+                    throw new Error('执行 SemanticStep 前缺少页面观察引用。');
+                }
+                const execution = await this.executePlannedAction(
+                    context,
+                    runtime,
+                    {
+                        semanticAction: input.action,
+                        command,
+                        resolvedTarget: input.resolvedTarget
+                    },
+                    beforeReference
+                );
+                const after = await this.captureRuntimePerception(
+                    context,
+                    runtime,
+                    input.before
+                );
+                return {
+                    record: execution,
+                    origin: input.origin,
+                    semanticAction: input.action,
+                    ...input.recoveryAction
+                        ? { recoveryAction: input.recoveryAction }
+                        : {},
+                    actionResult: execution.result,
+                    effect: execution.effect,
+                    before: input.before,
+                    after,
+                    resolvedTarget: execution.resolvedTarget,
+                    restorative: false
+                };
+            },
+            recordReobserve: async (perception, attempt, signal) => {
+                signal.throwIfAborted();
+                const reference = await this.artifactStore.saveJson(
+                    context.runId,
+                    `recovery-reobserve-${ runtime.history.length }-${ attempt }`,
+                    toJsonValue({
+                        attempt,
+                        perceptionId: perception.perceptionId,
+                        capturedAt: perception.capturedAt
+                    })
+                );
+                context.evidence.push(reference);
+            },
+            consumeModelCalls: (count) => {
+                context.modelCallCount += count;
+                runtime.counters.modelCallCount = context.modelCallCount;
+            }
+        }, this.stepProgressEvaluator,
+        new DeterministicRecoverySafetyPolicy(),
+        this.decisionServices.recoveryPlanner);
+    }
+
+    /** 捕获并保存当前 Runtime 的统一 PagePerception。 */
+    private async captureRuntimePerception(
         context: RunExecutionContext,
         runtime: RunContext,
-        semanticAction: SemanticAction
-    ): Promise<ReturnType<GroundedActionBuilder['build']> | {
-        stopCommand: ActionCommand
-    }> {
-        if (!semanticAction.target) {
-            return this.groundedActionBuilder.build(semanticAction);
-        }
+        previous: PagePerception | undefined
+    ): Promise<PagePerception> {
         const observation = runtime.latestObservation;
         if (!observation) {
-            return {
-                stopCommand: this.createStopCommand(
-                    'UNCERTAIN',
-                    'Grounder 缺少最新页面观察。'
-                )
-            };
+            throw new Error('Perception 缺少最新页面观察。');
         }
-        await this.transition(
-            context,
-            'RESOLVING',
-            '正在把语义目标绑定到当前页面元素'
-        );
         const perception = await this.perceptionService.capture(
             runtime.browserSession,
             observation,
-            runtime.latestPerception,
+            previous,
             context.signal
         );
         runtime.latestPerception = perception;
-        const perceptionReference = await this.artifactStore.saveJson(
+        const reference = await this.artifactStore.saveJson(
             context.runId,
             `page-perception-${ runtime.history.length }`,
             toJsonValue(perception)
         );
-        context.evidence.push(perceptionReference);
-        const remaining = this.getRemainingBudgets(context);
+        context.evidence.push(reference);
+        return perception;
+    }
+
+    /** REOBSERVE 只刷新观察和产物，不创建 Browser ActionResult/Trace。 */
+    private async refreshRuntimeObservation(
+        context: RunExecutionContext,
+        runtime: RunContext
+    ): Promise<void> {
+        const evidence = await this.captureObservationEvidence(
+            context,
+            runtime.browserSession,
+            `observation-reobserve-${ runtime.history.length }`,
+            `screenshot-reobserve-${ runtime.history.length }.png`
+        );
+        runtime.latestObservation = evidence.observation;
+        runtime.latestObservationReference = evidence.observationReference;
+    }
+
+    /** Grounder 是 semantic target 到物理 target 的唯一绑定边界。 */
+    private async groundWithPerception(
+        context: RunExecutionContext,
+        runtime: RunContext,
+        action: SemanticAction,
+        perception: PagePerception,
+        visualAllowed: boolean,
+        signal: AbortSignal
+    ): Promise<GroundingDecision> {
+        if (!action.target) {
+            return {
+                status: 'grounded',
+                confidence: 1,
+                confidenceBasis: 'deterministic',
+                evidence: [],
+                summary: '该动作不需要物理目标。',
+                usage: {
+                    sourcesUsed: [],
+                    visualModelCalls: 0
+                }
+            };
+        }
+        if (context.lifecycle.current() === 'RECORDING') {
+            await this.transition(
+                context,
+                'OBSERVING',
+                '正在观察动作后的页面状态'
+            );
+        }
+        if (context.lifecycle.current() !== 'RESOLVING') {
+            await this.transition(
+                context,
+                'RESOLVING',
+                '正在把语义目标绑定到当前页面元素'
+            );
+        }
         const decision = await this.targetGrounder.ground({
-            action: semanticAction,
+            action,
             perception,
             session: runtime.browserSession,
-            visualAllowed: remaining.maxModelCalls > 0
-        }, context.signal);
-        const visualModelCalls = decision.usage?.visualModelCalls ?? 0;
-        context.modelCallCount += visualModelCalls;
-        runtime.counters.modelCallCount = context.modelCallCount;
-        context.signal.throwIfAborted();
+            visualAllowed
+        }, signal);
+        signal.throwIfAborted();
         const reference = await this.artifactStore.saveJson(
             context.runId,
             `grounding-decision-${ runtime.history.length }`,
             toJsonValue(decision)
         );
         context.evidence.push(reference);
-        if (decision.status !== 'grounded' || !decision.target) {
-            return {
-                stopCommand: this.createStopCommand(
-                    'UNCERTAIN',
-                    decision.summary
-                )
-            };
-        }
-        return this.groundedActionBuilder.build(
-            semanticAction,
-            decision.target
-        );
+        return decision;
     }
 
     /** 记录浏览器执行导航前的空白页状态。 */

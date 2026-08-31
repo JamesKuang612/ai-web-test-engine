@@ -103,6 +103,9 @@ export class SemanticStepProgressEvaluator {
         const groundingImproved = isGroundingImproved(input);
         const changed = hasMeaningfulPerceptionDelta(input.after.delta);
         if (input.attemptedAction.type === 'WAIT') {
+            if (input.effect?.status === 'confirmed') {
+                return progress('complete', '明确的等待动作已经完成。', evidence);
+            }
             return changed || groundingImproved
                 ? progress('progress', '等待后页面出现了有意义变化。', evidence)
                 : progress('no-progress', '等待后页面没有有意义变化。', evidence);
@@ -121,6 +124,17 @@ export class SemanticStepProgressEvaluator {
             if (groundingImproved) {
                 return progress('progress', '原始目标的定位状态已经改善。', evidence);
             }
+            if (
+                input.attemptedAction.type === 'CLICK'
+                && input.after.delta?.urlChanged
+                && isNavigationEffect(input.step.expectedEffect)
+            ) {
+                return progress(
+                    'complete',
+                    '页面导航与明确的 expectedEffect 一致。',
+                    evidence
+                );
+            }
             return progress(
                 'unknown',
                 changed
@@ -135,6 +149,11 @@ export class SemanticStepProgressEvaluator {
             evidence
         );
     }
+}
+
+function isNavigationEffect(expectedEffect: string | undefined): boolean {
+    return Boolean(expectedEffect &&
+        /跳转|进入|打开.+页面|返回|导航|URL|地址/iu.test(expectedEffect));
 }
 
 function isDeterministicControlAction(type: string): boolean {

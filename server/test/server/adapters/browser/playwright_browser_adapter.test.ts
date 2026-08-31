@@ -929,8 +929,8 @@ describe('PlaywrightBrowserAdapter', () => {
 
         try {
             const unsupportedResult = await adapter.execute(session, {
-                type: 'BACK',
-                reasonSummary: '返回上一页',
+                type: 'INSPECT',
+                reasonSummary: '检查页面元素',
                 risk: 'read-only'
             });
             assert.equal(unsupportedResult.status, 'rejected');
@@ -938,6 +938,27 @@ describe('PlaywrightBrowserAdapter', () => {
                 unsupportedResult.error?.code,
                 'UNSUPPORTED_ACTION'
             );
+
+            const scrollResult = await adapter.execute(session, {
+                type: 'SCROLL',
+                value: {
+                    source: 'literal',
+                    value: {
+                        direction: 'down',
+                        amount: 'small'
+                    }
+                },
+                reasonSummary: '小范围向下滚动',
+                risk: 'reversible'
+            });
+            assert.equal(scrollResult.status, 'executed');
+
+            const backResult = await adapter.execute(session, {
+                type: 'BACK',
+                reasonSummary: '撤销 Recovery 导航',
+                risk: 'reversible'
+            });
+            assert.equal(backResult.status, 'executed');
 
             const invalidUrlResult = await adapter.execute(
                 session,

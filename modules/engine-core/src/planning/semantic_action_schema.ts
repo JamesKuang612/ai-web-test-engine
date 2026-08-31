@@ -10,15 +10,11 @@ import type {
 } from '../ports';
 
 const ACTION_TYPES = new Set<ActionType>([
-    'BACK',
     'CHECK',
     'CLICK',
     'FAIL',
     'FINISH',
     'HOVER',
-    'INSPECT',
-    'NAVIGATE',
-    'SCROLL',
     'SELECT',
     'TYPE',
     'UNCERTAIN',
@@ -28,8 +24,6 @@ const TARGET_ACTIONS = new Set<ActionType>([
     'CHECK',
     'CLICK',
     'HOVER',
-    'INSPECT',
-    'SCROLL',
     'SELECT',
     'TYPE'
 ]);

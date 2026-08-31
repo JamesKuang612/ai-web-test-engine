@@ -5,6 +5,18 @@ import {
 } from '../src';
 
 describe('semanticActionSchema', () => {
+    it('主 Planner Schema 不开放 Recovery-only 动作', () => {
+        [ 'BACK', 'SCROLL', 'INSPECT', 'NAVIGATE' ].forEach((type) => {
+            assert.throws(() => semanticActionSchema.parse({
+                type,
+                target: null,
+                value: null,
+                expectedEffect: null,
+                reasonSummary: 'Recovery-only'
+            }));
+        });
+    });
+
     it('接受不包含物理定位信息的语义动作', () => {
         assert.deepEqual(semanticActionSchema.parse({
             type: 'CLICK',
