@@ -25,6 +25,18 @@ export class AccessibilityTargetGrounder {
             ].some((value) => matches(target.scope!, value));
         });
     }
+
+    /** 只返回主语义完全相同的节点，用于检测跨模态强冲突。 */
+    public findExactMatches(
+        target: SemanticTarget,
+        nodes: AccessibilityNode[]
+    ): AccessibilityNode[] {
+        return this.findMatches(target, nodes).filter((node) =>
+            [ node.name, node.description ].some((value) =>
+                normalize(target.description) === normalize(value)
+            )
+        );
+    }
 }
 
 function matches(expected: string, actual: string | undefined): boolean {

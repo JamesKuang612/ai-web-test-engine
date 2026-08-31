@@ -53,6 +53,33 @@ describe('CompositeTargetGrounder 多模态顺序', () => {
         assert.equal(decision.status, 'blocked');
         assert.equal(mapper.calls.length, 0);
         assert.equal(visual.callCount, 0);
+        assert.deepEqual(decision.usage?.sourcesUsed, [ 'dom', 'hit-test' ]);
+    });
+
+    it('DOM 与强 exact A11y 指向不同 candidate 时返回 ambiguous', async () => {
+        const mapper = new FakeCandidateMapper('ax-2');
+        const visual = new FakeVisualGrounder();
+        const request = createRequest(
+            [ createElement('e1', '收藏') ],
+            createAction('收藏')
+        );
+        request.perception.accessibility.nodes.push({
+            id: 'ax-node-1',
+            ancestors: [{ name: '应用 11', role: 'group' }],
+            name: '收藏',
+            role: 'button'
+        });
+
+        const decision = await new CompositeTargetGrounder(
+            mapper,
+            visual
+        ).ground(request, signal());
+
+        assert.equal(decision.status, 'ambiguous');
+        assert.equal(visual.callCount, 0);
+        assert.deepEqual(decision.usage?.sourcesUsed, [
+            'dom', 'accessibility', 'hit-test'
+        ]);
     });
 
     it('DOM 不足时使用 bounded A11y 证据映射到 live candidate', async () => {
@@ -74,7 +101,9 @@ describe('CompositeTargetGrounder 多模态顺序', () => {
         assert.equal(mapper.calls[0]?.source, 'accessibility');
         assert.equal(visual.callCount, 0);
     });
+});
 
+describe('CompositeTargetGrounder 视觉映射', () => {
     it('DOM/A11y 不足时由视觉发现区域，再经 mapping 落到 candidate', async () => {
         const mapper = new FakeCandidateMapper('visual-1');
         const visual = new FakeVisualGrounder({
@@ -90,15 +119,28 @@ describe('CompositeTargetGrounder 多模态顺序', () => {
         });
         const grounder = new CompositeTargetGrounder(mapper, visual);
 
-        const decision = await grounder.ground(
-            createRequest([], createAction('收藏星标')),
-            signal()
-        );
+        const request = createRequest([], createAction('收藏星标'));
+        request.perception.visual = {
+            regions: [],
+            screenshotRef: 'artifact://grounding-screen-1'
+        };
+        const decision = await grounder.ground(request, signal());
 
         assert.equal(decision.status, 'grounded');
         assert.equal(decision.target?.candidateId, 'visual-1');
         assert.equal(mapper.calls[0]?.source, 'visual');
         assert.equal(decision.usage?.visualModelCalls, 1);
+        assert.equal(decision.confidenceBasis, 'engine-heuristic');
+        assert.deepEqual(decision.visualEvidence, {
+            mappedCandidateIds: [ 'visual-1' ],
+            regions: [{
+                id: 'vr-1',
+                boundingBox: { x: 10, y: 20, width: 24, height: 24 },
+                context: [ '应用 11' ],
+                description: '收藏星标'
+            }],
+            screenshotRef: 'artifact://grounding-screen-1'
+        });
     });
 
     it('视觉区域无法安全映射时返回 unmapped，不生成坐标目标', async () => {

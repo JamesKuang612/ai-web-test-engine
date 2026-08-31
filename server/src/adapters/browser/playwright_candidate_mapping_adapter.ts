@@ -39,24 +39,13 @@ const VISUAL_MAPPING_SCRIPT = String.raw`(input) => {
     const hits = points.map(({x, y}) => document.elementFromPoint(x, y))
         .filter(Boolean);
     if (hits.length === 0) return { status: 'unmapped', created: false };
-    const existing = new Set(hits.map((hit) =>
-        hit.closest('[' + input.attribute + ']')
-            ?.getAttribute(input.attribute)
-    ).filter(Boolean));
-    if (existing.size === 1) {
-        return {
-            status: 'mapped', created: false,
-            candidateId: Array.from(existing)[0]
-        };
-    }
-    if (existing.size > 1) return { status: 'ambiguous', created: false };
     const visible = (element) => {
         const style = window.getComputedStyle(element);
         const box = element.getBoundingClientRect();
         return style.display !== 'none' && style.visibility !== 'hidden' &&
             Number(style.opacity) !== 0 && box.width > 0 && box.height > 0;
     };
-    const compatible = (element) => {
+    const strongOwner = (element) => {
         if (!visible(element)) return false;
         if (input.actionType === 'HOVER') return true;
         if (element.disabled || element.getAttribute('aria-disabled') === 'true') {
@@ -81,18 +70,28 @@ const VISUAL_MAPPING_SCRIPT = String.raw`(input) => {
             ['button', 'checkbox', 'link', 'menuitem', 'option', 'radio',
                 'switch', 'tab'].includes(role) ||
             element.hasAttribute('onclick') ||
-            element.hasAttribute('aria-haspopup') ||
-            window.getComputedStyle(element).cursor === 'pointer';
+            element.hasAttribute('aria-haspopup');
     };
+    const pointerOwner = (element) => input.actionType === 'CLICK' &&
+        visible(element) &&
+        !['svg', 'path', 'use'].includes(element.tagName.toLowerCase()) &&
+        window.getComputedStyle(element).cursor === 'pointer';
     const candidates = [];
     for (const hit of hits) {
         let current = hit;
+        let pointerCandidate;
         for (let depth = 0; current && depth < 7; depth += 1) {
-            if (compatible(current)) {
+            if (strongOwner(current)) {
                 candidates.push(current);
                 break;
             }
+            if (!pointerCandidate && pointerOwner(current)) {
+                pointerCandidate = current;
+            }
             current = current.parentElement;
+        }
+        if (!current && pointerCandidate) {
+            candidates.push(pointerCandidate);
         }
     }
     if (candidates.length === 0) {
@@ -100,12 +99,16 @@ const VISUAL_MAPPING_SCRIPT = String.raw`(input) => {
     }
     let selected = candidates[0];
     for (const candidate of candidates.slice(1)) {
-        if (candidate === selected || selected.contains(candidate)) continue;
-        if (candidate.contains(selected)) {
+        if (candidate === selected || candidate.contains(selected)) continue;
+        if (selected.contains(candidate)) {
             selected = candidate;
             continue;
         }
         return { status: 'ambiguous', created: false };
+    }
+    const existing = selected.getAttribute(input.attribute);
+    if (existing) {
+        return { status: 'mapped', created: false, candidateId: existing };
     }
     selected.setAttribute(input.attribute, input.candidateId);
     return {
@@ -134,9 +137,13 @@ implements CandidateMappingPort {
             return unmapped('语义动作没有页面目标。');
         }
         if (evidence.source === 'accessibility') {
-            const ids = unique(evidence.nodes.flatMap((node) =>
-                node.domCandidateId ? [ node.domCandidateId ] : []
-            ));
+            const ids = unique((await Promise.all(evidence.nodes.map(
+                async (node) => await this.mapAccessibilityNode(
+                    session,
+                    observationId,
+                    node.id
+                )
+            ))).filter((id): id is string => Boolean(id)));
             return await this.mapCandidateIds(
                 session,
                 observationId,
@@ -181,19 +188,49 @@ implements CandidateMappingPort {
         );
     };
 
+    private async mapAccessibilityNode(
+        session: Parameters<CandidateMappingPort['map']>[0],
+        observationId: string,
+        accessibilityNodeId: string
+    ): Promise<string | undefined> {
+        const ariaRef = this.pageProvider.getAccessibilityRef(
+            session,
+            observationId,
+            accessibilityNodeId
+        );
+        if (!ariaRef) {
+            return undefined;
+        }
+        const page = this.pageProvider.getPage(session);
+        const locator = page.locator(`aria-ref=${ ariaRef }`);
+        if (await locator.count() !== 1) {
+            return undefined;
+        }
+        const existing = await locator.getAttribute(
+            RUNTIME_CANDIDATE_ATTRIBUTE
+        );
+        if (existing) {
+            return existing;
+        }
+        const candidateId = `ax-${ randomUUID().slice(0, 12) }`;
+        await locator.evaluate(`(element) => element.setAttribute(${
+            JSON.stringify(RUNTIME_CANDIDATE_ATTRIBUTE)
+        }, ${ JSON.stringify(candidateId) })`);
+        this.pageProvider.registerTransientCandidate(
+            session,
+            observationId,
+            candidateId,
+            locator
+        );
+        return candidateId;
+    }
+
     private async mapVisualRegion(
         session: Parameters<CandidateMappingPort['map']>[0],
         observationId: string,
         actionType: ActionType,
         region: VisualRegion
     ): Promise<VisualDomMapping> {
-        if (region.mappedCandidateId) {
-            return {
-                candidateId: region.mappedCandidateId,
-                created: false,
-                status: 'mapped'
-            };
-        }
         const page = this.pageProvider.getPage(session);
         const candidateId = `visual-${ randomUUID().slice(0, 12) }`;
         const result = await page.evaluate(`(${ VISUAL_MAPPING_SCRIPT })(${
@@ -237,20 +274,20 @@ implements CandidateMappingPort {
                 summary: `感知证据映射到 ${ candidateIds.length } 个不同元素。`
             };
         }
-        const page = this.pageProvider.getPage(session);
         const candidates = (await Promise.all(candidateIds.map(
             async (candidateId): Promise<MappedCandidate | undefined> => {
-                if (!this.pageProvider.getCandidateLocator(
+                const locator = this.pageProvider.getCandidateLocator(
                     session,
                     observationId,
                     candidateId
-                )) {
+                );
+                if (!locator) {
                     return undefined;
                 }
                 const [ elementSnapshot, interactionState ] =
                     await Promise.all([
-                        captureElementSnapshot(page, candidateId),
-                        captureInteractionState(page, candidateId)
+                        captureElementSnapshot(locator),
+                        captureInteractionState(locator, candidateId)
                     ]);
                 if (!elementSnapshot || !interactionState) {
                     return undefined;

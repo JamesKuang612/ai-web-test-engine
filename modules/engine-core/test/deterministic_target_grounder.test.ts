@@ -78,12 +78,12 @@ describe('DeterministicTargetGrounder 物理绑定', () => {
             new AbortController().signal
         );
 
-        assert.equal(decision.status, 'not-found');
+        assert.equal(decision.status, 'not-visible');
     });
 
 });
 
-describe('DeterministicTargetGrounder 消歧与阻塞', () => {
+describe('DeterministicTargetGrounder 消歧与可执行性', () => {
     const grounder = new DeterministicTargetGrounder();
 
     it('使用 scope 区分多个同名元素', async () => {
@@ -150,7 +150,7 @@ describe('DeterministicTargetGrounder 消歧与阻塞', () => {
         assert.equal(decision.target, undefined);
     });
 
-    it('只把能够证明的 disabled 状态分类为 blocked', async () => {
+    it('把 disabled 状态分类为 not-actionable', async () => {
         const decision = await grounder.ground(
             createRequest(
                 createAction('CLICK', '提交'),
@@ -162,8 +162,37 @@ describe('DeterministicTargetGrounder 消歧与阻塞', () => {
             new AbortController().signal
         );
 
-        assert.equal(decision.status, 'blocked');
-        assert.match(decision.summary, /disabled/u);
+        assert.equal(decision.status, 'not-actionable');
+        assert.match(decision.summary, /CLICK/u);
+    });
+
+    it('把动作类型不兼容分类为 not-actionable', async () => {
+        const decision = await grounder.ground(
+            createRequest(
+                createAction('TYPE', '提交'),
+                createObservation([createElement('e1', {
+                    name: '提交'
+                })])
+            ),
+            new AbortController().signal
+        );
+
+        assert.equal(decision.status, 'not-actionable');
+    });
+
+    it('把视口外目标分类为 not-visible', async () => {
+        const decision = await grounder.ground(
+            createRequest(
+                createAction('CLICK', '提交'),
+                createObservation([createElement('e1', {
+                    name: '提交',
+                    inViewport: false
+                })])
+            ),
+            new AbortController().signal
+        );
+
+        assert.equal(decision.status, 'not-visible');
     });
 });
 

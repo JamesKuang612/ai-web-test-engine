@@ -1,6 +1,8 @@
 import type {
+    AccessibilityNode,
     GroundingDecision,
     ResolvedTarget,
+    VisualRegion,
 } from '../contracts';
 import type {
     CandidateMappingPort,
@@ -29,10 +31,23 @@ export class CompositeTargetGrounder implements TargetGrounder {
         signal: AbortSignal
     ): Promise<GroundingDecision> {
         signal.throwIfAborted();
-        const domDecision = validateDomInteraction(
-            await this.domGrounder.ground(request, signal),
-            request
+        const rawDomDecision = await this.domGrounder.ground(request, signal);
+        const domUsedHitTest = rawDomDecision.target && Boolean(
+            request.perception.interactionStates[
+                rawDomDecision.target.candidateId
+            ]
         );
+        const domDecision = validateDomInteraction(rawDomDecision, request);
+        if (domDecision.status === 'grounded' && request.action.target) {
+            const conflict = await this.findDomAccessibilityConflict(
+                request,
+                domDecision,
+                signal
+            );
+            if (conflict) {
+                return conflict;
+            }
+        }
         if (
             domDecision.status === 'grounded' ||
             domDecision.status === 'blocked' ||
@@ -40,7 +55,13 @@ export class CompositeTargetGrounder implements TargetGrounder {
             domDecision.status === 'not-actionable' ||
             !request.action.target
         ) {
-            return withUsage(domDecision, [ 'dom' ], 0);
+            return withUsage(
+                domDecision,
+                domUsedHitTest
+                    ? [ 'dom', 'hit-test' ]
+                    : [ 'dom' ],
+                0
+            );
         }
 
         const a11yMatches = this.accessibilityGrounder.findMatches(
@@ -70,22 +91,34 @@ export class CompositeTargetGrounder implements TargetGrounder {
             }
         }
 
+        return await this.groundWithVisual(
+            request,
+            a11yMatches,
+            a11yDecision,
+            domDecision,
+            signal
+        );
+    }
+
+    private async groundWithVisual(
+        request: GroundingRequest,
+        a11yMatches: AccessibilityNode[],
+        a11yDecision: GroundingDecision | undefined,
+        domDecision: GroundingDecision,
+        signal: AbortSignal
+    ): Promise<GroundingDecision> {
         if (!request.visualAllowed) {
             return a11yDecision ?? withUsage(domDecision, [ 'dom' ], 0);
         }
-
         const visual = await this.visualGrounding.locate(
             request.session,
-            request.action.target,
+            request.action.target!,
             request.perception,
             signal
         );
         if (visual.status !== 'located' || visual.regions.length === 0) {
             return withUsage(
-                a11yDecision ?? {
-                    ...domDecision,
-                    summary: visual.summary
-                },
+                a11yDecision ?? { ...domDecision, summary: visual.summary },
                 [
                     'dom',
                     ...a11yMatches.length > 0
@@ -96,23 +129,66 @@ export class CompositeTargetGrounder implements TargetGrounder {
                 visual.modelCalls
             );
         }
-        const visualMapping = await this.candidateMapper.map(
+        const mapping = await this.candidateMapper.map(
             request.session,
             request.perception,
             request.action,
-            {
-                regions: visual.regions,
-                source: 'visual'
-            },
+            { regions: visual.regions, source: 'visual' },
             signal
         );
         return fromMapping(
             request,
-            visualMapping,
+            mapping,
             'visual',
             0.85,
-            visual.modelCalls
+            visual.modelCalls,
+            visual.regions
         );
+    }
+
+    private async findDomAccessibilityConflict(
+        request: GroundingRequest,
+        domDecision: GroundingDecision,
+        signal: AbortSignal
+    ): Promise<GroundingDecision | undefined> {
+        const exactMatches = this.accessibilityGrounder.findExactMatches(
+            request.action.target!,
+            request.perception.accessibility.nodes
+        );
+        if (exactMatches.length === 0) {
+            return undefined;
+        }
+        const mapping = await this.candidateMapper.map(
+            request.session,
+            request.perception,
+            request.action,
+            { nodes: exactMatches, source: 'accessibility' },
+            signal
+        );
+        if (
+            mapping.status !== 'mapped' ||
+            mapping.candidates.length !== 1 ||
+            !mapping.candidates[0].actionCompatible ||
+            mapping.candidates[0].candidateId === domDecision.target?.candidateId
+        ) {
+            return undefined;
+        }
+        return {
+            status: 'ambiguous',
+            confidence: 0,
+            confidenceBasis: 'deterministic',
+            evidence: [
+                ...domDecision.evidence,
+                ...mapping.evidence,
+                `DOM candidate=${ domDecision.target?.candidateId }`,
+                `A11y candidate=${ mapping.candidates[0].candidateId }`
+            ],
+            summary: 'DOM 与强 exact accessibility 证据指向不同目标。',
+            usage: {
+                sourcesUsed: [ 'dom', 'accessibility', 'hit-test' ],
+                visualModelCalls: 0
+            }
+        };
     }
 }
 
@@ -133,6 +209,7 @@ function validateDomInteraction(
         return {
             status: 'not-visible',
             confidence: 1,
+            confidenceBasis: 'deterministic',
             evidence: decision.evidence,
             summary: 'DOM 目标存在，但当前不可见或不在视口内。'
         };
@@ -141,6 +218,7 @@ function validateDomInteraction(
         return {
             status: 'not-actionable',
             confidence: 1,
+            confidenceBasis: 'deterministic',
             evidence: decision.evidence,
             summary: 'DOM 目标存在，但当前不可执行。'
         };
@@ -149,6 +227,7 @@ function validateDomInteraction(
         ? {
             status: 'blocked',
             confidence: 1,
+            confidenceBasis: 'deterministic',
             evidence: [
                 ...decision.evidence,
                 '所有有效 hit-test 采样点均被无关元素阻挡'
@@ -163,15 +242,28 @@ function fromMapping(
     mapping: CandidateMappingResult,
     source: 'accessibility' | 'visual',
     confidence: number,
-    visualModelCalls = 0
+    visualModelCalls = 0,
+    visualRegions: VisualRegion[] = []
 ): GroundingDecision {
-    const sources = [ 'dom', source ] as const;
+    const sources = [
+        'dom',
+        source,
+        ...(mapping.candidates.length > 0 ? [ 'hit-test' as const ] : [])
+    ] as const;
+    const visualEvidence = createVisualEvidence(
+        request,
+        mapping,
+        source,
+        visualRegions
+    );
     if (mapping.status !== 'mapped' || mapping.candidates.length !== 1) {
         return {
             status: mapping.status === 'ambiguous' ? 'ambiguous' : 'unmapped',
             confidence: 0,
+            confidenceBasis: 'deterministic',
             evidence: mapping.evidence,
             summary: mapping.summary,
+            ...visualEvidence ? { visualEvidence } : {},
             usage: {
                 sourcesUsed: [ ...sources ],
                 visualModelCalls
@@ -189,7 +281,8 @@ function fromMapping(
             sources,
             visualModelCalls,
             'not-visible',
-            '目标已经映射，但当前不可见或没有有效 geometry。'
+            '目标已经映射，但当前不可见或没有有效 geometry。',
+            visualEvidence
         );
     }
     if (
@@ -201,7 +294,8 @@ function fromMapping(
             sources,
             visualModelCalls,
             'not-actionable',
-            '目标已经映射，但不满足当前动作的执行条件。'
+            '目标已经映射，但不满足当前动作的执行条件。',
+            visualEvidence
         );
     }
     if (candidate.interactionState.hitTest === 'blocked') {
@@ -210,10 +304,33 @@ function fromMapping(
             sources,
             visualModelCalls,
             'blocked',
-            '目标的所有有效采样点均被无关元素阻挡。'
+            '目标的所有有效采样点均被无关元素阻挡。',
+            visualEvidence
         );
     }
-    const target: ResolvedTarget = {
+    const target = createMappedTarget(request, candidate, source, confidence);
+    return {
+        status: 'grounded',
+        target,
+        confidence,
+        confidenceBasis: 'engine-heuristic',
+        evidence: candidate.evidence,
+        summary: mapping.summary,
+        ...visualEvidence ? { visualEvidence } : {},
+        usage: {
+            sourcesUsed: [ ...sources ],
+            visualModelCalls
+        }
+    };
+}
+
+function createMappedTarget(
+    request: GroundingRequest,
+    candidate: CandidateMappingResult['candidates'][number],
+    source: 'accessibility' | 'visual',
+    confidence: number
+): ResolvedTarget {
+    return {
         description: request.action.target!.description,
         observationId: request.perception.dom.observationId,
         candidateId: candidate.candidateId,
@@ -225,21 +342,30 @@ function fromMapping(
             source
         },
         confidence,
+        confidenceBasis: 'engine-heuristic',
         unique: true,
         actionable: true,
         evidence: candidate.evidence
     };
-    return {
-        status: 'grounded',
-        target,
-        confidence,
-        evidence: candidate.evidence,
-        summary: mapping.summary,
-        usage: {
-            sourcesUsed: [ ...sources ],
-            visualModelCalls
+}
+
+function createVisualEvidence(
+    request: GroundingRequest,
+    mapping: CandidateMappingResult,
+    source: 'accessibility' | 'visual',
+    regions: VisualRegion[]
+): GroundingDecision['visualEvidence'] | undefined {
+    return source === 'visual'
+        ? {
+            mappedCandidateIds: mapping.candidates.map(
+                ({ candidateId }) => candidateId
+            ),
+            regions,
+            ...request.perception.visual?.screenshotRef
+                ? { screenshotRef: request.perception.visual.screenshotRef }
+                : {}
         }
-    };
+        : undefined;
 }
 
 function mappingFailure(
@@ -250,13 +376,16 @@ function mappingFailure(
     visualModelCalls: number,
     status: Extract<GroundingDecision['status'],
     'blocked' | 'not-actionable' | 'not-visible'>,
-    summary: string
+    summary: string,
+    visualEvidence?: GroundingDecision['visualEvidence']
 ): GroundingDecision {
     return {
         status,
         confidence: 1,
+        confidenceBasis: 'deterministic',
         evidence: mapping.evidence,
         summary,
+        ...visualEvidence ? { visualEvidence } : {},
         usage: {
             sourcesUsed: [ ...sourcesUsed ],
             visualModelCalls

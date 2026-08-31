@@ -11,28 +11,12 @@ import type {
 } from '@ai-web-test-engine/core';
 import { parseDocument } from 'yaml';
 
-import { RUNTIME_CANDIDATE_ATTRIBUTE } from './interactive_element_script';
 import { captureInteractionState } from './playwright_element_evidence';
 import type { PlaywrightPageProvider } from './playwright_page_provider';
 
 const MAX_ACCESSIBILITY_NODES = 200;
 const MAX_ACCESSIBILITY_DEPTH = 12;
 const MAX_ANCESTORS = 4;
-const ACCESSIBLE_ACTION_ROLES = new Set([
-    'button',
-    'checkbox',
-    'combobox',
-    'link',
-    'menuitem',
-    'option',
-    'radio',
-    'slider',
-    'spinbutton',
-    'switch',
-    'tab',
-    'textbox'
-]);
-
 interface ParsedAriaNode extends Omit<AccessibilityNode, 'id'> {
     children: ParsedAriaNode[];
     ref?: string;
@@ -70,20 +54,20 @@ export class PlaywrightPagePerceptionAdapter implements PagePerceptionPort {
         );
         const nodes: AccessibilityNode[] = [];
         const identityCounts = new Map<string, number>();
-        let transientSequence = 0;
         for (const node of flattened) {
             signal.throwIfAborted();
             const identity = accessibilityIdentity(node);
             const occurrence = (identityCounts.get(identity) ?? 0) + 1;
             identityCounts.set(identity, occurrence);
-            const domCandidateId = node.ref
-                ? await this.mapAriaRefToCandidate(
+            const id = createStableAccessibilityId(identity, occurrence);
+            if (node.ref) {
+                this.pageProvider.registerAccessibilityRef(
                     session,
                     observation.observationId,
-                    node,
-                    () => `ax-${ ++transientSequence }`
-                )
-                : undefined;
+                    id,
+                    node.ref
+                );
+            }
             const {
                 children: _children,
                 ref: _ref,
@@ -91,8 +75,7 @@ export class PlaywrightPagePerceptionAdapter implements PagePerceptionPort {
             } = node;
             nodes.push({
                 ...snapshot,
-                id: createStableAccessibilityId(identity, occurrence),
-                ...domCandidateId ? { domCandidateId } : {}
+                id
             });
         }
         const interactionStates = Object.fromEntries((await Promise.all(
@@ -100,7 +83,14 @@ export class PlaywrightPagePerceptionAdapter implements PagePerceptionPort {
                 session,
                 observation.observationId
             ).map(async (candidateId) => {
-                const state = await captureInteractionState(page, candidateId);
+                const locator = this.pageProvider.getCandidateLocator(
+                    session,
+                    observation.observationId,
+                    candidateId
+                );
+                const state = locator
+                    ? await captureInteractionState(locator, candidateId)
+                    : undefined;
                 return state ? [ candidateId, state ] as const : undefined;
             })
         )).filter((entry): entry is readonly [string, NonNullable<
@@ -117,53 +107,6 @@ export class PlaywrightPagePerceptionAdapter implements PagePerceptionPort {
         };
     };
 
-    private async mapAriaRefToCandidate(
-        session: BrowserSession,
-        observationId: string,
-        node: ParsedAriaNode,
-        nextCandidateId: () => string
-    ): Promise<string | undefined> {
-        const page = this.pageProvider.getPage(session);
-        const locator = page.locator(`aria-ref=${ node.ref! }`);
-        if (await locator.count() !== 1) {
-            return undefined;
-        }
-        const existing = await locator.evaluate((element, attribute) =>
-            (element as unknown as {
-                closest: (selector: string) => {
-                    getAttribute: (name: string) => string | null
-                } | null
-            }).closest(`[${ attribute }]`)
-                ?.getAttribute(attribute) ??
-                undefined,
-        RUNTIME_CANDIDATE_ATTRIBUTE);
-        if (existing) {
-            return existing;
-        }
-        if (!node.role || !ACCESSIBLE_ACTION_ROLES.has(node.role)) {
-            return undefined;
-        }
-        const candidateId = nextCandidateId();
-        await locator.evaluate(
-            (element, input) =>
-                (element as unknown as {
-                    setAttribute: (name: string, value: string) => void
-                }).setAttribute(input.attribute, input.candidateId),
-            {
-                attribute: RUNTIME_CANDIDATE_ATTRIBUTE,
-                candidateId
-            }
-        );
-        this.pageProvider.registerTransientCandidate(
-            session,
-            observationId,
-            candidateId,
-            page.locator(
-                `[${ RUNTIME_CANDIDATE_ATTRIBUTE }="${ candidateId }"]`
-            )
-        );
-        return candidateId;
-    }
 }
 
 /** 将 Playwright YAML 解析为不包含临时 ref 的内部树。 */

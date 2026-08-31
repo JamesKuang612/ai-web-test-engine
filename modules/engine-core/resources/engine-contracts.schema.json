@@ -124,6 +124,31 @@
             ],
             "type": "string"
         },
+        "BoundingBox": {
+            "additionalProperties": false,
+            "description": "统一使用 CSS viewport 坐标描述页面区域。",
+            "properties": {
+                "height": {
+                    "type": "number"
+                },
+                "width": {
+                    "type": "number"
+                },
+                "x": {
+                    "type": "number"
+                },
+                "y": {
+                    "type": "number"
+                }
+            },
+            "required": [
+                "height",
+                "width",
+                "x",
+                "y"
+            ],
+            "type": "object"
+        },
         "CandidateResolvedTarget": {
             "additionalProperties": false,
             "description": "Phase 1 基于当前 Observation candidate 索引解析出的物理目标。",
@@ -136,6 +161,14 @@
                 },
                 "confidence": {
                     "type": "number"
+                },
+                "confidenceBasis": {
+                    "enum": [
+                        "deterministic",
+                        "engine-heuristic",
+                        "provider"
+                    ],
+                    "type": "string"
                 },
                 "description": {
                     "type": "string"
@@ -611,6 +644,14 @@
                 "confidence": {
                     "type": "number"
                 },
+                "confidenceBasis": {
+                    "enum": [
+                        "deterministic",
+                        "engine-heuristic",
+                        "provider"
+                    ],
+                    "type": "string"
+                },
                 "evidence": {
                     "items": {
                         "type": "string"
@@ -657,6 +698,31 @@
                     "required": [
                         "sourcesUsed",
                         "visualModelCalls"
+                    ],
+                    "type": "object"
+                },
+                "visualEvidence": {
+                    "additionalProperties": false,
+                    "properties": {
+                        "mappedCandidateIds": {
+                            "items": {
+                                "type": "string"
+                            },
+                            "type": "array"
+                        },
+                        "regions": {
+                            "items": {
+                                "$ref": "#/definitions/VisualRegion"
+                            },
+                            "type": "array"
+                        },
+                        "screenshotRef": {
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "mappedCandidateIds",
+                        "regions"
                     ],
                     "type": "object"
                 }
@@ -1748,6 +1814,37 @@
                 "result",
                 "successCriteria",
                 "summary"
+            ],
+            "type": "object"
+        },
+        "VisualRegion": {
+            "additionalProperties": false,
+            "description": "视觉模型发现的页面区域；本身不具备执行权限。",
+            "properties": {
+                "boundingBox": {
+                    "$ref": "#/definitions/BoundingBox"
+                },
+                "confidence": {
+                    "type": "number"
+                },
+                "context": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "boundingBox",
+                "context",
+                "description",
+                "id"
             ],
             "type": "object"
         }

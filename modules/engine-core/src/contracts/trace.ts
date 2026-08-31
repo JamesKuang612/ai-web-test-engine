@@ -25,6 +25,7 @@ export interface CandidateResolvedTarget {
     strategy: 'candidate-id';
     locatorData: Record<string, JsonValue>;
     confidence: number;
+    confidenceBasis?: 'deterministic' | 'engine-heuristic' | 'provider';
     unique: boolean;
     actionable: boolean;
     evidence: string[];

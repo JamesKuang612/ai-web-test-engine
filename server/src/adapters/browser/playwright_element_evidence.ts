@@ -3,18 +3,11 @@ import type {
     ResolvedElementSnapshot,
 } from '@ai-web-test-engine/core';
 import type {
-    Page,
+    Locator,
 } from 'playwright';
+import vm from 'node:vm';
 
-import {
-    RUNTIME_CANDIDATE_ATTRIBUTE,
-} from './interactive_element_script';
-
-const SNAPSHOT_SCRIPT = String.raw`(input) => {
-    const element = document.querySelector(
-        '[' + input.attribute + '="' + CSS.escape(input.candidateId) + '"]'
-    );
-    if (!element) return undefined;
+const SNAPSHOT_SCRIPT = String.raw`(element) => {
     const clean = (value, limit = 200) => {
         const normalized = value && String(value).replace(/\s+/gu, ' ').trim();
         return normalized ? normalized.slice(0, limit) : undefined;
@@ -86,11 +79,7 @@ const SNAPSHOT_SCRIPT = String.raw`(input) => {
     };
 }`;
 
-const INTERACTION_SCRIPT = String.raw`(input) => {
-    const element = document.querySelector(
-        '[' + input.attribute + '="' + CSS.escape(input.candidateId) + '"]'
-    );
-    if (!element) return undefined;
+const INTERACTION_SCRIPT = String.raw`(element, input) => {
     const box = element.getBoundingClientRect();
     const style = window.getComputedStyle(element);
     const visible = style.display !== 'none' && style.visibility !== 'hidden' &&
@@ -111,8 +100,17 @@ const INTERACTION_SCRIPT = String.raw`(input) => {
     let blocked = 0;
     let unknown = 0;
     let blocker;
+    const deepElementFromPoint = (x, y) => {
+        let hit = document.elementFromPoint(x, y);
+        while (hit?.shadowRoot) {
+            const nested = hit.shadowRoot.elementFromPoint(x, y);
+            if (!nested || nested === hit) break;
+            hit = nested;
+        }
+        return hit;
+    };
     for (const point of points) {
-        const hit = document.elementFromPoint(point.x, point.y);
+        const hit = deepElementFromPoint(point.x, point.y);
         if (!hit) {
             unknown += 1;
             continue;
@@ -149,35 +147,42 @@ const INTERACTION_SCRIPT = String.raw`(input) => {
     };
 }`;
 
+const snapshotEvaluator = vm.runInThisContext(
+    `(${ SNAPSHOT_SCRIPT })`
+) as (element: unknown) => ResolvedElementSnapshot;
+const interactionEvaluator = vm.runInThisContext(
+    `(${ INTERACTION_SCRIPT })`
+) as (
+    element: unknown,
+    input: { candidateId: string }
+) => ElementInteractionState & {
+    samples: {
+        blocked: number,
+        receives: number,
+        total: number,
+        unknown: number
+    }
+};
+
 export async function captureElementSnapshot(
-    page: Page,
-    candidateId: string
+    locator: Locator
 ): Promise<ResolvedElementSnapshot | undefined> {
-    return await page.evaluate(`(${ SNAPSHOT_SCRIPT })(${
-        JSON.stringify({
-        attribute: RUNTIME_CANDIDATE_ATTRIBUTE,
-        candidateId
-        })
-    })`) as ResolvedElementSnapshot | undefined;
+    return await locator.count() === 1
+        ? await locator.evaluate(snapshotEvaluator)
+        : undefined;
 }
 
 export async function captureInteractionState(
-    page: Page,
+    locator: Locator,
     candidateId: string
 ): Promise<ElementInteractionState | undefined> {
-    const result = await page.evaluate(`(${ INTERACTION_SCRIPT })(${
-        JSON.stringify({
-            attribute: RUNTIME_CANDIDATE_ATTRIBUTE,
-            candidateId
-        })
-    })`) as (ElementInteractionState & {
-        samples: {
-            blocked: number,
-            receives: number,
-            total: number,
-            unknown: number
-        }
-    }) | undefined;
+    if (await locator.count() !== 1) {
+        return undefined;
+    }
+    const result = await locator.evaluate(
+        interactionEvaluator,
+        { candidateId }
+    );
     if (!result) {
         return undefined;
     }

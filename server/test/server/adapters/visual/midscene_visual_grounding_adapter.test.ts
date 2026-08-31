@@ -5,6 +5,7 @@ import type {
 } from '@ai-web-test-engine/core';
 import {
     buildVisualLocatePrompt,
+    toCssViewportBoundingBox,
 } from '../../../../src/adapters/visual';
 
 describe('MidsceneVisualGroundingAdapter', () => {
@@ -20,6 +21,20 @@ describe('MidsceneVisualGroundingAdapter', () => {
         assert.match(prompt, /应用 11/u);
         assert.doesNotMatch(prompt, /左上角/u);
         assert.match(prompt, /不要点击、悬浮、滚动/u);
+    });
+
+    it('Midscene screenshot rect 在 DPR=2 时归一化为 CSS viewport', () => {
+        assert.deepEqual(toCssViewportBoundingBox({
+            left: 20,
+            top: 30,
+            width: 40,
+            height: 50
+        }, 2), {
+            x: 10,
+            y: 15,
+            width: 20,
+            height: 25
+        });
     });
 });
 

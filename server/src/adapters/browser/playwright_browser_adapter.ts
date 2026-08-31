@@ -46,6 +46,7 @@ interface ManagedBrowserSession {
     browser: Browser;
     context: BrowserContext;
     elementIndex?: {
+        accessibilityRefs: Map<string, string>,
         observationId: string,
         locators: Map<string, Locator>
     };
@@ -514,6 +515,17 @@ implements BrowserAdapter, PlaywrightPageProvider {
             : [];
     };
 
+    public getAccessibilityRef = (
+        session: BrowserSession,
+        observationId: string,
+        accessibilityNodeId: string
+    ): string | undefined => {
+        const managed = this.requireSession(session);
+        return managed.elementIndex?.observationId === observationId
+            ? managed.elementIndex.accessibilityRefs.get(accessibilityNodeId)
+            : undefined;
+    };
+
     public registerTransientCandidate = (
         session: BrowserSession,
         observationId: string,
@@ -528,6 +540,22 @@ implements BrowserAdapter, PlaywrightPageProvider {
             throw new Error(`Transient candidate 已存在：${ candidateId }`);
         }
         managed.elementIndex.locators.set(candidateId, locator);
+    };
+
+    public registerAccessibilityRef = (
+        session: BrowserSession,
+        observationId: string,
+        accessibilityNodeId: string,
+        ariaRef: string
+    ): void => {
+        const managed = this.requireSession(session);
+        if (managed.elementIndex?.observationId !== observationId) {
+            throw new Error('无法向过期 observation 登记 aria-ref。');
+        }
+        managed.elementIndex.accessibilityRefs.set(
+            accessibilityNodeId,
+            ariaRef
+        );
     };
 
     /**
@@ -1086,6 +1114,7 @@ implements BrowserAdapter, PlaywrightPageProvider {
         const truncated = observed.length >= MAX_INTERACTIVE_ELEMENTS;
 
         session.elementIndex = {
+            accessibilityRefs: new Map(),
             observationId,
             locators
         };

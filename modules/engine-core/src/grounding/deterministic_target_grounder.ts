@@ -76,20 +76,28 @@ export class DeterministicTargetGrounder implements TargetGrounder {
             this.isCompatible(action.type, element)
         );
         if (compatible.length === 0) {
-            const disabled = semanticMatches.filter(({ element }) =>
-                element.disabled && action.type !== 'HOVER'
+            const visible = semanticMatches.filter(({ element }) =>
+                isVisibleWithGeometry(element)
             );
-            if (disabled.length > 0) {
+            if (visible.length === 0) {
                 return {
-                    status: 'blocked',
+                    status: 'not-visible',
                     confidence: 1,
-                    evidence: disabled.flatMap(({ evidence }) => evidence),
-                    summary: `与“${ action.target.description }”匹配的元素当前处于 disabled 状态。`
+                    confidenceBasis: 'deterministic',
+                    evidence: semanticMatches.flatMap(({ evidence }) =>
+                        evidence
+                    ),
+                    summary: `与“${ action.target.description }”匹配的元素不可见、不在视口内或没有有效 geometry。`
                 };
             }
-            return this.notFound(
+            return {
+                status: 'not-actionable',
+                confidence: 1,
+                confidenceBasis: 'deterministic',
+                evidence: visible.flatMap(({ evidence }) => evidence),
+                summary:
                 `与“${ action.target.description }”匹配的元素不满足 ${ action.type } 的确定性执行条件。`
-            );
+            };
         }
 
         const ranked = compatible.sort(compareCandidates);
@@ -113,6 +121,7 @@ export class DeterministicTargetGrounder implements TargetGrounder {
         return {
             status: 'grounded',
             confidence,
+            confidenceBasis: 'deterministic',
             evidence: best.evidence,
             summary: `已将“${ action.target.description }”绑定到当前页面唯一目标。`,
             target: {
@@ -126,6 +135,7 @@ export class DeterministicTargetGrounder implements TargetGrounder {
                     candidateId: best.element.candidateId
                 },
                 confidence,
+                confidenceBasis: 'deterministic',
                 unique: true,
                 actionable: true,
                 evidence: best.evidence
@@ -200,7 +210,7 @@ export class DeterministicTargetGrounder implements TargetGrounder {
     }
 
     private isCompatible(type: ActionType, element: ObservedElement): boolean {
-        if (!element.visible || !hasValidGeometry(element)) {
+        if (!isVisibleWithGeometry(element)) {
             return false;
         }
         if (type === 'HOVER') {
@@ -302,6 +312,10 @@ function hasValidGeometry(element: ObservedElement): boolean {
         && box.width > 0
         && box.height > 0
     );
+}
+
+function isVisibleWithGeometry(element: ObservedElement): boolean {
+    return element.visible && element.inViewport && hasValidGeometry(element);
 }
 
 function createElementSnapshot(

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type {
+    BoundingBox,
     PagePerception,
     SemanticTarget,
     VisualGroundingPort,
@@ -76,12 +77,7 @@ export class MidsceneVisualGroundingAdapter implements VisualGroundingPort {
                 status: 'located',
                 regions: [{
                     id: `visual-${ randomUUID() }`,
-                    boundingBox: {
-                        height: rect.height,
-                        width: rect.width,
-                        x: rect.left,
-                        y: rect.top
-                    },
+                    boundingBox: toCssViewportBoundingBox(rect, located.dpr),
                     context: target.scope ? [ target.scope ] : [],
                     description: target.description
                 }],
@@ -118,6 +114,26 @@ export function buildVisualLocatePrompt(
 
 function isValidNumber(value: number): boolean {
     return Number.isFinite(value);
+}
+
+/**
+ * Midscene 1.12.0 的 aiLocate 返回 screenshot 像素坐标和原始 DPR；它只在
+ * action 执行前通过 parseActionParam 归一化。当前 Agent 固定 shrinkFactor=1，
+ * 因此这里必须除以 DPR 才能得到 CSS viewport 坐标。
+ */
+export function toCssViewportBoundingBox(
+    rect: { height: number, left: number, top: number, width: number },
+    devicePixelRatio?: number
+): BoundingBox {
+    const ratio = devicePixelRatio && devicePixelRatio > 0
+        ? devicePixelRatio
+        : 1;
+    return {
+        height: rect.height / ratio,
+        width: rect.width / ratio,
+        x: rect.left / ratio,
+        y: rect.top / ratio
+    };
 }
 
 /** 主动终止只结束等待；Midscene 后台结果仍由 Promise 安全消费。 */

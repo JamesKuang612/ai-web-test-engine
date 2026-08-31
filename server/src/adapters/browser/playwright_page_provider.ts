@@ -18,6 +18,11 @@ export interface PlaywrightPageProvider {
         session: BrowserSession,
         observationId: string
     ) => string[];
+    getAccessibilityRef: (
+        session: BrowserSession,
+        observationId: string,
+        accessibilityNodeId: string
+    ) => string | undefined;
     isObservationCurrent: (
         session: BrowserSession,
         observationId: string
@@ -27,5 +32,11 @@ export interface PlaywrightPageProvider {
         observationId: string,
         candidateId: string,
         locator: Locator
+    ) => void;
+    registerAccessibilityRef: (
+        session: BrowserSession,
+        observationId: string,
+        accessibilityNodeId: string,
+        ariaRef: string
     ) => void;
 }

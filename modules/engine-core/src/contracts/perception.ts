@@ -60,7 +60,6 @@ export interface VisualRegion {
     confidence?: number;
     context: string[];
     description: string;
-    mappedCandidateId?: string;
 }
 
 /** 两次感知之间可确定、低成本计算的状态变化。 */
