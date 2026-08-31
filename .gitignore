@@ -1,5 +1,18 @@
 node_modules/
 
+## Local secrets and authentication state
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+.auth/
+**/storage-state*.json
+**/storageState*.json
+**/cookies*.json
+
 ## CI
 dist/
 log/
@@ -9,6 +22,11 @@ build/
 coverage/
 .nyc_output/
 test-results/
+playwright-report/
+blob-report/
+**/artifacts/
+*.har
+*.webm
 
 *.tgz
 
@@ -18,6 +36,10 @@ resources/*.json
 *.code-workspace
 .vscode/
 .idea/
+.codex/
+
+## Local Codex handoff notes
+docs/codex-handoff-*.md
 
 ## OS
 .DS_Store
