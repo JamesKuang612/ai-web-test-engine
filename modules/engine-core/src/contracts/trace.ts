@@ -12,6 +12,19 @@ import type {
 import type {
     SemanticAction,
 } from './semantic_action';
+import type {
+    RecoveryAction,
+} from './recovery';
+import type {
+    SemanticStepProgress,
+} from './semantic_step';
+
+export type CompilationContribution =
+    | 'productive'
+    | 'non-productive'
+    | 'wrong-state'
+    | 'unsafe'
+    | 'failed';
 
 /** Grounder 绑定目标时保存的完整元素证据，不包含瞬时候选编号。 */
 export type ResolvedElementSnapshot = Omit<ObservedElement, 'candidateId'>;
@@ -65,6 +78,13 @@ export interface TraceEvent {
     runId: string;
     sequence: number;
     semanticAction?: SemanticAction;
+    semanticStepId?: string;
+    origin?: 'planner' | 'recovery' | 'replay' | 'setup';
+    recoveryAction?: RecoveryAction;
+    recoveryAttempt?: number;
+    recoveryIntent?: string;
+    semanticStepProgress?: SemanticStepProgress;
+    compilationContribution?: CompilationContribution;
     command: ActionCommand;
     resolvedTarget?: ResolvedTarget;
     beforeObservationRef: string;

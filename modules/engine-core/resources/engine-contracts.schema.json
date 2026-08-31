@@ -210,6 +210,16 @@
             ],
             "type": "object"
         },
+        "CompilationContribution": {
+            "enum": [
+                "failed",
+                "non-productive",
+                "productive",
+                "unsafe",
+                "wrong-state"
+            ],
+            "type": "string"
+        },
         "CompiledActionType": {
             "description": "可由确定性回放器执行的动作集合。",
             "enum": [
@@ -217,6 +227,7 @@
                 "CLICK",
                 "HOVER",
                 "NAVIGATE",
+                "SCROLL",
                 "SELECT",
                 "TYPE",
                 "WAIT"
@@ -1054,6 +1065,126 @@
             "additionalProperties": false,
             "type": "object"
         },
+        "RecoveryAction": {
+            "anyOf": [
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "expectedTransientEffect": {
+                            "type": "string"
+                        },
+                        "reasonSummary": {
+                            "type": "string"
+                        },
+                        "target": {
+                            "$ref": "#/definitions/SemanticTarget"
+                        },
+                        "type": {
+                            "enum": [
+                                "CLEAR",
+                                "CLICK",
+                                "HOVER"
+                            ],
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "reasonSummary",
+                        "target",
+                        "type"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "amount": {
+                            "enum": [
+                                "medium",
+                                "page",
+                                "small"
+                            ],
+                            "type": "string"
+                        },
+                        "direction": {
+                            "enum": [
+                                "down",
+                                "up"
+                            ],
+                            "type": "string"
+                        },
+                        "expectedTransientEffect": {
+                            "type": "string"
+                        },
+                        "reasonSummary": {
+                            "type": "string"
+                        },
+                        "type": {
+                            "const": "SCROLL",
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "amount",
+                        "direction",
+                        "reasonSummary",
+                        "type"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "duration": {
+                            "enum": [
+                                "medium",
+                                "short"
+                            ],
+                            "type": "string"
+                        },
+                        "expectedTransientEffect": {
+                            "type": "string"
+                        },
+                        "reasonSummary": {
+                            "type": "string"
+                        },
+                        "type": {
+                            "const": "WAIT",
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "duration",
+                        "reasonSummary",
+                        "type"
+                    ],
+                    "type": "object"
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "expectedTransientEffect": {
+                            "type": "string"
+                        },
+                        "reasonSummary": {
+                            "type": "string"
+                        },
+                        "type": {
+                            "enum": [
+                                "BACK",
+                                "REOBSERVE"
+                            ],
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "reasonSummary",
+                        "type"
+                    ],
+                    "type": "object"
+                }
+            ]
+        },
         "ResolvedElementSnapshot": {
             "additionalProperties": false,
             "description": "Grounder 绑定目标时保存的完整元素证据，不包含瞬时候选编号。",
@@ -1435,6 +1566,45 @@
             ],
             "type": "object"
         },
+        "SemanticStepProgress": {
+            "additionalProperties": false,
+            "description": "单步语义目标的进展，刻意不承载循环终止原因。",
+            "properties": {
+                "basis": {
+                    "enum": [
+                        "deterministic",
+                        "model"
+                    ],
+                    "type": "string"
+                },
+                "evidence": {
+                    "items": {
+                        "$ref": "#/definitions/EvidenceRef"
+                    },
+                    "type": "array"
+                },
+                "status": {
+                    "enum": [
+                        "complete",
+                        "no-progress",
+                        "progress",
+                        "unknown",
+                        "wrong-state"
+                    ],
+                    "type": "string"
+                },
+                "summary": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "basis",
+                "evidence",
+                "status",
+                "summary"
+            ],
+            "type": "object"
+        },
         "SemanticTarget": {
             "additionalProperties": false,
             "description": "Planner 用业务语义描述目标，不包含候选编号或浏览器定位信息。",
@@ -1696,8 +1866,29 @@
                 "command": {
                     "$ref": "#/definitions/ActionCommand"
                 },
+                "compilationContribution": {
+                    "$ref": "#/definitions/CompilationContribution"
+                },
                 "effect": {
                     "$ref": "#/definitions/EffectVerification"
+                },
+                "origin": {
+                    "enum": [
+                        "planner",
+                        "recovery",
+                        "replay",
+                        "setup"
+                    ],
+                    "type": "string"
+                },
+                "recoveryAction": {
+                    "$ref": "#/definitions/RecoveryAction"
+                },
+                "recoveryAttempt": {
+                    "type": "number"
+                },
+                "recoveryIntent": {
+                    "type": "string"
                 },
                 "resolvedTarget": {
                     "$ref": "#/definitions/CandidateResolvedTarget"
@@ -1715,6 +1906,12 @@
                 },
                 "semanticAction": {
                     "$ref": "#/definitions/SemanticAction"
+                },
+                "semanticStepId": {
+                    "type": "string"
+                },
+                "semanticStepProgress": {
+                    "$ref": "#/definitions/SemanticStepProgress"
                 },
                 "sequence": {
                     "type": "number"

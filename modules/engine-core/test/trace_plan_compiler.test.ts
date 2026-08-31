@@ -162,6 +162,47 @@ describe('TracePlanCompiler HOVER', () => {
 
 });
 
+describe('TracePlanCompiler SCROLL', () => {
+    it('只编译受控方向和幅度，不需要物理目标', () => {
+        const steps = [
+            createStep(1, {
+                type: 'NAVIGATE',
+                value: {
+                    source: 'literal',
+                    value: 'https://test.jdydevelop.com/dashboard#/'
+                },
+                expectedEffect: '打开工作台',
+                reasonSummary: '进入工作台',
+                risk: 'read-only'
+            }, []),
+            createStep(2, {
+                type: 'SCROLL',
+                value: {
+                    source: 'literal',
+                    value: {
+                        direction: 'down',
+                        amount: 'medium'
+                    }
+                },
+                expectedEffect: '显示下方应用',
+                reasonSummary: '寻找当前视口外的目标',
+                risk: 'reversible'
+            }, [])
+        ];
+
+        const plan = new TracePlanCompiler().compile({
+            runId: 'run-scroll',
+            testId: 'scroll-to-application',
+            testIntent: intent,
+            steps
+        });
+
+        assert.equal(plan.steps[1]?.type, 'SCROLL');
+        assert.equal(plan.steps[1]?.target, undefined);
+        assert.deepEqual(plan.steps[1]?.value, steps[1]?.command.value);
+    });
+});
+
 describe('TracePlanCompiler 安全约束', () => {
 
     it('保留非敏感业务字段的 TYPE 字面量值', () => {

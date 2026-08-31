@@ -4,6 +4,7 @@ import type {
     CompiledStep,
     CompiledTarget,
     CompiledTargetIdentity,
+    JsonValue,
     LocatorHint,
     ValueReference,
 } from '../contracts';
@@ -50,6 +51,7 @@ const COMPILED_ACTION_TYPES = new Set<CompiledActionType>([
     'CLICK',
     'HOVER',
     'NAVIGATE',
+    'SCROLL',
     'SELECT',
     'TYPE',
     'WAIT'
@@ -288,19 +290,9 @@ function parseValue(value: unknown, path: string): ValueReference {
     const source = requireString(object.source, `${ path }.source`);
     if (source === 'literal') {
         requireExactFields(object, [ 'source', 'value' ], path);
-        if (
-            typeof object.value !== 'string'
-            && typeof object.value !== 'number'
-            && typeof object.value !== 'boolean'
-        ) {
-            throw new CompiledPlanSchemaError(
-                `${ path }.value`,
-                '计划中的字面量只允许字符串、数字或布尔值'
-            );
-        }
         return {
             source: 'literal',
-            value: object.value
+            value: parseLiteralValue(object.value, `${ path }.value`)
         };
     }
     if (source !== 'environment' && source !== 'generated') {
@@ -350,6 +342,15 @@ function requireStepShape(
             throw new CompiledPlanSchemaError(
                 path,
                 'WAIT 只能携带 100～5000 毫秒的整数字面量'
+            );
+        }
+        return;
+    }
+    if (type === 'SCROLL') {
+        if (target || !isScrollValue(value)) {
+            throw new CompiledPlanSchemaError(
+                path,
+                'SCROLL 只能携带受控 direction 和 amount'
             );
         }
         return;
@@ -535,6 +536,49 @@ function requireActionType(value: unknown, path: string): CompiledActionType {
         throw new CompiledPlanSchemaError(path, `不支持的动作：${ type }`);
     }
     return type as CompiledActionType;
+}
+
+function isScrollValue(value: ValueReference | undefined): boolean {
+    if (
+        value?.source !== 'literal'
+        || typeof value.value !== 'object'
+        || value.value === null
+        || Array.isArray(value.value)
+    ) {
+        return false;
+    }
+    const object = value.value;
+    return (object.direction === 'up' || object.direction === 'down')
+        && (
+            object.amount === 'small'
+            || object.amount === 'medium'
+            || object.amount === 'page'
+        )
+        && Object.keys(object).length === 2;
+}
+
+function parseLiteralValue(value: unknown, path: string): JsonValue {
+    if (
+        value === null
+        || typeof value === 'string'
+        || typeof value === 'boolean'
+        || typeof value === 'number' && Number.isFinite(value)
+    ) {
+        return value;
+    }
+    if (Array.isArray(value)) {
+        return value.map((item, index) => parseLiteralValue(
+            item,
+            `${ path }[${ index }]`
+        ));
+    }
+    if (typeof value === 'object') {
+        return Object.fromEntries(Object.entries(value).map(([ key, item ]) => [
+            key,
+            parseLiteralValue(item, `${ path }.${ key }`)
+        ]));
+    }
+    throw new CompiledPlanSchemaError(path, '必须是合法 JSON 字面量');
 }
 
 function requireRisk(value: unknown, path: string): CompiledStep['risk'] {

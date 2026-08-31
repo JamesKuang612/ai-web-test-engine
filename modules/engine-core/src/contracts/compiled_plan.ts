@@ -17,6 +17,7 @@ export type CompiledActionType =
     | 'CLICK'
     | 'HOVER'
     | 'NAVIGATE'
+    | 'SCROLL'
     | 'SELECT'
     | 'TYPE'
     | 'WAIT';

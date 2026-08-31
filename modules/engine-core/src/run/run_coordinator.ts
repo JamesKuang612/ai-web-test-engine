@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type {
     ActionCommand,
     ActionResult,
+    CompilationContribution,
     CompiledPlan,
     EvidenceRef,
     EffectVerification,
@@ -12,6 +13,7 @@ import type {
     PageObservation,
     PagePerception,
     RecoveryAction,
+    RecoveryAttemptSummary,
     RunEvent,
     RunLifecycleState,
     RunResult,
@@ -19,6 +21,7 @@ import type {
     ResolvedTarget,
     SemanticAction,
     SemanticStep,
+    SemanticStepProgress,
     StartRunInput,
     TestIntent,
     TraceEvent,
@@ -61,6 +64,7 @@ import {
     DeterministicPlanReplayer,
     parseCompiledPlan,
     PlanReplayError,
+    selectProductiveActions,
 } from '../replay';
 import {
     RunLifecycle,
@@ -83,6 +87,9 @@ import type {
 import {
     normalizeRecoveryCommand,
     SemanticStepController,
+} from './semantic_step_controller';
+import type {
+    SemanticStepActionExecution,
 } from './semantic_step_controller';
 import {
     SemanticStepProgressEvaluator,
@@ -126,6 +133,8 @@ interface RunExecutionContext {
     latestObservation?: PageObservation;
     latestObservationReference?: EvidenceRef;
     modelCallCount: number;
+    groundingSequence: number;
+    perceptionSequence: number;
     repeatedStateActionCount: number;
     runCreated: boolean;
     runId: string;
@@ -161,6 +170,10 @@ interface PlannedActionExecution {
     recoveryAction?: RecoveryAction;
     recoveryOutcome?: 'progress' | 'no-progress' | 'wrong-state';
     restorative?: boolean;
+    recoveryAttempt?: number;
+    semanticStepId?: string;
+    compilationContribution?: CompilationContribution;
+    semanticStepProgress?: SemanticStepProgress;
 }
 
 /** 浏览器阶段完成后交给最终判定的数据。 */
@@ -358,6 +371,8 @@ export class RunCoordinator implements ExecutionEngine {
             input,
             lifecycle: new RunLifecycle(),
             modelCallCount: 0,
+            groundingSequence: 0,
+            perceptionSequence: 0,
             repeatedStateActionCount: 0,
             runCreated: false,
             runId,
@@ -504,6 +519,7 @@ export class RunCoordinator implements ExecutionEngine {
         navigation: NavigationExecution
     ): Promise<BrowserExecution> {
         const plannedActions: PlannedActionExecution[] = [];
+        let semanticStepSequence = 0;
         while (true) {
             const budgetStop = this.createBudgetStopCommand(context);
             if (budgetStop) {
@@ -527,14 +543,10 @@ export class RunCoordinator implements ExecutionEngine {
                 };
             }
 
-            const step: SemanticStep = {
-                id: `runtime-step-${ plannedActions.length + 1 }`,
-                primaryAction: semanticAction,
-                ...semanticAction.expectedEffect
-                    ? { expectedEffect: semanticAction.expectedEffect }
-                    : {},
-                source: 'runtime-wrapper'
-            };
+            const step = this.createRuntimeStep(
+                semanticAction,
+                ++semanticStepSequence
+            );
             const previousFingerprint = runtime.latestObservation
                 ?.stateFingerprint;
             const controller = this.createSemanticStepController(
@@ -546,14 +558,21 @@ export class RunCoordinator implements ExecutionEngine {
                 runtime.testIntent,
                 context.signal
             );
-            const records = stepResult.executions.map(({ record, ...metadata }) => ({
-                ...record,
-                origin: metadata.origin,
-                recoveryAction: metadata.recoveryAction,
-                recoveryOutcome: metadata.recoveryOutcome,
-                restorative: metadata.restorative
-            }));
+            const records = this.attachStepExecutionMetadata(
+                step,
+                stepResult.executions
+            );
+            for (const record of records) {
+                await this.recordPlannedAction(context, runtime, record);
+            }
             plannedActions.push(...records);
+            if (stepResult.recoveryAttempts.length > 0) {
+                await this.saveRecoveryHistory(
+                    context,
+                    step,
+                    stepResult.recoveryAttempts
+                );
+            }
             const last = records.at(-1);
             if (last && semanticAction.type !== 'WAIT') {
                 this.updateRepeatedStateCount(
@@ -591,6 +610,51 @@ export class RunCoordinator implements ExecutionEngine {
         }
     }
 
+    private createRuntimeStep(
+        primaryAction: SemanticAction,
+        ordinal: number
+    ): SemanticStep {
+        return {
+            id: `runtime-step-${ ordinal }`,
+            primaryAction,
+            ...primaryAction.expectedEffect
+                ? { expectedEffect: primaryAction.expectedEffect }
+                : {},
+            source: 'runtime-wrapper'
+        };
+    }
+
+    private attachStepExecutionMetadata(
+        step: SemanticStep,
+        executions: Array<SemanticStepActionExecution<PlannedActionExecution>>
+    ): PlannedActionExecution[] {
+        return executions.map(({ record, ...metadata }) => ({
+            ...record,
+            origin: metadata.origin,
+            recoveryAction: metadata.recoveryAction,
+            recoveryOutcome: metadata.recoveryOutcome,
+            restorative: metadata.restorative,
+            recoveryAttempt: metadata.recoveryAttempt,
+            semanticStepId: step.id,
+            compilationContribution: metadata.compilationContribution,
+            semanticStepProgress: metadata.semanticStepProgress
+        }));
+    }
+
+    /** 保存包含 unsafe/REOBSERVE 在内的恢复决策历史，不伪造 ActionResult。 */
+    private async saveRecoveryHistory(
+        context: RunExecutionContext,
+        step: SemanticStep,
+        attempts: RecoveryAttemptSummary[]
+    ): Promise<void> {
+        const reference = await this.artifactStore.saveJson(
+            context.runId,
+            `recovery-history-${ step.id }`,
+            toJsonValue(attempts)
+        );
+        context.evidence.push(reference);
+    }
+
     /** 把 Planner 终止建议和当前不支持的动作统一转换成停止命令。 */
     private createPlannerStopCommand(
         action: SemanticAction,
@@ -620,8 +684,11 @@ export class RunCoordinator implements ExecutionEngine {
         runtime: RunContext
     ): SemanticStepController<PlannedActionExecution> {
         return new SemanticStepController<PlannedActionExecution>({
-            canUseModel: () => this.getRemainingBudgets(context)
-                .maxModelCalls > 1,
+            canExecuteAction: () => {
+                const remaining = this.getRemainingBudgets(context);
+                return remaining.maxActions > 0 && remaining.maxDurationMs > 0;
+            },
+            canUseModel: () => this.hasStepModelBudget(context),
             perceive: async (previous, signal) => {
                 signal.throwIfAborted();
                 if (!previous && runtime.latestPerception) {
@@ -690,21 +757,18 @@ export class RunCoordinator implements ExecutionEngine {
                     before: input.before,
                     after,
                     resolvedTarget: execution.resolvedTarget,
-                    restorative: false
+                    restorative: false,
+                    compilationContribution: 'non-productive'
                 };
             },
             recordReobserve: async (perception, attempt, signal) => {
-                signal.throwIfAborted();
-                const reference = await this.artifactStore.saveJson(
-                    context.runId,
-                    `recovery-reobserve-${ runtime.history.length }-${ attempt }`,
-                    toJsonValue({
-                        attempt,
-                        perceptionId: perception.perceptionId,
-                        capturedAt: perception.capturedAt
-                    })
+                await this.recordRecoveryReobserve(
+                    context,
+                    runtime,
+                    perception,
+                    attempt,
+                    signal
                 );
-                context.evidence.push(reference);
             },
             consumeModelCalls: (count) => {
                 context.modelCallCount += count;
@@ -713,6 +777,31 @@ export class RunCoordinator implements ExecutionEngine {
         }, this.stepProgressEvaluator,
         new DeterministicRecoverySafetyPolicy(),
         this.decisionServices.recoveryPlanner);
+    }
+
+    private hasStepModelBudget(context: RunExecutionContext): boolean {
+        const remaining = this.getRemainingBudgets(context);
+        return remaining.maxModelCalls > 1 && remaining.maxDurationMs > 0;
+    }
+
+    private async recordRecoveryReobserve(
+        context: RunExecutionContext,
+        runtime: RunContext,
+        perception: PagePerception,
+        attempt: number,
+        signal: AbortSignal
+    ): Promise<void> {
+        signal.throwIfAborted();
+        const reference = await this.artifactStore.saveJson(
+            context.runId,
+            `recovery-reobserve-${ runtime.history.length }-${ attempt }`,
+            toJsonValue({
+                attempt,
+                perceptionId: perception.perceptionId,
+                capturedAt: perception.capturedAt
+            })
+        );
+        context.evidence.push(reference);
     }
 
     /** 捕获并保存当前 Runtime 的统一 PagePerception。 */
@@ -734,7 +823,7 @@ export class RunCoordinator implements ExecutionEngine {
         runtime.latestPerception = perception;
         const reference = await this.artifactStore.saveJson(
             context.runId,
-            `page-perception-${ runtime.history.length }`,
+            `page-perception-${ ++context.perceptionSequence }`,
             toJsonValue(perception)
         );
         context.evidence.push(reference);
@@ -801,7 +890,7 @@ export class RunCoordinator implements ExecutionEngine {
         signal.throwIfAborted();
         const reference = await this.artifactStore.saveJson(
             context.runId,
-            `grounding-decision-${ runtime.history.length }`,
+            `grounding-decision-${ ++context.groundingSequence }`,
             toJsonValue(decision)
         );
         context.evidence.push(reference);
@@ -988,6 +1077,9 @@ export class RunCoordinator implements ExecutionEngine {
     private createCompilableTrace(
         execution: BrowserExecution
     ): CompilableTraceStep[] {
+        const productiveActions = selectProductiveActions(
+            execution.plannedActions
+        );
         return [{
             sequence: 1,
             semanticAction: this.groundedActionBuilder.fromLegacyCommand(
@@ -998,13 +1090,14 @@ export class RunCoordinator implements ExecutionEngine {
             effect: this.createNavigationEffect(execution.navigation),
             beforeObservation: execution.navigation.beforeObservation,
             afterObservation: execution.navigation.afterObservation
-        }, ...execution.plannedActions.map((action, index) => ({
+        }, ...productiveActions.map((action, index) => ({
             sequence: index + 2,
             semanticAction: action.semanticAction,
             command: action.command,
             resolvedTarget: action.resolvedTarget,
             actionResult: action.result,
             effect: action.effect,
+            semanticStepProgress: action.semanticStepProgress,
             beforeObservation: action.beforeObservation,
             afterObservation: action.afterObservation
         }))];
@@ -1464,7 +1557,8 @@ export class RunCoordinator implements ExecutionEngine {
             afterObservationReference: after.observationReference,
             afterScreenshotReference: after.screenshotReference
         };
-        await this.recordPlannedAction(context, runtime, execution);
+        runtime.latestObservation = execution.afterObservation;
+        runtime.latestObservationReference = execution.afterObservationReference;
         return execution;
     }
 
@@ -1568,16 +1662,40 @@ export class RunCoordinator implements ExecutionEngine {
         execution: PlannedActionExecution
     ): Promise<void> {
         await this.publishEffect(context, execution.effect);
-        await this.transition(
-            context,
-            'RECORDING',
-            '正在记录 AI 页面动作轨迹'
-        );
+        if (context.lifecycle.current() !== 'RECORDING') {
+            await this.transition(
+                context,
+                'RECORDING',
+                '正在记录 AI 页面动作轨迹'
+            );
+        }
         const traceEvent: TraceEvent = {
             schemaVersion: 1,
             runId: context.runId,
             sequence: runtime.history.length + 1,
             semanticAction: execution.semanticAction,
+            ...execution.semanticStepId
+                ? { semanticStepId: execution.semanticStepId }
+                : {},
+            origin: execution.origin ?? 'planner',
+            ...execution.recoveryAction
+                ? {
+                    recoveryAction: execution.recoveryAction,
+                    recoveryIntent: execution.recoveryAction.reasonSummary
+                }
+                : {},
+            ...execution.recoveryAttempt
+                ? { recoveryAttempt: execution.recoveryAttempt }
+                : {},
+            ...execution.compilationContribution
+                ? {
+                    compilationContribution:
+                        execution.compilationContribution
+                }
+                : {},
+            ...execution.semanticStepProgress
+                ? { semanticStepProgress: execution.semanticStepProgress }
+                : {},
             command: execution.command,
             resolvedTarget: execution.resolvedTarget,
             beforeObservationRef: execution.beforeObservationReference.ref,
@@ -1717,6 +1835,8 @@ export class RunCoordinator implements ExecutionEngine {
             semanticAction: this.groundedActionBuilder.fromLegacyCommand(
                 navigation.command
             ),
+            origin: 'setup',
+            compilationContribution: 'productive',
             command: navigation.command,
             beforeObservationRef: navigation.beforeObservationReference.ref,
             afterObservationRef: navigation.afterObservationReference.ref,

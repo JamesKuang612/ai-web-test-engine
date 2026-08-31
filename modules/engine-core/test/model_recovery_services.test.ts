@@ -71,8 +71,7 @@ function recoveryInput(): RecoveryPlannerInput {
                 type: 'CLICK',
                 target: { description: '收藏星标', scope: '应用 11' },
                 reasonSummary: '收藏应用'
-            },
-            source: 'runtime-wrapper'
+            }
         },
         testIntent: {
             schemaVersion: 1,
@@ -88,8 +87,8 @@ function recoveryInput(): RecoveryPlannerInput {
             grounding: {
                 status: 'not-found',
                 confidence: 0,
-                evidence: [],
-                summary: 'not found'
+                summary: 'not found',
+                sourcesUsed: [ 'dom' ]
             }
         },
         view: {
@@ -131,4 +130,3 @@ function progressInput(): StepProgressModelInput {
         after: view
     };
 }
-

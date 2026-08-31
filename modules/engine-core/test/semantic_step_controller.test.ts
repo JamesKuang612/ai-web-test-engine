@@ -50,6 +50,9 @@ describe('SemanticStepController', () => {
         assert.equal(result.outcome.status, 'completed');
         assert.deepEqual(runtime.executedTypes, [ 'TYPE', 'CLICK' ]);
         assert.equal(result.executions[0]?.recoveryAction?.type, 'CLEAR');
+        assert.deepEqual(result.executions.map(
+            ({ compilationContribution }) => compilationContribution
+        ), [ 'productive', 'productive' ]);
     });
 
     it('hover reveal: not-found → HOVER → original action succeeds', async () => {
@@ -161,6 +164,9 @@ describe('SemanticStepController', () => {
         assert.deepEqual(runtime.executedTypes, [ 'CLICK', 'CLICK', 'CLICK' ]);
         assert.equal(result.executions[1]?.restorative, true);
         assert.equal(result.executions[1]?.recoveryOutcome, 'progress');
+        assert.deepEqual(result.executions.map(
+            ({ compilationContribution }) => compilationContribution
+        ), [ 'wrong-state', 'non-productive', 'productive' ]);
     });
 
     it('unsafe recovery: proposal rejected and Browser never called', async () => {
@@ -273,6 +279,7 @@ class FakeRuntime implements SemanticStepRuntimePort<string> {
     }
 
     public canUseModel = () => true;
+    public canExecuteAction = () => true;
     public perceive: SemanticStepRuntimePort<string>['perceive'] = async () =>
         this.current;
     public ground: SemanticStepRuntimePort<string>['ground'] = async (
@@ -312,7 +319,8 @@ class FakeRuntime implements SemanticStepRuntimePort<string> {
             before: this.current,
             after,
             resolvedTarget: input.resolvedTarget,
-            restorative: false
+            restorative: false,
+            compilationContribution: 'non-productive'
         };
         this.current = after;
         return execution;

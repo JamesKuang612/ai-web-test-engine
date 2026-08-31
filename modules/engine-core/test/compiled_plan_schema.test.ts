@@ -63,6 +63,19 @@ describe('CompiledPlan Schema', () => {
         }, {
             id: 'step-6',
             sequence: 6,
+            type: 'SCROLL',
+            value: {
+                source: 'literal',
+                value: {
+                    direction: 'down',
+                    amount: 'medium'
+                }
+            },
+            expectedEffect: '显示下方内容',
+            risk: 'reversible'
+        }, {
+            id: 'step-7',
+            sequence: 7,
             type: 'HOVER',
             target: createTarget('11应用卡片', 'a'),
             expectedEffect: '显示添加收藏按钮',

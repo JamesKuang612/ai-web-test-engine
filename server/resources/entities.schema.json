@@ -83,6 +83,10 @@
                 },
                 "llm": {
                     "$ref": "#/definitions/ILlmComponentConf"
+                },
+                "visual_grounding": {
+                    "$ref": "#/definitions/IVisualGroundingComponentConf",
+                    "description": "兼容尚未增加该字段的本机私有覆盖配置。"
                 }
             },
             "required": [
@@ -323,6 +327,46 @@
             ],
             "type": "object"
         },
+        "IVisualGroundingComponentConf": {
+            "additionalProperties": false,
+            "description": "Midscene 视觉模型配置；暂不代表视觉能力已进入执行链路。",
+            "properties": {
+                "base_url": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "model_family": {
+                    "const": "gpt-5",
+                    "type": "string"
+                },
+                "provider": {
+                    "const": "midscene",
+                    "description": "当前视觉定位阶段固定使用 Midscene。",
+                    "type": "string"
+                },
+                "reasoning_enabled": {
+                    "type": "boolean"
+                },
+                "timeout_ms": {
+                    "type": "number"
+                }
+            },
+            "required": [
+                "base_url",
+                "enabled",
+                "model",
+                "model_family",
+                "provider",
+                "reasoning_enabled",
+                "timeout_ms"
+            ],
+            "type": "object"
+        },
         "LlmApiProtocol": {
             "description": "FineOneAPI 当前支持的两种 OpenAI 兼容请求协议。",
             "enum": [
@@ -354,6 +398,11 @@
         "LlmServiceTier": {
             "const": "priority",
             "description": "Codex 可选的加速服务档位；未配置时使用账户默认档位。",
+            "type": "string"
+        },
+        "VisualGroundingProvider": {
+            "const": "midscene",
+            "description": "当前视觉定位阶段固定使用 Midscene。",
             "type": "string"
         }
     }

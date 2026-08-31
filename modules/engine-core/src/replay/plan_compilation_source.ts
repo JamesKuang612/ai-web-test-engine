@@ -9,6 +9,7 @@ import type {
     PageObservation,
     ResolvedTarget,
     SemanticAction,
+    SemanticStepProgress,
     TabSummary,
 } from '../contracts';
 import {
@@ -108,6 +109,14 @@ function parseStep(value: unknown, path: string): CompilableTraceStep {
             `${ path }.actionResult`
         ),
         effect: parseEffect(object.effect, `${ path }.effect`),
+        ...object.semanticStepProgress === undefined
+            ? {}
+            : {
+                semanticStepProgress: parseStepProgress(
+                    object.semanticStepProgress,
+                    `${ path }.semanticStepProgress`
+                )
+            },
         beforeObservation: parseObservation(
             object.beforeObservation,
             `${ path }.beforeObservation`
@@ -272,6 +281,32 @@ function parseEffect(value: unknown, path: string): EffectVerification {
                 `${ path }.evidence[${ index }]`
             )),
         summary: requireString(object.summary, `${ path }.summary`)
+    };
+}
+
+function parseStepProgress(
+    value: unknown,
+    path: string
+): SemanticStepProgress {
+    const object = requireObject(value, path);
+    return {
+        status: requireEnum(object.status, [
+            'complete',
+            'progress',
+            'no-progress',
+            'wrong-state',
+            'unknown'
+        ] as const, `${ path }.status`),
+        basis: requireEnum(object.basis, [
+            'deterministic',
+            'model'
+        ] as const, `${ path }.basis`),
+        summary: requireString(object.summary, `${ path }.summary`),
+        evidence: requireArray(object.evidence, `${ path }.evidence`)
+            .map((item, index) => parseEvidence(
+                item,
+                `${ path }.evidence[${ index }]`
+            ))
     };
 }
 

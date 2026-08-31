@@ -1,6 +1,7 @@
 import type {
     ActionCommand,
     ActionResult,
+    CompilationContribution,
     EffectVerification,
     GroundingDecision,
     PagePerception,
@@ -43,11 +44,15 @@ export interface SemanticStepActionExecution<TRecord> {
     after: PagePerception;
     resolvedTarget?: ResolvedTarget;
     recoveryOutcome?: 'progress' | 'no-progress' | 'wrong-state';
+    recoveryAttempt?: number;
+    compilationContribution: CompilationContribution;
+    semanticStepProgress?: SemanticStepProgress;
     /** 撤销前序错误状态时为 true，即使 runtime progress 也不可编译。 */
     restorative: boolean;
 }
 
 export interface SemanticStepRuntimePort<TRecord> {
+    canExecuteAction: () => boolean;
     canUseModel: () => boolean;
     perceive: (
         previous: PagePerception | undefined,
@@ -208,6 +213,8 @@ export class SemanticStepController<TRecord> {
             );
             if (recovery.execution) {
                 recovery.execution.recoveryOutcome = recoveryOutcome;
+                recovery.execution.compilationContribution =
+                    contributionForRecovery(recovery.execution, recoveryOutcome);
                 state.executions.push(recovery.execution);
             }
             state.attempts.push({
@@ -275,6 +282,12 @@ export class SemanticStepController<TRecord> {
                 ...state.latestProgress ? { progress: state.latestProgress } : {}
             };
         }
+        if (!this.runtime.canExecuteAction()) {
+            return {
+                status: 'budget-exhausted',
+                reason: '单步执行前全局动作或时间预算已经耗尽。'
+            };
+        }
         const execution = await this.runtime.execute({
             action: step.primaryAction,
             origin: 'planner',
@@ -316,6 +329,12 @@ export class SemanticStepController<TRecord> {
         }
         state.latestProgress = progress;
         state.primaryGrounding = groundingAfter;
+        execution.semanticStepProgress = progress;
+        execution.compilationContribution = progress.status === 'complete'
+            ? 'productive'
+            : execution.actionResult.status === 'executed'
+                ? 'non-productive'
+                : 'failed';
         return progress.status === 'complete'
             ? { status: 'completed', progress }
             : undefined;
@@ -351,6 +370,15 @@ export class SemanticStepController<TRecord> {
             this.runtime.consumeModelCalls(1, 'step-progress');
         }
         state.latestProgress = progress;
+        const primaryExecution = state.executions.findLast(
+            (execution) => execution.origin === 'planner'
+        );
+        if (primaryExecution) {
+            primaryExecution.semanticStepProgress = progress;
+            if (progress.status === 'complete') {
+                primaryExecution.compilationContribution = 'productive';
+            }
+        }
         return progress.status === 'complete'
             ? { status: 'completed', progress }
             : undefined;
@@ -416,6 +444,14 @@ export class SemanticStepController<TRecord> {
                 }
             };
         }
+        if (!this.runtime.canExecuteAction()) {
+            return {
+                outcome: {
+                    status: 'budget-exhausted',
+                    reason: 'Recovery 执行前全局动作或时间预算已经耗尽。'
+                }
+            };
+        }
         const execution = await this.runtime.execute({
             action: semanticAction,
             origin: 'recovery',
@@ -424,6 +460,7 @@ export class SemanticStepController<TRecord> {
             before: state.perception,
             signal
         });
+        execution.recoveryAttempt = attempt;
         return { after: execution.after, execution };
     }
 
@@ -434,11 +471,22 @@ export class SemanticStepController<TRecord> {
         signal: AbortSignal
     ): Promise<RecoveryDecision> {
         const input: RecoveryPlannerInput = {
-            step,
+            step: createRecoveryPlanningStepView(step),
             testIntent,
             failure: {
-                grounding: state.primaryGrounding,
-                ...state.primaryEffect ? { progress: state.latestProgress } : {}
+                grounding: toSafeGrounding(state.primaryGrounding),
+                ...state.primaryActionResult
+                    ? { actionResult: toSafeActionResult(state.primaryActionResult) }
+                    : {},
+                ...state.latestProgress
+                    ? {
+                        progress: {
+                            status: state.latestProgress.status,
+                            basis: state.latestProgress.basis,
+                            summary: state.latestProgress.summary
+                        }
+                    }
+                    : {}
             },
             view: buildRecoveryPlanningView(state.perception),
             recentAttempts: state.attempts,
@@ -630,12 +678,62 @@ function classifyRecoveryProgress<TRecord>(
     return 'no-progress';
 }
 
+function contributionForRecovery<TRecord>(
+    execution: SemanticStepActionExecution<TRecord>,
+    outcome: 'progress' | 'no-progress' | 'wrong-state'
+): CompilationContribution {
+    if (execution.actionResult.status !== 'executed') {
+        return 'failed';
+    }
+    if (outcome === 'wrong-state') {
+        return 'wrong-state';
+    }
+    if (outcome === 'progress' && !execution.restorative) {
+        return 'productive';
+    }
+    return 'non-productive';
+}
+
 function notFoundGrounding(): GroundingDecision {
     return {
         status: 'not-found',
         confidence: 0,
         evidence: [],
         summary: '尚未定位原始目标。'
+    };
+}
+
+function createRecoveryPlanningStepView(step: SemanticStep) {
+    return {
+        id: step.id,
+        primaryAction: {
+            type: step.primaryAction.type,
+            ...step.primaryAction.target
+                ? { target: structuredClone(step.primaryAction.target) }
+                : {},
+            ...step.primaryAction.expectedEffect
+                ? { expectedEffect: step.primaryAction.expectedEffect }
+                : {},
+            reasonSummary: step.primaryAction.reasonSummary
+        },
+        ...step.expectedEffect ? { expectedEffect: step.expectedEffect } : {}
+    };
+}
+
+function toSafeGrounding(decision: GroundingDecision) {
+    return {
+        status: decision.status,
+        confidence: decision.confidence,
+        summary: decision.summary,
+        sourcesUsed: [ ...(decision.usage?.sourcesUsed ?? []) ]
+    };
+}
+
+function toSafeActionResult(result: ActionResult) {
+    return {
+        status: result.status,
+        ...result.error ? { errorCode: result.error.code } : {},
+        browserSignals: structuredClone(result.browserSignals)
     };
 }
 

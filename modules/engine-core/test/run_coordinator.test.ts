@@ -588,6 +588,10 @@ function assertGroundingEvidencePersisted(
     artifactStore: FakeArtifactStore
 ): void {
     const groundedTrace = artifactStore.traces[1];
+    assert.equal(groundedTrace?.origin, 'planner');
+    assert.equal(groundedTrace?.semanticStepId, 'runtime-step-1');
+    assert.equal(groundedTrace?.compilationContribution, 'productive');
+    assert.equal(groundedTrace?.semanticStepProgress?.status, 'complete');
     assert.equal(
         groundedTrace?.semanticAction?.target?.description,
         '账号输入框'

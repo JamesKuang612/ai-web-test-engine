@@ -14,6 +14,7 @@ import type {
     PageObservation,
     ResolvedTarget,
     SemanticAction,
+    SemanticStepProgress,
     TestIntent,
 } from '../contracts';
 
@@ -25,6 +26,7 @@ export interface CompilableTraceStep {
     resolvedTarget?: ResolvedTarget;
     actionResult: ActionResult;
     effect: EffectVerification;
+    semanticStepProgress?: SemanticStepProgress;
     beforeObservation: PageObservation;
     afterObservation: PageObservation;
 }
@@ -95,7 +97,10 @@ export class TracePlanCompiler {
                     `第 ${ step.sequence } 步未成功执行，不能编译。`
                 );
             }
-            if (step.effect.status !== 'confirmed') {
+            if (
+                step.effect.status !== 'confirmed'
+                && step.semanticStepProgress?.status !== 'complete'
+            ) {
                 throw new TracePlanCompileError(
                     `第 ${ step.sequence } 步效果未经确认，不能编译。`
                 );
@@ -135,6 +140,10 @@ export class TracePlanCompiler {
 
             return compiled;
         }
+        if (type === 'SCROLL') {
+            compiled.value = this.compileScrollValue(step);
+            return compiled;
+        }
 
         const target = this.compileTarget(step);
         compiled.target = target;
@@ -160,6 +169,7 @@ export class TracePlanCompiler {
             || type === 'CLICK'
             || type === 'HOVER'
             || type === 'NAVIGATE'
+            || type === 'SCROLL'
             || type === 'SELECT'
             || type === 'TYPE'
             || type === 'WAIT'
@@ -268,6 +278,23 @@ export class TracePlanCompiler {
             );
         }
         return structuredClone(value);
+    }
+
+    private compileScrollValue(
+        step: CompilableTraceStep
+    ): CompiledStep['value'] {
+        const value = step.command.value?.source === 'literal'
+            ? step.command.value.value
+            : undefined;
+        if (!isScrollValue(value)) {
+            throw new TracePlanCompileError(
+                `第 ${ step.sequence } 步 SCROLL 必须提供受控方向和幅度。`
+            );
+        }
+        return {
+            source: 'literal',
+            value: structuredClone(value)
+        };
     }
 
     private compileTarget(step: CompilableTraceStep): CompiledTarget {
@@ -380,6 +407,23 @@ export class TracePlanCompiler {
 
         return structuredClone(uniqueHints);
     }
+}
+
+function isScrollValue(value: unknown): value is {
+    direction: 'up' | 'down',
+    amount: 'small' | 'medium' | 'page'
+} {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        return false;
+    }
+    const record = value as Record<string, unknown>;
+    return (record.direction === 'up' || record.direction === 'down')
+        && (
+            record.amount === 'small'
+            || record.amount === 'medium'
+            || record.amount === 'page'
+        )
+        && Object.keys(record).length === 2;
 }
 
 /** 密码、令牌等敏感字段不得把实际输入值固化进可复用计划。 */

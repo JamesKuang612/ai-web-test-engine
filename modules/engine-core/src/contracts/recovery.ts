@@ -1,10 +1,6 @@
 import type {
-    ActionResult,
     ResolvedElementSnapshot,
 } from './trace';
-import type {
-    GroundingDecision,
-} from './grounding';
 import type {
     PerceptionDelta,
 } from './perception';
@@ -110,13 +106,40 @@ export interface RecoveryAttemptSummary {
     summary: string;
 }
 
+/** Recovery 模型可见的 Step 摘要，不包含 primary 输入值。 */
+export interface RecoveryPlanningStepView {
+    id: string;
+    primaryAction: {
+        type: string,
+        target?: SemanticTarget,
+        expectedEffect?: string,
+        reasonSummary: string
+    };
+    expectedEffect?: string;
+}
+
 export interface RecoveryPlannerInput {
-    step: SemanticStep;
+    step: RecoveryPlanningStepView;
     testIntent: TestIntent;
     failure: {
-        grounding?: GroundingDecision,
-        actionResult?: ActionResult,
-        progress?: SemanticStepProgress
+        grounding?: {
+            status: 'grounded' | 'ambiguous' | 'not-found' | 'not-visible' |
+                'blocked' | 'not-actionable' | 'unmapped',
+            confidence: number,
+            summary: string,
+            sourcesUsed: Array<'accessibility' | 'dom' | 'hit-test' | 'visual'>
+        },
+        actionResult?: {
+            status: 'executed' | 'failed' | 'rejected' | 'timed-out',
+            errorCode?: string,
+            browserSignals: {
+                dialogOpened: boolean,
+                downloadStarted: boolean,
+                newTabOpened: boolean,
+                urlChanged: boolean
+            }
+        },
+        progress?: Pick<SemanticStepProgress, 'basis' | 'status' | 'summary'>
     };
     view: RecoveryPlanningView;
     recentAttempts: RecoveryAttemptSummary[];
@@ -160,4 +183,3 @@ export function hasMeaningfulPerceptionDelta(
         || delta.overlayState.changed
     ));
 }
-
