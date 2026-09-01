@@ -1,0 +1,596 @@
+diff --git a/modules/engine-core/src/run/model_recovery_planner.ts b/modules/engine-core/src/run/model_recovery_planner.ts
+index 6c7dfdc896da8db7468fb4570e3beef1ad231a37..f4054dd56c4c7a40ed14178f6ae92db74420514c 100644
+--- a/modules/engine-core/src/run/model_recovery_planner.ts
++++ b/modules/engine-core/src/run/model_recovery_planner.ts
+@@ -1,4 +1,5 @@
+ import type {
++    JsonValue,
+     RecoveryAction,
+     RecoveryDecision,
+     RecoveryPlannerInput,
+@@ -57,11 +58,18 @@ export class ModelRecoveryPlanner implements RecoveryPlannerPort {
+         }, signal);
+     }
+ 
+-    public async repairProtocol(
++    public repairProtocol = async (
+         diagnostic: ModelProtocolDiagnostic,
+         signal: AbortSignal
+-    ): Promise<RecoveryPlannerAttempt> {
+-        return await this.generate({
++    ): Promise<RecoveryPlannerAttempt> => {
++        const guard = createSemanticRepairGuard(diagnostic.parsedJson);
++        if (!guard) {
++            return unavailableRepair(
++                diagnostic,
++                '原始 Recovery strategy identity 无法确定，禁止协议修复。'
++            );
++        }
++        const repaired = await this.generate({
+             systemPrompt: [
+                 '你只负责修复 RecoveryDecision JSON 的协议结构。',
+                 '不得重新规划策略，不得改变原动作意图、目标或理由。',
+@@ -78,7 +86,20 @@ export class ModelRecoveryPlanner implements RecoveryPlannerPort {
+             modelRole: 'recovery-planner',
+             protocolPhase: 'repair'
+         }, signal);
+-    }
++        if (repaired.status !== 'decision') {
++            return repaired;
++        }
++        const changedPaths = changedSemanticPaths(guard, repaired.decision);
++        return changedPaths.length === 0
++            ? repaired
++            : unavailableSemanticChange(repaired.decision, changedPaths);
++    };
++
++    public canRepairProtocol = (
++        diagnostic: ModelProtocolDiagnostic
++    ): boolean => {
++        return createSemanticRepairGuard(diagnostic.parsedJson) !== undefined;
++    };
+ 
+     private async generate(
+         request: ModelRequest,
+@@ -113,6 +134,136 @@ export class ModelRecoveryPlanner implements RecoveryPlannerPort {
+     }
+ }
+ 
++interface SemanticRepairGuard {
++    values: Record<string, string>;
++}
++
++const RECOVERY_ACTION_TYPES = new Set([
++    'BACK', 'CLEAR', 'CLICK', 'HOVER', 'REOBSERVE', 'SCROLL', 'WAIT'
++]);
++
++/** 只提取 initial JSON 中已经存在且领域有效的语义字段。 */
++function createSemanticRepairGuard(
++    value: unknown
++): SemanticRepairGuard | undefined {
++    if (!isRecord(value) || (value.kind !== 'recover' && value.kind !== 'stop')) {
++        return undefined;
++    }
++    const values: Record<string, string> = { kind: value.kind };
++    if (value.kind === 'stop') {
++        preserveString(values, 'stop.reason', value.reason);
++        return { values };
++    }
++    if (!isRecord(value.action)) {
++        return undefined;
++    }
++    const action = value.action;
++    const actionType = action.type;
++    if (
++        typeof actionType !== 'string'
++        || !RECOVERY_ACTION_TYPES.has(actionType)
++    ) {
++        return undefined;
++    }
++    values['action.type'] = actionType;
++    if ([ 'CLEAR', 'CLICK', 'HOVER' ].includes(actionType)) {
++        if (!isRecord(action.target) || !nonEmptyString(action.target.description)) {
++            return undefined;
++        }
++        values['target.description'] = action.target.description;
++        preserveString(values, 'target.scope', action.target.scope);
++    }
++    preserveEnum(values, 'direction', action.direction, [ 'up', 'down' ]);
++    preserveEnum(values, 'amount', action.amount, [
++        'small', 'medium', 'page'
++    ]);
++    preserveEnum(values, 'duration', action.duration, [ 'short', 'medium' ]);
++    preserveString(values, 'reasonSummary', action.reasonSummary);
++    preserveString(
++        values,
++        'expectedTransientEffect',
++        action.expectedTransientEffect
++    );
++    return { values };
++}
++
++function changedSemanticPaths(
++    guard: SemanticRepairGuard,
++    repaired: RecoveryDecision
++): string[] {
++    const repairedGuard = createSemanticRepairGuard(repaired);
++    if (!repairedGuard) {
++        return [ 'strategy.identity' ];
++    }
++    return Object.entries(guard.values)
++        .filter(([ path, value ]) => repairedGuard.values[path] !== value)
++        .map(([ path ]) => path);
++}
++
++function unavailableRepair(
++    diagnostic: ModelProtocolDiagnostic,
++    reason: string
++): RecoveryPlannerAttempt {
++    return {
++        status: 'unavailable',
++        reason,
++        diagnostic
++    };
++}
++
++function unavailableSemanticChange(
++    decision: RecoveryDecision,
++    changedPaths: string[]
++): RecoveryPlannerAttempt {
++    return {
++        status: 'unavailable',
++        reason: `协议修复改变了 Recovery 语义：${ changedPaths.join(', ') }。`,
++        diagnostic: {
++            schemaVersion: 1,
++            modelRole: 'recovery-planner',
++            phase: 'repair',
++            failureType: 'schema-invalid',
++            parsedJson: decision as unknown as JsonValue,
++            schemaIssues: changedPaths.map((path) => ({
++                path,
++                code: 'semantic-preservation-failed',
++                message: 'repair 不得改变 initial JSON 中已有的语义值。'
++            })),
++            sanitized: true,
++            truncated: false
++        }
++    };
++}
++
++function preserveString(
++    output: Record<string, string>,
++    path: string,
++    value: unknown
++): void {
++    if (nonEmptyString(value)) {
++        output[path] = value;
++    }
++}
++
++function preserveEnum(
++    output: Record<string, string>,
++    path: string,
++    value: unknown,
++    allowed: string[]
++): void {
++    if (typeof value === 'string' && allowed.includes(value)) {
++        output[path] = value;
++    }
++}
++
++function nonEmptyString(value: unknown): value is string {
++    return typeof value === 'string' && Boolean(value.trim());
++}
++
++function isRecord(value: unknown): value is Record<string, unknown> {
++    return typeof value === 'object' && value !== null && !Array.isArray(value);
++}
++
+ const recoveryDecisionSchema: RuntimeSchema<RecoveryDecision> = {
+     name: 'RecoveryDecision',
+     jsonSchema: {
+diff --git a/modules/engine-core/src/run/recovery_ports.ts b/modules/engine-core/src/run/recovery_ports.ts
+index eef9d935b1a6e1f9f89bf5a10e2f87b60a880306..6e9b5f24ee6b71793088c2f6e96c956730eb31cd 100644
+--- a/modules/engine-core/src/run/recovery_ports.ts
++++ b/modules/engine-core/src/run/recovery_ports.ts
+@@ -33,6 +33,10 @@ export interface RecoveryPlannerPort {
+         diagnostic: ModelProtocolDiagnostic,
+         signal: AbortSignal
+     ) => Promise<RecoveryPlannerAttempt>;
++    /** 在计入 repair 模型调用前确认原始策略身份仍可确定。 */
++    canRepairProtocol?: (
++        diagnostic: ModelProtocolDiagnostic
++    ) => boolean;
+ }
+ 
+ export interface RecoverySafetyPolicy {
+diff --git a/modules/engine-core/src/run/semantic_step_controller.ts b/modules/engine-core/src/run/semantic_step_controller.ts
+index e830549bf8f725a4f08a467dddf3ef9764eac6b1..905a9bdf9ae801bedadf0e261d83a0171fcb1554 100644
+--- a/modules/engine-core/src/run/semantic_step_controller.ts
++++ b/modules/engine-core/src/run/semantic_step_controller.ts
+@@ -656,6 +656,9 @@ export class SemanticStepController<TRecord> {
+         if (modeled.status === 'protocol-invalid') {
+             if (
+                 !repairProtocol
++                || this.modelRecoveryPlanner?.canRepairProtocol?.(
++                    modeled.diagnostic
++                ) === false
+                 || state.recoveryProtocolRepairCalls >=
+                     this.options.maxRecoveryProtocolRepairCallsPerStep
+                 || !this.runtime.canUseModel()
+diff --git a/modules/engine-core/test/model_recovery_services.test.ts b/modules/engine-core/test/model_recovery_services.test.ts
+index a32fe95dc1f440666e30a2c73c4a628401794ead..87e842e4d44c20a004e9cb45d9e318daeb55c5b2 100644
+--- a/modules/engine-core/test/model_recovery_services.test.ts
++++ b/modules/engine-core/test/model_recovery_services.test.ts
+@@ -72,7 +72,7 @@ describe('Phase 3 model recovery services', () => {
+     });
+ 
+     it('schema invalid 可做一次只修协议结构的 repair', async () => {
+-        const diagnostic = protocolDiagnostic('initial');
++        const diagnostic = hoverProtocolDiagnostic();
+         const adapter = new FakeModelAdapter([
+             new ClassifiedModelFailure(
+                 'schema-invalid',
+@@ -80,9 +80,17 @@ describe('Phase 3 model recovery services', () => {
+                 diagnostic
+             ),
+             {
+-                kind: 'stop',
+-                action: null,
+-                reason: '没有安全恢复动作'
++                kind: 'recover',
++                action: {
++                    type: 'HOVER',
++                    target: {
++                        description: '应用11卡片',
++                        scope: null
++                    },
++                    expectedTransientEffect: null,
++                    reasonSummary: '显示收藏入口'
++                },
++                reason: null
+             }
+         ]);
+         const planner = new ModelRecoveryPlanner(adapter);
+@@ -99,6 +107,17 @@ describe('Phase 3 model recovery services', () => {
+         );
+ 
+         assert.equal(repaired.status, 'decision');
++        assert.deepEqual(
++            repaired.status === 'decision' ? repaired.decision : undefined,
++            {
++                kind: 'recover',
++                action: {
++                    type: 'HOVER',
++                    target: { description: '应用11卡片' },
++                    reasonSummary: '显示收藏入口'
++                }
++            }
++        );
+         assert.equal(adapter.requests.length, 2);
+         assert.equal(adapter.requests[1]?.protocolPhase, 'repair');
+         assert.equal(adapter.requests[1]?.modelRole, 'recovery-planner');
+@@ -112,6 +131,48 @@ describe('Phase 3 model recovery services', () => {
+         );
+     });
+ 
++    it('repair 改变已有 Recovery 策略时 deterministic reject', async () => {
++        const diagnostic = hoverProtocolDiagnostic();
++        const adapter = new FakeModelAdapter({
++            kind: 'recover',
++            action: {
++                type: 'CLICK',
++                target: { description: '设置', scope: null },
++                expectedTransientEffect: null,
++                reasonSummary: '打开设置'
++            },
++            reason: null
++        });
++        const planner = new ModelRecoveryPlanner(adapter);
++
++        const repaired = await planner.repairProtocol(diagnostic, signal());
++
++        assert.equal(repaired.status, 'unavailable');
++        assert.equal(
++            repaired.status === 'unavailable'
++                ? repaired.diagnostic.schemaIssues.some(
++                    ({ code }) => code === 'semantic-preservation-failed'
++                )
++                : false,
++            true
++        );
++    });
++
++    it('缺少 Recovery strategy identity 时不调用 repair 模型', async () => {
++        const diagnostic = unrepairableProtocolDiagnostic();
++        const adapter = new FakeModelAdapter({
++            kind: 'stop', action: null, reason: '不应调用'
++        });
++        const planner = new ModelRecoveryPlanner(adapter);
++
++        assert.equal(planner.canRepairProtocol(diagnostic), false);
++        assert.equal(
++            (await planner.repairProtocol(diagnostic, signal())).status,
++            'unavailable'
++        );
++        assert.equal(adapter.requests.length, 0);
++    });
++
+     it('已分类 provider failure 返回 unavailable 而不是抛内部异常', async () => {
+         const diagnostic = protocolDiagnostic('initial', 'provider-unavailable');
+         const adapter = new FakeModelAdapter(new ClassifiedModelFailure(
+@@ -193,6 +254,51 @@ function protocolDiagnostic(
+     };
+ }
+ 
++function hoverProtocolDiagnostic(): ModelProtocolDiagnostic {
++    return {
++        schemaVersion: 1,
++        modelRole: 'recovery-planner',
++        phase: 'initial',
++        failureType: 'schema-invalid',
++        rawSha256: 'hover-sha',
++        parsedJson: {
++            kind: 'recover',
++            action: {
++                type: 'HOVER',
++                target: { description: '应用11卡片' },
++                expectedTransientEffect: null,
++                reasonSummary: '显示收藏入口'
++            },
++            reason: null
++        },
++        schemaIssues: [{
++            path: 'RecoveryDecision.action.target.scope',
++            code: 'missing-field',
++            message: '字段缺失。'
++        }],
++        sanitized: true,
++        truncated: false
++    };
++}
++
++function unrepairableProtocolDiagnostic(): ModelProtocolDiagnostic {
++    return {
++        schemaVersion: 1,
++        modelRole: 'recovery-planner',
++        phase: 'initial',
++        failureType: 'invalid-json',
++        rawOutputPreview: '{broken',
++        rawSha256: 'broken-sha',
++        schemaIssues: [{
++            path: '$',
++            code: 'invalid-json',
++            message: '无法解析。'
++        }],
++        sanitized: true,
++        truncated: false
++    };
++}
++
+ function signal(): AbortSignal {
+     return new AbortController().signal;
+ }
+diff --git a/modules/engine-core/test/semantic_step_controller.test.ts b/modules/engine-core/test/semantic_step_controller.test.ts
+index 38a519c322b66c7dd6faf963d75ab062cf0c107f..a4d76b52a28983ddfb75199bc90e15b0a93b7127 100644
+--- a/modules/engine-core/test/semantic_step_controller.test.ts
++++ b/modules/engine-core/test/semantic_step_controller.test.ts
+@@ -2,18 +2,24 @@ import assert from 'node:assert/strict';
+ 
+ import type {
+     GroundingDecision,
++    ModelAdapter,
+     ModelProtocolDiagnostic,
++    ModelRequest,
++    ModelResult,
+     PagePerception,
+     RecoveryDecision,
+     RecoveryPlannerPort,
+     RecoverySafetyPolicy,
++    RuntimeSchema,
+     SemanticAction,
+     SemanticStepActionExecution,
+     SemanticStepRuntimePort,
+     TestIntent,
+ } from '../src';
+ import {
++    ClassifiedModelFailure,
+     DeterministicRecoverySafetyPolicy,
++    ModelRecoveryPlanner,
+     SemanticStepController,
+     SemanticStepProgressEvaluator,
+ } from '../src';
+@@ -420,6 +426,36 @@ describe('SemanticStepController', () => {
+         assert.deepEqual(runtime.protocolPhases, [ 'initial', 'repair' ]);
+     });
+ 
++    it('repair 改变 Recovery 策略时拒绝且 Browser 不调用', async () => {
++        const initial = perception('initial', { elements: [] });
++        const runtime = new FakeRuntime(
++            initial,
++            () => decision('not-found'),
++            () => initial
++        );
++        const planner = new ModelRecoveryPlanner(
++            new StrategyChangingRepairAdapter()
++        );
++
++        const result = await controller(
++            runtime,
++            new SemanticStepProgressEvaluator(),
++            planner
++        ).execute(step({
++            type: 'CLICK',
++            target: { description: '新建应用' },
++            reasonSummary: '创建应用'
++        }), intent, signal());
++
++        assert.equal(result.outcome.status, 'exhausted');
++        assert.deepEqual(runtime.executedTypes, []);
++        assert.deepEqual(runtime.modelPurposes, [
++            'recovery-planner',
++            'recovery-protocol-repair'
++        ]);
++        assert.deepEqual(runtime.protocolPhases, [ 'initial', 'repair' ]);
++    });
++
+     it('非导航 wrong-state 不会授权 BACK', () => {
+         const policy = new DeterministicRecoverySafetyPolicy();
+         const common = {
+@@ -591,6 +627,37 @@ class ProtocolFailureRecoveryPlanner implements RecoveryPlannerPort {
+     });
+ }
+ 
++class StrategyChangingRepairAdapter implements ModelAdapter {
++    private callCount = 0;
++
++    public async generateStructured<T>(
++        _request: ModelRequest,
++        schema: RuntimeSchema<T>
++    ): Promise<ModelResult<T>> {
++        this.callCount += 1;
++        if (this.callCount === 1) {
++            throw new ClassifiedModelFailure(
++                'schema-invalid',
++                'RecoveryDecision schema invalid',
++                hoverProtocolDiagnostic()
++            );
++        }
++        return {
++            model: 'fake-model',
++            value: schema.parse({
++                kind: 'recover',
++                action: {
++                    type: 'CLICK',
++                    target: { description: '设置', scope: null },
++                    expectedTransientEffect: null,
++                    reasonSummary: '打开设置'
++                },
++                reason: null
++            })
++        };
++    }
++}
++
+ function protocolDiagnostic(
+     phase: 'initial' | 'repair'
+ ): ModelProtocolDiagnostic {
+@@ -610,6 +677,32 @@ function protocolDiagnostic(
+     };
+ }
+ 
++function hoverProtocolDiagnostic(): ModelProtocolDiagnostic {
++    return {
++        schemaVersion: 1,
++        modelRole: 'recovery-planner',
++        phase: 'initial',
++        failureType: 'schema-invalid',
++        parsedJson: {
++            kind: 'recover',
++            action: {
++                type: 'HOVER',
++                target: { description: '应用11卡片' },
++                expectedTransientEffect: null,
++                reasonSummary: '显示收藏入口'
++            },
++            reason: null
++        },
++        schemaIssues: [{
++            path: 'RecoveryDecision.action.target.scope',
++            code: 'missing-field',
++            message: '字段缺失。'
++        }],
++        sanitized: true,
++        truncated: false
++    };
++}
++
+ function controller(
+     runtime: FakeRuntime,
+     progress = new SemanticStepProgressEvaluator(),
+diff --git a/server/src/adapters/model/model_protocol_diagnostic.ts b/server/src/adapters/model/model_protocol_diagnostic.ts
+index 89ac921777c32798ea44dc1c11c3669d79a52223..1b4d7aae1ec4192319a6aefa2f8aab683deb8258 100644
+--- a/server/src/adapters/model/model_protocol_diagnostic.ts
++++ b/server/src/adapters/model/model_protocol_diagnostic.ts
+@@ -15,7 +15,8 @@ const MAX_ARRAY_LENGTH = 30;
+ const MAX_OBJECT_KEYS = 50;
+ const MAX_DEPTH = 6;
+ const SENSITIVE_KEY = /(?:authorization|cookie|credential|password|secret|token)/iu;
+-const RAW_SECRET = /((?:authorization|cookie|password|secret|token)\s*["']?\s*[:=]\s*)[^\s,}\]]+/giu;
++const RAW_HEADER_SECRET = /(["']?(?:authorization|cookie)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n}]+)/giu;
++const RAW_NAMED_SECRET = /(["']?(?:credential|password|secret|token)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}\]]+)/giu;
+ const URL_PATTERN = /https?:\/\/[^\s"'<>]+/giu;
+ 
+ interface DiagnosticInput {
+@@ -35,6 +36,7 @@ export function createSafeModelProtocolDiagnostic(
+ ): ModelProtocolDiagnostic {
+     let truncated = false;
+     const rawOutputPreview = input.rawOutput === undefined
++        || input.failureType !== 'invalid-json'
+         ? undefined
+         : bound(sanitizeText(input.rawOutput), MAX_RAW_PREVIEW, () => {
+             truncated = true;
+@@ -128,7 +130,8 @@ function sanitizeJson(
+ 
+ function sanitizeText(value: string): string {
+     return value
+-        .replace(RAW_SECRET, '$1[REDACTED]')
++        .replace(RAW_HEADER_SECRET, '$1[REDACTED]')
++        .replace(RAW_NAMED_SECRET, '$1[REDACTED]')
+         .replace(URL_PATTERN, (candidate) => sanitizeUrl(candidate));
+ }
+ 
+diff --git a/server/test/server/adapters/model/codex_app_server_model_adapter.test.ts b/server/test/server/adapters/model/codex_app_server_model_adapter.test.ts
+index ee239e225e8dce2f3a82de1221077153e4398513..1779b515b8dfa4b1219d62c9cdb34dc73a40da1f 100644
+--- a/server/test/server/adapters/model/codex_app_server_model_adapter.test.ts
++++ b/server/test/server/adapters/model/codex_app_server_model_adapter.test.ts
+@@ -96,7 +96,15 @@ describe('CodexAppServerModelAdapter', () => {
+             model: 'gpt-5.6-sol',
+             threadId: 'thread-001',
+             turnId: 'turn-001',
+-            text: 'token=secret-value https://example.test/path?q=secret not-json'
++            text: [
++                'Authorization: Bearer bearer-secret-value',
++                'Cookie: session=cookie-secret; theme=dark',
++                'password="multi word password"',
++                "token='multi word token'",
++                'credential = "multi word credential"',
++                'https://example.test/path?q=query-secret#fragment-secret',
++                'not-json'
++            ].join('\n')
+         });
+ 
+         await assert.rejects(
+@@ -108,10 +116,19 @@ describe('CodexAppServerModelAdapter', () => {
+             hasClassifiedFailure('invalid-json', (error) => {
+                 assert.equal(error.diagnostic.modelRole, 'recovery-planner');
+                 assert.equal(error.diagnostic.phase, 'initial');
+-                assert.equal(
+-                    error.diagnostic.rawOutputPreview?.includes('secret-value'),
+-                    false
+-                );
++                [
++                    'bearer-secret-value',
++                    'cookie-secret',
++                    'multi word password',
++                    'multi word token',
++                    'multi word credential',
++                    'query-secret',
++                    'fragment-secret'
++                ].forEach((secret) => assert.equal(
++                    error.diagnostic.rawOutputPreview?.includes(secret),
++                    false,
++                    secret
++                ));
+                 assert.equal(
+                     error.diagnostic.rawOutputPreview?.includes('?q='),
+                     false
+@@ -138,6 +155,8 @@ describe('CodexAppServerModelAdapter', () => {
+             hasClassifiedFailure('schema-invalid', (error) => {
+                 assert.deepEqual(error.diagnostic.parsedJson, { status: 123 });
+                 assert.equal(error.diagnostic.schemaIssues[0]?.path, '$');
++                assert.equal(error.diagnostic.rawOutputPreview, undefined);
++                assert.equal(error.diagnostic.rawSha256?.length, 64);
+             })
+         );
+     });

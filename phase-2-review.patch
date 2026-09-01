@@ -1,0 +1,3876 @@
+diff --git a/modules/engine-core/resources/engine-contracts.schema.json b/modules/engine-core/resources/engine-contracts.schema.json
+index fab12fd..71ff427 100644
+--- a/modules/engine-core/resources/engine-contracts.schema.json
++++ b/modules/engine-core/resources/engine-contracts.schema.json
+@@ -622,7 +622,10 @@
+                         "ambiguous",
+                         "blocked",
+                         "grounded",
+-                        "not-found"
++                        "not-actionable",
++                        "not-found",
++                        "not-visible",
++                        "unmapped"
+                     ],
+                     "type": "string"
+                 },
+@@ -631,6 +634,31 @@
+                 },
+                 "target": {
+                     "$ref": "#/definitions/CandidateResolvedTarget"
++                },
++                "usage": {
++                    "additionalProperties": false,
++                    "properties": {
++                        "sourcesUsed": {
++                            "items": {
++                                "enum": [
++                                    "accessibility",
++                                    "dom",
++                                    "hit-test",
++                                    "visual"
++                                ],
++                                "type": "string"
++                            },
++                            "type": "array"
++                        },
++                        "visualModelCalls": {
++                            "type": "number"
++                        }
++                    },
++                    "required": [
++                        "sourcesUsed",
++                        "visualModelCalls"
++                    ],
++                    "type": "object"
+                 }
+             },
+             "required": [
+diff --git a/modules/engine-core/src/contracts/grounding.ts b/modules/engine-core/src/contracts/grounding.ts
+index 24bc0df..fe3bf16 100644
+--- a/modules/engine-core/src/contracts/grounding.ts
++++ b/modules/engine-core/src/contracts/grounding.ts
+@@ -4,9 +4,16 @@ import type {
+ 
+ /** Grounder 对一次语义目标绑定的确定性结论。 */
+ export interface GroundingDecision {
+-    status: 'grounded' | 'ambiguous' | 'not-found' | 'blocked';
++    status: 'grounded' | 'ambiguous' | 'not-found' | 'not-visible' |
++        'blocked' | 'not-actionable' | 'unmapped';
+     target?: ResolvedTarget;
+     confidence: number;
+     evidence: string[];
+     summary: string;
++    usage?: {
++        sourcesUsed: Array<
++        'accessibility' | 'dom' | 'hit-test' | 'visual'
++        >,
++        visualModelCalls: number
++    };
+ }
+diff --git a/modules/engine-core/src/contracts/index.ts b/modules/engine-core/src/contracts/index.ts
+index 19b8459..37ceff2 100644
+--- a/modules/engine-core/src/contracts/index.ts
++++ b/modules/engine-core/src/contracts/index.ts
+@@ -4,6 +4,7 @@ export * from './compiled_plan';
+ export * from './grounding';
+ export * from './intent';
+ export * from './observation';
++export * from './perception';
+ export * from './run_event';
+ export * from './run';
+ export * from './schema';
+diff --git a/modules/engine-core/src/contracts/perception.ts b/modules/engine-core/src/contracts/perception.ts
+new file mode 100644
+index 0000000..9bac24c
+--- /dev/null
++++ b/modules/engine-core/src/contracts/perception.ts
+@@ -0,0 +1,105 @@
++import type {
++    PageObservation,
++} from './observation';
++
++/** 统一使用 CSS viewport 坐标描述页面区域。 */
++export interface BoundingBox {
++    height: number;
++    width: number;
++    x: number;
++    y: number;
++}
++/** Accessibility 节点的紧凑祖先语义。 */
++export interface AccessibilityAncestor {
++    name?: string;
++    role?: string;
++}
++
++/** 浏览器原生 Accessibility 表示中的 bounded 节点。 */
++export interface AccessibilityNode {
++    id: string;
++    ancestors: AccessibilityAncestor[];
++    boundingBox?: BoundingBox;
++    checked?: boolean | 'mixed';
++    description?: string;
++    disabled?: boolean;
++    /** 已安全映射并注册到当前 observation 的物理候选。 */
++    domCandidateId?: string;
++    expanded?: boolean;
++    name?: string;
++    role?: string;
++    selected?: boolean;
++}
++
++/** 不保存原始完整树，只保存 Grounding 所需的有限节点。 */
++export interface AccessibilitySnapshot {
++    nodes: AccessibilityNode[];
++    source: 'playwright-aria-snapshot';
++    truncated: boolean;
++}
++
++/** 页面候选在真实浏览器中的交互状态。 */
++export interface ElementInteractionState {
++    candidateId: string;
++    enabled: boolean;
++    hitTest: 'blocked' | 'receives-events' | 'unknown';
++    inViewport: boolean;
++    visible: boolean;
++    blockedBy?: {
++        name?: string,
++        role?: string,
++        tag?: string,
++        text?: string
++    };
++}
++
++/** 视觉模型发现的页面区域；本身不具备执行权限。 */
++export interface VisualRegion {
++    id: string;
++    boundingBox: BoundingBox;
++    confidence?: number;
++    context: string[];
++    description: string;
++    mappedCandidateId?: string;
++}
++
++/** 两次感知之间可确定、低成本计算的状态变化。 */
++export interface PerceptionDelta {
++    accessibility: {
++        added: string[],
++        changed: string[],
++        removed: string[],
++        truncated: boolean
++    };
++    candidates: {
++        added: string[],
++        removed: string[],
++        truncated: boolean
++    };
++    overlayState: {
++        after: 'blocked' | 'clear' | 'unknown',
++        before: 'blocked' | 'clear' | 'unknown',
++        changed: boolean
++    };
++    titleChanged: boolean;
++    urlChanged: boolean;
++    visibleText: {
++        added: string[],
++        removed: string[],
++        truncated: boolean
++    };
++}
++
++/** DOM、Accessibility、交互状态和视觉证据的统一感知快照。 */
++export interface PagePerception {
++    perceptionId: string;
++    capturedAt: string;
++    accessibility: AccessibilitySnapshot;
++    delta?: PerceptionDelta;
++    dom: PageObservation;
++    interactionStates: Record<string, ElementInteractionState>;
++    visual?: {
++        regions: VisualRegion[],
++        screenshotRef?: string
++    };
++}
+diff --git a/modules/engine-core/src/grounding/accessibility_target_grounder.ts b/modules/engine-core/src/grounding/accessibility_target_grounder.ts
+new file mode 100644
+index 0000000..330ecb6
+--- /dev/null
++++ b/modules/engine-core/src/grounding/accessibility_target_grounder.ts
+@@ -0,0 +1,47 @@
++import type {
++    AccessibilityNode,
++    SemanticTarget,
++} from '../contracts';
++
++/** 从 bounded A11y 表示中找出语义与 scope 一致的节点。 */
++export class AccessibilityTargetGrounder {
++    public findMatches(
++        target: SemanticTarget,
++        nodes: AccessibilityNode[]
++    ): AccessibilityNode[] {
++        return nodes.filter((node) => {
++            const primary = [ node.name, node.description ]
++                .some((value) => matches(target.description, value));
++            if (!primary) {
++                return false;
++            }
++            if (!target.scope) {
++                return true;
++            }
++            return [
++                node.name,
++                node.description,
++                ...node.ancestors.flatMap(({ name, role }) => [ name, role ])
++            ].some((value) => matches(target.scope!, value));
++        });
++    }
++}
++
++function matches(expected: string, actual: string | undefined): boolean {
++    const left = normalize(expected);
++    const right = normalize(actual);
++    if (!left || !right) {
++        return false;
++    }
++    return left === right ||
++        Math.min(left.length, right.length) >= 2 &&
++        (left.includes(right) || right.includes(left));
++}
++
++function normalize(value: string | undefined): string {
++    return value
++        ?.normalize('NFKC')
++        .toLocaleLowerCase()
++        .replace(/[\s\p{P}\p{S}]+/gu, '')
++        .trim() ?? '';
++}
+diff --git a/modules/engine-core/src/grounding/composite_target_grounder.ts b/modules/engine-core/src/grounding/composite_target_grounder.ts
+new file mode 100644
+index 0000000..7252078
+--- /dev/null
++++ b/modules/engine-core/src/grounding/composite_target_grounder.ts
+@@ -0,0 +1,279 @@
++import type {
++    GroundingDecision,
++    ResolvedTarget,
++} from '../contracts';
++import type {
++    CandidateMappingPort,
++    CandidateMappingResult,
++    VisualGroundingPort,
++} from '../ports';
++import { AccessibilityTargetGrounder } from './accessibility_target_grounder';
++import { DeterministicTargetGrounder } from './deterministic_target_grounder';
++import type {
++    GroundingRequest,
++    TargetGrounder,
++} from './target_grounder';
++
++/** 按 DOM → A11y → Visual 顺序保守融合多模态目标证据。 */
++export class CompositeTargetGrounder implements TargetGrounder {
++    constructor(
++        private readonly candidateMapper: CandidateMappingPort,
++        private readonly visualGrounding: VisualGroundingPort,
++        private readonly domGrounder = new DeterministicTargetGrounder(),
++        private readonly accessibilityGrounder =
++            new AccessibilityTargetGrounder()
++    ) {}
++
++    public async ground(
++        request: GroundingRequest,
++        signal: AbortSignal
++    ): Promise<GroundingDecision> {
++        signal.throwIfAborted();
++        const domDecision = validateDomInteraction(
++            await this.domGrounder.ground(request, signal),
++            request
++        );
++        if (
++            domDecision.status === 'grounded' ||
++            domDecision.status === 'blocked' ||
++            domDecision.status === 'not-visible' ||
++            domDecision.status === 'not-actionable' ||
++            !request.action.target
++        ) {
++            return withUsage(domDecision, [ 'dom' ], 0);
++        }
++
++        const a11yMatches = this.accessibilityGrounder.findMatches(
++            request.action.target,
++            request.perception.accessibility.nodes
++        );
++        let a11yDecision: GroundingDecision | undefined;
++        if (a11yMatches.length > 0) {
++            const mapping = await this.candidateMapper.map(
++                request.session,
++                request.perception,
++                request.action,
++                {
++                    nodes: a11yMatches,
++                    source: 'accessibility'
++                },
++                signal
++            );
++            a11yDecision = fromMapping(
++                request,
++                mapping,
++                'accessibility',
++                0.9
++            );
++            if (a11yDecision.status === 'grounded') {
++                return a11yDecision;
++            }
++        }
++
++        if (!request.visualAllowed) {
++            return a11yDecision ?? withUsage(domDecision, [ 'dom' ], 0);
++        }
++
++        const visual = await this.visualGrounding.locate(
++            request.session,
++            request.action.target,
++            request.perception,
++            signal
++        );
++        if (visual.status !== 'located' || visual.regions.length === 0) {
++            return withUsage(
++                a11yDecision ?? {
++                    ...domDecision,
++                    summary: visual.summary
++                },
++                [
++                    'dom',
++                    ...a11yMatches.length > 0
++                        ? [ 'accessibility' as const ]
++                        : [],
++                    'visual'
++                ],
++                visual.modelCalls
++            );
++        }
++        const visualMapping = await this.candidateMapper.map(
++            request.session,
++            request.perception,
++            request.action,
++            {
++                regions: visual.regions,
++                source: 'visual'
++            },
++            signal
++        );
++        return fromMapping(
++            request,
++            visualMapping,
++            'visual',
++            0.85,
++            visual.modelCalls
++        );
++    }
++}
++
++function validateDomInteraction(
++    decision: GroundingDecision,
++    request: GroundingRequest
++): GroundingDecision {
++    if (decision.status !== 'grounded' || !decision.target) {
++        return decision;
++    }
++    const state = request.perception.interactionStates[
++        decision.target.candidateId
++    ];
++    if (!state) {
++        return decision;
++    }
++    if (!state.visible || !state.inViewport) {
++        return {
++            status: 'not-visible',
++            confidence: 1,
++            evidence: decision.evidence,
++            summary: 'DOM 目标存在，但当前不可见或不在视口内。'
++        };
++    }
++    if (!state.enabled && request.action.type !== 'HOVER') {
++        return {
++            status: 'not-actionable',
++            confidence: 1,
++            evidence: decision.evidence,
++            summary: 'DOM 目标存在，但当前不可执行。'
++        };
++    }
++    return state.hitTest === 'blocked'
++        ? {
++            status: 'blocked',
++            confidence: 1,
++            evidence: [
++                ...decision.evidence,
++                '所有有效 hit-test 采样点均被无关元素阻挡'
++            ],
++            summary: 'DOM 目标存在，但当前被其他元素阻挡。'
++        }
++        : decision;
++}
++
++function fromMapping(
++    request: GroundingRequest,
++    mapping: CandidateMappingResult,
++    source: 'accessibility' | 'visual',
++    confidence: number,
++    visualModelCalls = 0
++): GroundingDecision {
++    const sources = [ 'dom', source ] as const;
++    if (mapping.status !== 'mapped' || mapping.candidates.length !== 1) {
++        return {
++            status: mapping.status === 'ambiguous' ? 'ambiguous' : 'unmapped',
++            confidence: 0,
++            evidence: mapping.evidence,
++            summary: mapping.summary,
++            usage: {
++                sourcesUsed: [ ...sources ],
++                visualModelCalls
++            }
++        };
++    }
++    const candidate = mapping.candidates[0];
++    if (
++        !candidate.interactionState.visible ||
++        !candidate.interactionState.inViewport ||
++        !candidate.elementSnapshot.boundingBox
++    ) {
++        return mappingFailure(
++            mapping,
++            sources,
++            visualModelCalls,
++            'not-visible',
++            '目标已经映射，但当前不可见或没有有效 geometry。'
++        );
++    }
++    if (
++        !candidate.actionCompatible ||
++        (!candidate.interactionState.enabled && request.action.type !== 'HOVER')
++    ) {
++        return mappingFailure(
++            mapping,
++            sources,
++            visualModelCalls,
++            'not-actionable',
++            '目标已经映射，但不满足当前动作的执行条件。'
++        );
++    }
++    if (candidate.interactionState.hitTest === 'blocked') {
++        return mappingFailure(
++            mapping,
++            sources,
++            visualModelCalls,
++            'blocked',
++            '目标的所有有效采样点均被无关元素阻挡。'
++        );
++    }
++    const target: ResolvedTarget = {
++        description: request.action.target!.description,
++        observationId: request.perception.dom.observationId,
++        candidateId: candidate.candidateId,
++        elementSnapshot: candidate.elementSnapshot,
++        strategy: 'candidate-id',
++        locatorData: {
++            observationId: request.perception.dom.observationId,
++            candidateId: candidate.candidateId,
++            source
++        },
++        confidence,
++        unique: true,
++        actionable: true,
++        evidence: candidate.evidence
++    };
++    return {
++        status: 'grounded',
++        target,
++        confidence,
++        evidence: candidate.evidence,
++        summary: mapping.summary,
++        usage: {
++            sourcesUsed: [ ...sources ],
++            visualModelCalls
++        }
++    };
++}
++
++function mappingFailure(
++    mapping: CandidateMappingResult,
++    sourcesUsed: readonly NonNullable<
++    GroundingDecision['usage']
++    >['sourcesUsed'][number][],
++    visualModelCalls: number,
++    status: Extract<GroundingDecision['status'],
++    'blocked' | 'not-actionable' | 'not-visible'>,
++    summary: string
++): GroundingDecision {
++    return {
++        status,
++        confidence: 1,
++        evidence: mapping.evidence,
++        summary,
++        usage: {
++            sourcesUsed: [ ...sourcesUsed ],
++            visualModelCalls
++        }
++    };
++}
++
++function withUsage(
++    decision: GroundingDecision,
++    sourcesUsed: NonNullable<GroundingDecision['usage']>['sourcesUsed'],
++    visualModelCalls: number
++): GroundingDecision {
++    return {
++        ...decision,
++        usage: {
++            sourcesUsed,
++            visualModelCalls
++        }
++    };
++}
+diff --git a/modules/engine-core/src/grounding/deterministic_target_grounder.ts b/modules/engine-core/src/grounding/deterministic_target_grounder.ts
+index c05b33c..f13597f 100644
+--- a/modules/engine-core/src/grounding/deterministic_target_grounder.ts
++++ b/modules/engine-core/src/grounding/deterministic_target_grounder.ts
+@@ -2,9 +2,7 @@ import type {
+     ActionType,
+     GroundingDecision,
+     ObservedElement,
+-    PageObservation,
+     ResolvedElementSnapshot,
+-    SemanticAction,
+     SemanticTarget,
+ } from '../contracts';
+ import type {
+@@ -49,10 +47,15 @@ const TARGET_ACTIONS = new Set<ActionType>([
+ /** 只使用当前 PageObservation，保守地完成第一阶段语义目标绑定。 */
+ export class DeterministicTargetGrounder implements TargetGrounder {
+     public async ground(
+-        action: SemanticAction,
+-        observation: PageObservation,
++        request: Parameters<TargetGrounder['ground']>[0],
+         signal: AbortSignal
+     ): Promise<GroundingDecision> {
++        const {
++            action,
++            perception: {
++                dom: observation
++            }
++        } = request;
+         signal.throwIfAborted();
+         if (!TARGET_ACTIONS.has(action.type) || !action.target) {
+             return this.notFound('当前语义动作不需要或没有提供页面目标。');
+diff --git a/modules/engine-core/src/grounding/index.ts b/modules/engine-core/src/grounding/index.ts
+index b62f0de..d208388 100644
+--- a/modules/engine-core/src/grounding/index.ts
++++ b/modules/engine-core/src/grounding/index.ts
+@@ -1,3 +1,5 @@
++export * from './accessibility_target_grounder';
++export * from './composite_target_grounder';
+ export * from './deterministic_target_grounder';
+ export * from './grounded_action_builder';
+ export * from './target_grounder';
+diff --git a/modules/engine-core/src/grounding/target_grounder.ts b/modules/engine-core/src/grounding/target_grounder.ts
+index e41583b..6b627dc 100644
+--- a/modules/engine-core/src/grounding/target_grounder.ts
++++ b/modules/engine-core/src/grounding/target_grounder.ts
+@@ -1,14 +1,24 @@
+ import type {
+     GroundingDecision,
+-    PageObservation,
++    PagePerception,
+     SemanticAction,
+ } from '../contracts';
++import type {
++    BrowserSession,
++} from '../ports';
++
++/** 一次多模态 Grounding 所需的当前页面上下文和视觉预算。 */
++export interface GroundingRequest {
++    action: SemanticAction;
++    perception: PagePerception;
++    session: BrowserSession;
++    visualAllowed: boolean;
++}
+ 
+ /** 将 Planner 的语义目标绑定到当前页面中的唯一物理目标。 */
+ export interface TargetGrounder {
+     ground: (
+-        action: SemanticAction,
+-        observation: PageObservation,
++        request: GroundingRequest,
+         signal: AbortSignal
+     ) => Promise<GroundingDecision>;
+ }
+diff --git a/modules/engine-core/src/index.ts b/modules/engine-core/src/index.ts
+index 6e98a43..2334387 100644
+--- a/modules/engine-core/src/index.ts
++++ b/modules/engine-core/src/index.ts
+@@ -1,6 +1,7 @@
+ export * from './contracts';
+ export * from './grounding';
+ export * from './intent';
++export * from './perception';
+ export * from './planning';
+ export * from './ports';
+ export * from './replay';
+diff --git a/modules/engine-core/src/perception/index.ts b/modules/engine-core/src/perception/index.ts
+new file mode 100644
+index 0000000..65689b1
+--- /dev/null
++++ b/modules/engine-core/src/perception/index.ts
+@@ -0,0 +1 @@
++export * from './perception_service';
+diff --git a/modules/engine-core/src/perception/perception_service.ts b/modules/engine-core/src/perception/perception_service.ts
+new file mode 100644
+index 0000000..248377f
+--- /dev/null
++++ b/modules/engine-core/src/perception/perception_service.ts
+@@ -0,0 +1,169 @@
++import { randomUUID } from 'node:crypto';
++
++import type {
++    AccessibilityNode,
++    PageObservation,
++    PagePerception,
++    PerceptionDelta,
++} from '../contracts';
++import type {
++    BrowserSession,
++    PagePerceptionPort,
++} from '../ports';
++
++const MAX_DELTA_ITEMS = 100;
++
++/** 组合已有 DOM Observation 与浏览器独立感知信号。 */
++export class PerceptionService {
++    constructor(private readonly perceptionPort: PagePerceptionPort) {}
++
++    public async capture(
++        session: BrowserSession,
++        observation: PageObservation,
++        previous: PagePerception | undefined,
++        signal: AbortSignal
++    ): Promise<PagePerception> {
++        signal.throwIfAborted();
++        const signals = await this.perceptionPort.capture(
++            session,
++            observation,
++            signal
++        );
++        signal.throwIfAborted();
++        const perception: PagePerception = {
++            perceptionId: randomUUID(),
++            capturedAt: new Date().toISOString(),
++            accessibility: signals.accessibility,
++            dom: observation,
++            interactionStates: signals.interactionStates,
++            visual: {
++                regions: [],
++                ...observation.screenshotRef
++                    ? { screenshotRef: observation.screenshotRef }
++                    : {}
++            }
++        };
++        return previous
++            ? {
++                ...perception,
++                delta: createPerceptionDelta(previous, perception)
++            }
++            : perception;
++    }
++}
++/** 只比较已采集的紧凑数据，不调用模型或浏览器。 */
++export function createPerceptionDelta(
++    before: PagePerception,
++    after: PagePerception
++): PerceptionDelta {
++    const candidateDelta = diffSets(
++        before.dom.interactiveElements.map(({ candidateId }) => candidateId),
++        after.dom.interactiveElements.map(({ candidateId }) => candidateId)
++    );
++    const textDelta = diffSets(
++        before.dom.visibleText,
++        after.dom.visibleText
++    );
++    const accessibilityDelta = diffAccessibility(
++        before.accessibility.nodes,
++        after.accessibility.nodes
++    );
++    const beforeOverlay = getOverlayState(before);
++    const afterOverlay = getOverlayState(after);
++    return {
++        accessibility: accessibilityDelta,
++        candidates: candidateDelta,
++        overlayState: {
++            after: afterOverlay,
++            before: beforeOverlay,
++            changed: beforeOverlay !== afterOverlay
++        },
++        titleChanged: before.dom.page.title !== after.dom.page.title,
++        urlChanged: before.dom.page.url !== after.dom.page.url,
++        visibleText: textDelta
++    };
++}
++
++function diffAccessibility(
++    before: AccessibilityNode[],
++    after: AccessibilityNode[]
++): PerceptionDelta['accessibility'] {
++    const beforeById = new Map(before.map((node) => [ node.id, node ]));
++    const afterById = new Map(after.map((node) => [ node.id, node ]));
++    const added = after
++        .filter(({ id }) => !beforeById.has(id))
++        .map(({ id }) => id);
++    const removed = before
++        .filter(({ id }) => !afterById.has(id))
++        .map(({ id }) => id);
++    const changed = after.flatMap((node) => {
++        const previous = beforeById.get(node.id);
++        return previous && accessibilitySignature(previous) !==
++            accessibilitySignature(node)
++            ? [ node.id ]
++            : [];
++    });
++    return boundDelta({ added, changed, removed });
++}
++
++function accessibilitySignature(node: AccessibilityNode): string {
++    return JSON.stringify({
++        role: node.role,
++        name: node.name,
++        description: node.description,
++        disabled: node.disabled,
++        checked: node.checked,
++        expanded: node.expanded,
++        selected: node.selected,
++        candidateId: node.domCandidateId
++    });
++}
++
++function diffSets(
++    before: string[],
++    after: string[]
++): {
++    added: string[],
++    removed: string[],
++    truncated: boolean
++} {
++    const beforeSet = new Set(before);
++    const afterSet = new Set(after);
++    return boundDelta({
++        added: after.filter((value) => !beforeSet.has(value)),
++        removed: before.filter((value) => !afterSet.has(value))
++    });
++}
++
++function boundDelta<T extends Record<string, string[]>>(
++    delta: T
++): T & { truncated: boolean } {
++    let remaining = MAX_DELTA_ITEMS;
++    let truncated = false;
++    const bounded = Object.fromEntries(Object.entries(delta).map(
++        ([ key, values ]) => {
++            const selected = values.slice(0, remaining);
++            remaining -= selected.length;
++            truncated ||= selected.length < values.length;
++            return [ key, selected ];
++        }
++    )) as T;
++    return {
++        ...bounded,
++        truncated
++    };
++}
++
++function getOverlayState(
++    perception: PagePerception
++): PerceptionDelta['overlayState']['before'] {
++    const states = Object.values(perception.interactionStates);
++    if (states.some(({ hitTest }) => hitTest === 'blocked')) {
++        return 'blocked';
++    }
++    return states.length > 0 && states.every(
++        ({ hitTest }) => hitTest === 'receives-events'
++    )
++        ? 'clear'
++        : 'unknown';
++}
+diff --git a/modules/engine-core/src/planning/model_action_planner.ts b/modules/engine-core/src/planning/model_action_planner.ts
+index 46bdbde..7e99b24 100644
+--- a/modules/engine-core/src/planning/model_action_planner.ts
++++ b/modules/engine-core/src/planning/model_action_planner.ts
+@@ -71,8 +71,9 @@ export class ModelActionPlanner implements ActionPlanner {
+             '不得输出 relation；空间关系将在后续感知阶段支持。',
+             '优先沿用 observation 中可见的准确名称、标签或文本，不要改写成模糊同义词。',
+             '不得输出 candidateId、Playwright API、CSS、XPath、坐标或 JavaScript。',
+-            '无法唯一描述目标时返回 UNCERTAIN，禁止猜测物理元素。',
+-            '如果 UNCERTAIN 的原因是 observation 缺少下一步所需元素，应在 target.description 中只描述业务语义目标，不得猜测目标的外观、位置、CSS 或 XPath。',
++            '只要根据 TestIntent、当前目标和执行历史能够明确下一条业务动作，就必须输出对应 SemanticAction；即使 observation 暂时没有可定位元素，也要把业务目标交给 Grounder 使用 DOM、Accessibility 或视觉定位。',
++            '不得仅因为 observation 缺少物理候选或无法定位目标而返回 UNCERTAIN。',
++            'UNCERTAIN 只表示下一条业务语义动作本身不明确，或继续操作的业务安全性无法确定；它不表示物理定位失败。',
+             '环境变量只能引用 availableEnvironmentVariables 中的逻辑名称。',
+             '不得输出账号、密码、令牌等敏感值。',
+             '页面已经满足目标时返回 FINISH；出现明确失败证据时返回 FAIL；证据不足且无法继续时返回 UNCERTAIN。',
+diff --git a/modules/engine-core/src/ports/browser_adapter.ts b/modules/engine-core/src/ports/browser_adapter.ts
+index d19decc..9151748 100644
+--- a/modules/engine-core/src/ports/browser_adapter.ts
++++ b/modules/engine-core/src/ports/browser_adapter.ts
+@@ -28,14 +28,6 @@ export interface BrowserScreenshot {
+     mediaType: 'image/png';
+ }
+ 
+-/** 视觉模型批量命名已有候选，只增强页面观察，不绕过 Planner 执行动作。 */
+-export interface VisualGroundingResult {
+-    status: 'grounded' | 'not-found' | 'unsupported';
+-    summary: string;
+-    candidateIds?: string[];
+-    observation?: PageObservation;
+-}
+-
+ /** 隔离 Playwright、CDP 和具体 Chromium 生命周期。 */
+ export interface BrowserAdapter {
+     /** 根据启动参数创建一段独立的浏览器会话。 */
+@@ -54,12 +46,6 @@ export interface BrowserAdapter {
+     ) => Promise<BrowserScreenshot>;
+     /** 导出当前上下文的 Cookie 与 localStorage，供本机登录态缓存使用。 */
+     captureStorageState?: (session: BrowserSession) => Promise<JsonValue>;
+-    /** 使用视觉批量命名当前观察中的候选元素；未接入视觉时可以省略。 */
+-    enhanceObservationWithVision?: (
+-        session: BrowserSession,
+-        observation: PageObservation,
+-        signal: AbortSignal
+-    ) => Promise<VisualGroundingResult>;
+     /** 将浏览器会话恢复到本次测试约定的初始状态。 */
+     reset: (session: BrowserSession) => Promise<void>;
+     /** 关闭浏览器会话并释放对应资源。 */
+diff --git a/modules/engine-core/src/ports/candidate_mapping_port.ts b/modules/engine-core/src/ports/candidate_mapping_port.ts
+new file mode 100644
+index 0000000..e5153d1
+--- /dev/null
++++ b/modules/engine-core/src/ports/candidate_mapping_port.ts
+@@ -0,0 +1,47 @@
++import type {
++    AccessibilityNode,
++    ElementInteractionState,
++    PagePerception,
++    ResolvedElementSnapshot,
++    SemanticAction,
++    VisualRegion,
++} from '../contracts';
++import type {
++    BrowserSession,
++} from './browser_adapter';
++
++/** 需要安全绑定到 live DOM 的 A11y 或视觉证据。 */
++export type CandidateMappingEvidence = {
++    nodes: AccessibilityNode[],
++    source: 'accessibility'
++} | {
++    regions: VisualRegion[],
++    source: 'visual'
++};
++
++/** 映射端口证明可执行的 observation 生命周期 candidate。 */
++export interface MappedCandidate {
++    actionCompatible: boolean;
++    candidateId: string;
++    elementSnapshot: ResolvedElementSnapshot;
++    evidence: string[];
++    interactionState: ElementInteractionState;
++}
++
++export interface CandidateMappingResult {
++    status: 'ambiguous' | 'mapped' | 'unmapped';
++    candidates: MappedCandidate[];
++    evidence: string[];
++    summary: string;
++}
++
++/** 感知证据到 live DOM/transient candidate 的唯一物理绑定边界。 */
++export interface CandidateMappingPort {
++    map: (
++        session: BrowserSession,
++        perception: PagePerception,
++        action: SemanticAction,
++        evidence: CandidateMappingEvidence,
++        signal: AbortSignal
++    ) => Promise<CandidateMappingResult>;
++}
+diff --git a/modules/engine-core/src/ports/index.ts b/modules/engine-core/src/ports/index.ts
+index c878eb2..56f6d68 100644
+--- a/modules/engine-core/src/ports/index.ts
++++ b/modules/engine-core/src/ports/index.ts
+@@ -1,5 +1,8 @@
+ export * from './artifact_store';
+ export * from './browser_adapter';
++export * from './candidate_mapping_port';
+ export * from './environment_value_resolver';
+ export * from './model_adapter';
++export * from './page_perception_port';
+ export * from './run_event_publisher';
++export * from './visual_grounding_port';
+diff --git a/modules/engine-core/src/ports/page_perception_port.ts b/modules/engine-core/src/ports/page_perception_port.ts
+new file mode 100644
+index 0000000..365927e
+--- /dev/null
++++ b/modules/engine-core/src/ports/page_perception_port.ts
+@@ -0,0 +1,22 @@
++import type {
++    AccessibilitySnapshot,
++    ElementInteractionState,
++    PageObservation,
++} from '../contracts';
++import type {
++    BrowserSession,
++} from './browser_adapter';
++
++/** 浏览器侧采集的独立感知信号；物理映射由其他端口负责。 */
++export interface CapturedPerceptionSignals {
++    accessibility: AccessibilitySnapshot;
++    interactionStates: Record<string, ElementInteractionState>;
++}
++/** 只负责从当前页面采集 bounded 感知信号。 */
++export interface PagePerceptionPort {
++    capture: (
++        session: BrowserSession,
++        observation: PageObservation,
++        signal: AbortSignal
++    ) => Promise<CapturedPerceptionSignals>;
++}
+diff --git a/modules/engine-core/src/ports/visual_grounding_port.ts b/modules/engine-core/src/ports/visual_grounding_port.ts
+new file mode 100644
+index 0000000..923801a
+--- /dev/null
++++ b/modules/engine-core/src/ports/visual_grounding_port.ts
+@@ -0,0 +1,26 @@
++import type {
++    PagePerception,
++    SemanticTarget,
++    VisualRegion,
++} from '../contracts';
++import type {
++    BrowserSession,
++} from './browser_adapter';
++
++/** 视觉 Provider 的只读目标发现结果，不代表目标已经可执行。 */
++export interface VisualGroundingResult {
++    modelCalls: number;
++    status: 'located' | 'not-found' | 'unsupported';
++    regions: VisualRegion[];
++    summary: string;
++}
++
++/** Provider-independent 视觉发现边界；Midscene 只是首个实现。 */
++export interface VisualGroundingPort {
++    locate: (
++        session: BrowserSession,
++        target: SemanticTarget,
++        perception: PagePerception,
++        signal: AbortSignal
++    ) => Promise<VisualGroundingResult>;
++}
+diff --git a/modules/engine-core/src/run/run_context.ts b/modules/engine-core/src/run/run_context.ts
+index 9c6a5a5..87e0431 100644
+--- a/modules/engine-core/src/run/run_context.ts
++++ b/modules/engine-core/src/run/run_context.ts
+@@ -1,6 +1,7 @@
+ import type {
+     EvidenceRef,
+     PageObservation,
++    PagePerception,
+     RunBudgets,
+     RunLifecycleState,
+     StartRunInput,
+@@ -21,6 +22,7 @@ export interface RunContext {
+     browserSession: BrowserSession;
+     latestObservation?: PageObservation;
+     latestObservationReference?: EvidenceRef;
++    latestPerception?: PagePerception;
+     history: PlannerHistoryEntry[];
+     budgets: RunBudgets;
+     lifecycle: RunLifecycleState;
+diff --git a/modules/engine-core/src/run/run_coordinator.ts b/modules/engine-core/src/run/run_coordinator.ts
+index 4ae2474..3480976 100644
+--- a/modules/engine-core/src/run/run_coordinator.ts
++++ b/modules/engine-core/src/run/run_coordinator.ts
+@@ -34,6 +34,9 @@ import type {
+ import type {
+     IntentBuilder,
+ } from '../intent';
++import {
++    PerceptionService,
++} from '../perception';
+ import type {
+     ArtifactStore,
+     BrowserAdapter,
+@@ -86,6 +89,7 @@ export interface RunCoordinatorOptions {
+ /** RunCoordinator 使用的规划与独立判定能力。 */
+ export interface RunCoordinatorDecisionServices {
+     actionPlanner: ActionPlanner;
++    perceptionService?: PerceptionService;
+     targetGrounder?: TargetGrounder;
+     verdictEvaluator: VerdictEvaluator;
+ }
+@@ -147,12 +151,6 @@ interface ObservationEvidence {
+     screenshotReference: EvidenceRef;
+ }
+ 
+-/** 视觉恢复可能生成增强观察，也可能给出可解释的停止原因。 */
+-interface VisualRetryOutcome {
+-    evidence?: ObservationEvidence;
+-    failureSummary?: string;
+-}
+-
+ /** 初始空白页只保存观察，不额外截取无业务价值的截图。 */
+ interface InitialObservationEvidence {
+     observation: PageObservation;
+@@ -181,6 +179,7 @@ const DEFAULT_OPTIONS: RunCoordinatorOptions = {
+  */
+ export class RunCoordinator implements ExecutionEngine {
+     private readonly groundedActionBuilder = new GroundedActionBuilder();
++    private readonly perceptionService: PerceptionService;
+     private readonly targetGrounder: TargetGrounder;
+ 
+     /** 注入运行产物存储、事件发布、意图构建和浏览器能力。 */
+@@ -195,6 +194,17 @@ export class RunCoordinator implements ExecutionEngine {
+     ) {
+         this.targetGrounder = decisionServices.targetGrounder
+             ?? new DeterministicTargetGrounder();
++        this.perceptionService = decisionServices.perceptionService ??
++            new PerceptionService({
++                capture: async () => ({
++                    accessibility: {
++                        nodes: [],
++                        source: 'playwright-aria-snapshot',
++                        truncated: false
++                    },
++                    interactionStates: {}
++                })
++            });
+     }
+ 
+     /** 创建一次运行，并执行受预算约束的多轮浏览器 Agent 闭环。 */
+@@ -466,9 +476,6 @@ export class RunCoordinator implements ExecutionEngine {
+         const plannedActions: PlannedActionExecution[] = [];
+         let beforeObservationReference =
+             navigation.afterObservationReference;
+-        let visualRecoveryApplied = false;
+-        let visualRetrySequence = 0;
+-
+         while (true) {
+             const budgetStop = this.createBudgetStopCommand(context);
+             if (budgetStop) {
+@@ -480,31 +487,6 @@ export class RunCoordinator implements ExecutionEngine {
+             }
+ 
+             const semanticAction = await this.planNextAction(context, runtime);
+-            const visualRetry =
+-                semanticAction.type === 'UNCERTAIN' && !visualRecoveryApplied
+-                    ? await this.retryWithVision(
+-                        context,
+-                        runtime,
+-                        visualRetrySequence + 1
+-                    )
+-                    : undefined;
+-            if (visualRetry?.evidence) {
+-                visualRecoveryApplied = true;
+-                visualRetrySequence += 1;
+-                beforeObservationReference =
+-                    visualRetry.evidence.observationReference;
+-                continue;
+-            }
+-            if (visualRetry?.failureSummary) {
+-                return {
+-                    navigation,
+-                    plannedActions,
+-                    stopCommand: this.createStopCommand(
+-                        'UNCERTAIN',
+-                        visualRetry.failureSummary
+-                    )
+-                };
+-            }
+             const plannerStop = this.createPlannerStopCommand(
+                 semanticAction,
+                 plannedActions.at(-1)?.semanticAction
+@@ -538,7 +520,6 @@ export class RunCoordinator implements ExecutionEngine {
+                 beforeObservationReference
+             );
+             plannedActions.push(execution);
+-            visualRecoveryApplied = false;
+             if (semanticAction.type !== 'WAIT') {
+                 this.updateRepeatedStateCount(
+                     context,
+@@ -634,11 +615,29 @@ export class RunCoordinator implements ExecutionEngine {
+             'RESOLVING',
+             '正在把语义目标绑定到当前页面元素'
+         );
+-        const decision = await this.targetGrounder.ground(
+-            semanticAction,
++        const perception = await this.perceptionService.capture(
++            runtime.browserSession,
+             observation,
++            runtime.latestPerception,
+             context.signal
+         );
++        runtime.latestPerception = perception;
++        const perceptionReference = await this.artifactStore.saveJson(
++            context.runId,
++            `page-perception-${ runtime.history.length }`,
++            toJsonValue(perception)
++        );
++        context.evidence.push(perceptionReference);
++        const remaining = this.getRemainingBudgets(context);
++        const decision = await this.targetGrounder.ground({
++            action: semanticAction,
++            perception,
++            session: runtime.browserSession,
++            visualAllowed: remaining.maxModelCalls > 0
++        }, context.signal);
++        const visualModelCalls = decision.usage?.visualModelCalls ?? 0;
++        context.modelCallCount += visualModelCalls;
++        runtime.counters.modelCallCount = context.modelCallCount;
+         context.signal.throwIfAborted();
+         const reference = await this.artifactStore.saveJson(
+             context.runId,
+@@ -660,72 +659,6 @@ export class RunCoordinator implements ExecutionEngine {
+         );
+     }
+ 
+-    /** 首次证据不足时用视觉模型批量命名当前候选，再交回 Planner。 */
+-    private async retryWithVision(
+-        context: RunExecutionContext,
+-        runtime: RunContext,
+-        sequence: number
+-    ): Promise<VisualRetryOutcome> {
+-        const observation = runtime.latestObservation;
+-        if (!observation) {
+-            return {
+-                failureSummary: '当前没有可供视觉模型标注的页面观察。'
+-            };
+-        }
+-        const enhance = this.browserAdapter.enhanceObservationWithVision;
+-        if (!enhance) {
+-            return {
+-                failureSummary: '当前浏览器未接入候选元素视觉标注能力。'
+-            };
+-        }
+-        const remaining = this.getRemainingBudgets(context);
+-        if (remaining.maxModelCalls <= 2 || remaining.maxDurationMs <= 0) {
+-            return {
+-                failureSummary: '剩余预算不足以完成视觉标注、再次规划和最终判定。'
+-            };
+-        }
+-        await this.transition(
+-            context,
+-            'OBSERVING',
+-            '当前页面证据不足，正在使用视觉模型批量标注候选元素'
+-        );
+-        context.modelCallCount += 1;
+-        runtime.counters.modelCallCount = context.modelCallCount;
+-        const result = await enhance(
+-            runtime.browserSession,
+-            observation,
+-            context.signal
+-        );
+-        context.signal.throwIfAborted();
+-        const groundingReference = await this.artifactStore.saveJson(
+-            context.runId,
+-            `visual-candidate-annotations-retry-${ sequence }`,
+-            toJsonValue({
+-                status: result.status,
+-                summary: result.summary,
+-                candidateIds: result.candidateIds ?? []
+-            })
+-        );
+-        context.evidence.push(groundingReference);
+-        if (result.status !== 'grounded' || !result.observation) {
+-            return {
+-                failureSummary: result.summary
+-            };
+-        }
+-        const evidence = await this.persistObservationEvidence(
+-            context,
+-            runtime.browserSession,
+-            result.observation,
+-            `observation-after-visual-retry-${ sequence }`,
+-            `screenshot-after-visual-retry-${ sequence }.png`
+-        );
+-        runtime.latestObservation = evidence.observation;
+-        runtime.latestObservationReference = evidence.observationReference;
+-        return {
+-            evidence
+-        };
+-    }
+-
+     /** 记录浏览器执行导航前的空白页状态。 */
+     private async observeBeforeNavigation(
+         context: RunExecutionContext,
+diff --git a/modules/engine-core/test/composite_target_grounder.test.ts b/modules/engine-core/test/composite_target_grounder.test.ts
+new file mode 100644
+index 0000000..6d93668
+--- /dev/null
++++ b/modules/engine-core/test/composite_target_grounder.test.ts
+@@ -0,0 +1,288 @@
++import assert from 'node:assert/strict';
++import type {
++    CandidateMappingEvidence,
++    CandidateMappingPort,
++    CandidateMappingResult,
++    GroundingRequest,
++    ObservedElement,
++    PageObservation,
++    SemanticAction,
++    VisualGroundingPort,
++    VisualGroundingResult,
++} from '../src';
++import {
++    CompositeTargetGrounder,
++} from '../src';
++
++describe('CompositeTargetGrounder 多模态顺序', () => {
++    it('DOM 唯一命中时不调用 A11y mapping 或视觉模型', async () => {
++        const mapper = new FakeCandidateMapper();
++        const visual = new FakeVisualGrounder();
++        const grounder = new CompositeTargetGrounder(mapper, visual);
++        const decision = await grounder.ground(createRequest(
++            [ createElement('e1', '新建应用') ],
++            createAction('新建应用')
++        ), signal());
++
++        assert.equal(decision.status, 'grounded');
++        assert.equal(decision.target?.candidateId, 'e1');
++        assert.equal(mapper.calls.length, 0);
++        assert.equal(visual.callCount, 0);
++        assert.deepEqual(decision.usage?.sourcesUsed, [ 'dom' ]);
++    });
++
++    it('DOM 目标被可靠遮挡时返回 blocked，不调用视觉或浏览器坐标', async () => {
++        const mapper = new FakeCandidateMapper();
++        const visual = new FakeVisualGrounder();
++        const grounder = new CompositeTargetGrounder(mapper, visual);
++        const request = createRequest(
++            [ createElement('e1', '新建应用') ],
++            createAction('新建应用')
++        );
++        request.perception.interactionStates.e1 = {
++            candidateId: 'e1',
++            enabled: true,
++            hitTest: 'blocked',
++            inViewport: true,
++            visible: true,
++            blockedBy: { tag: 'div', text: '遮罩层' }
++        };
++
++        const decision = await grounder.ground(request, signal());
++
++        assert.equal(decision.status, 'blocked');
++        assert.equal(mapper.calls.length, 0);
++        assert.equal(visual.callCount, 0);
++    });
++
++    it('DOM 不足时使用 bounded A11y 证据映射到 live candidate', async () => {
++        const mapper = new FakeCandidateMapper('ax-1');
++        const visual = new FakeVisualGrounder();
++        const grounder = new CompositeTargetGrounder(mapper, visual);
++        const request = createRequest([], createAction('收藏'));
++        request.perception.accessibility.nodes.push({
++            id: 'ax-node-1',
++            ancestors: [{ name: '应用 11', role: 'group' }],
++            name: '收藏',
++            role: 'button'
++        });
++
++        const decision = await grounder.ground(request, signal());
++
++        assert.equal(decision.status, 'grounded');
++        assert.equal(decision.target?.candidateId, 'ax-1');
++        assert.equal(mapper.calls[0]?.source, 'accessibility');
++        assert.equal(visual.callCount, 0);
++    });
++
++    it('DOM/A11y 不足时由视觉发现区域，再经 mapping 落到 candidate', async () => {
++        const mapper = new FakeCandidateMapper('visual-1');
++        const visual = new FakeVisualGrounder({
++            modelCalls: 1,
++            status: 'located',
++            regions: [{
++                id: 'vr-1',
++                boundingBox: { x: 10, y: 20, width: 24, height: 24 },
++                context: [ '应用 11' ],
++                description: '收藏星标'
++            }],
++            summary: '视觉发现目标区域。'
++        });
++        const grounder = new CompositeTargetGrounder(mapper, visual);
++
++        const decision = await grounder.ground(
++            createRequest([], createAction('收藏星标')),
++            signal()
++        );
++
++        assert.equal(decision.status, 'grounded');
++        assert.equal(decision.target?.candidateId, 'visual-1');
++        assert.equal(mapper.calls[0]?.source, 'visual');
++        assert.equal(decision.usage?.visualModelCalls, 1);
++    });
++
++    it('视觉区域无法安全映射时返回 unmapped，不生成坐标目标', async () => {
++        const mapper = new FakeCandidateMapper(undefined, 'unmapped');
++        const visual = new FakeVisualGrounder({
++            modelCalls: 1,
++            status: 'located',
++            regions: [{
++                id: 'vr-1',
++                boundingBox: { x: 10, y: 20, width: 24, height: 24 },
++                context: [],
++                description: '收藏星标'
++            }],
++            summary: '视觉发现目标区域。'
++        });
++        const grounder = new CompositeTargetGrounder(mapper, visual);
++
++        const decision = await grounder.ground(
++            createRequest([], createAction('收藏星标')),
++            signal()
++        );
++
++        assert.equal(decision.status, 'unmapped');
++        assert.equal(decision.target, undefined);
++        assert.equal(decision.usage?.visualModelCalls, 1);
++    });
++
++});
++
++describe('CompositeTargetGrounder 视觉预算', () => {
++    it('Provider 未启用时不消耗模型预算', async () => {
++        const mapper = new FakeCandidateMapper();
++        const visual = new FakeVisualGrounder({
++            modelCalls: 0,
++            status: 'unsupported',
++            regions: [],
++            summary: '当前环境已关闭视觉定位。'
++        });
++        const decision = await new CompositeTargetGrounder(
++            mapper,
++            visual
++        ).ground(createRequest([], createAction('收藏星标')), signal());
++
++        assert.equal(decision.status, 'not-found');
++        assert.equal(decision.usage?.visualModelCalls, 0);
++    });
++});
++
++class FakeCandidateMapper implements CandidateMappingPort {
++    public readonly calls: CandidateMappingEvidence[] = [];
++
++    constructor(
++        private readonly candidateId?: string,
++        private readonly status: CandidateMappingResult['status'] = 'mapped'
++    ) {}
++
++    public map: CandidateMappingPort['map'] = (
++        _session,
++        _perception,
++        _action,
++        evidence
++    ) => {
++        this.calls.push(evidence);
++        return Promise.resolve({
++            status: this.candidateId ? this.status : 'unmapped',
++            candidates: this.candidateId ? [{
++                actionCompatible: true,
++                candidateId: this.candidateId,
++                elementSnapshot: {
++                    tag: 'button',
++                    role: 'button',
++                    name: '收藏',
++                    disabled: false,
++                    visible: true,
++                    inViewport: true,
++                    attributes: {},
++                    nearbyText: [ '应用 11' ],
++                    boundingBox: {
++                        x: 10,
++                        y: 10,
++                        width: 24,
++                        height: 24
++                    },
++                    locatorHints: []
++                },
++                evidence: [ `mapped:${ this.candidateId }` ],
++                interactionState: {
++                    candidateId: this.candidateId,
++                    enabled: true,
++                    hitTest: 'receives-events',
++                    inViewport: true,
++                    visible: true
++                }
++            }] : [],
++            evidence: [ 'mapping-result' ],
++            summary: this.candidateId ? '唯一映射成功。' : '无法安全映射。'
++        });
++    };
++}
++
++class FakeVisualGrounder implements VisualGroundingPort {
++    public callCount = 0;
++
++    constructor(private readonly result: VisualGroundingResult = {
++        modelCalls: 0,
++        status: 'not-found',
++        regions: [],
++        summary: '未调用视觉。'
++    }) {}
++
++    public locate: VisualGroundingPort['locate'] = () => {
++        this.callCount += 1;
++        return Promise.resolve(this.result);
++    };
++}
++
++function createAction(description: string): SemanticAction {
++    return {
++        type: 'CLICK',
++        target: { description, scope: '应用 11' },
++        expectedEffect: '目标状态发生变化',
++        reasonSummary: '执行明确的下一语义动作'
++    };
++}
++
++function createRequest(
++    elements: ObservedElement[],
++    action: SemanticAction
++): GroundingRequest {
++    const dom = createObservation(elements);
++    return {
++        action,
++        perception: {
++            perceptionId: 'perception-1',
++            capturedAt: dom.capturedAt,
++            dom,
++            accessibility: {
++                nodes: [],
++                source: 'playwright-aria-snapshot',
++                truncated: false
++            },
++            interactionStates: {}
++        },
++        session: { sessionId: 'session-1' },
++        visualAllowed: true
++    };
++}
++
++function createObservation(elements: ObservedElement[]): PageObservation {
++    return {
++        schemaVersion: 1,
++        observationId: 'observation-1',
++        capturedAt: '2026-08-31T00:00:00.000Z',
++        page: {
++            loading: false,
++            title: '工作台',
++            url: 'https://example.com/',
++            viewport: { width: 1280, height: 720 }
++        },
++        visibleText: [],
++        interactiveElements: elements,
++        notices: [],
++        tabs: [],
++        stateFingerprint: 'fingerprint-1',
++        truncated: false
++    };
++}
++
++function createElement(candidateId: string, name: string): ObservedElement {
++    return {
++        candidateId,
++        tag: 'button',
++        role: 'button',
++        name,
++        disabled: false,
++        visible: true,
++        inViewport: true,
++        attributes: {},
++        nearbyText: [ '应用 11' ],
++        boundingBox: { x: 10, y: 10, width: 100, height: 30 },
++        locatorHints: []
++    };
++}
++
++function signal(): AbortSignal {
++    return new AbortController().signal;
++}
+diff --git a/modules/engine-core/test/deterministic_target_grounder.test.ts b/modules/engine-core/test/deterministic_target_grounder.test.ts
+index 97f21b0..3165063 100644
+--- a/modules/engine-core/test/deterministic_target_grounder.test.ts
++++ b/modules/engine-core/test/deterministic_target_grounder.test.ts
+@@ -1,6 +1,7 @@
+ import assert from 'node:assert/strict';
+ import type {
+     ActionType,
++    GroundingRequest,
+     ObservedElement,
+     PageObservation,
+     SemanticAction,
+@@ -20,8 +21,10 @@ describe('DeterministicTargetGrounder 物理绑定', () => {
+             nearbyText: ['我的应用']
+         });
+         const decision = await grounder.ground(
+-            createAction('CLICK', '新建应用', '我的应用'),
+-            createObservation([element]),
++            createRequest(
++                createAction('CLICK', '新建应用', '我的应用'),
++                createObservation([element])
++            ),
+             new AbortController().signal
+         );
+ 
+@@ -45,12 +48,14 @@ describe('DeterministicTargetGrounder 物理绑定', () => {
+ 
+     it('允许普通可见容器作为 HOVER 目标', async () => {
+         const decision = await grounder.ground(
+-            createAction('HOVER', '应用 11 卡片'),
+-            createObservation([createElement('e1', {
+-                tag: 'div',
+-                role: undefined,
+-                name: '应用 11 卡片'
+-            })]),
++            createRequest(
++                createAction('HOVER', '应用 11 卡片'),
++                createObservation([createElement('e1', {
++                    tag: 'div',
++                    role: undefined,
++                    name: '应用 11 卡片'
++                })])
++            ),
+             new AbortController().signal
+         );
+ 
+@@ -66,8 +71,10 @@ describe('DeterministicTargetGrounder 物理绑定', () => {
+             boundingBox: undefined
+         });
+         const decision = await grounder.ground(
+-            createAction('HOVER', '应用 11 卡片'),
+-            createObservation([element]),
++            createRequest(
++                createAction('HOVER', '应用 11 卡片'),
++                createObservation([element])
++            ),
+             new AbortController().signal
+         );
+ 
+@@ -81,17 +88,19 @@ describe('DeterministicTargetGrounder 消歧与阻塞', () => {
+ 
+     it('使用 scope 区分多个同名元素', async () => {
+         const decision = await grounder.ground(
+-            createAction('CLICK', '收藏', '应用 11'),
+-            createObservation([
+-                createElement('e1', {
+-                    name: '收藏',
+-                    nearbyText: ['应用 10']
+-                }),
+-                createElement('e2', {
+-                    name: '收藏',
+-                    nearbyText: ['应用 11']
+-                })
+-            ]),
++            createRequest(
++                createAction('CLICK', '收藏', '应用 11'),
++                createObservation([
++                    createElement('e1', {
++                        name: '收藏',
++                        nearbyText: ['应用 10']
++                    }),
++                    createElement('e2', {
++                        name: '收藏',
++                        nearbyText: ['应用 11']
++                    })
++                ])
++            ),
+             new AbortController().signal
+         );
+ 
+@@ -109,13 +118,15 @@ describe('DeterministicTargetGrounder 消歧与阻塞', () => {
+             }
+         };
+         const decision = await grounder.ground(
+-            action,
+-            createObservation([
+-                createElement('e1', {
+-                    name: '收藏',
+-                    nearbyText: ['应用 11']
+-                })
+-            ]),
++            createRequest(
++                action,
++                createObservation([
++                    createElement('e1', {
++                        name: '收藏',
++                        nearbyText: ['应用 11']
++                    })
++                ])
++            ),
+             new AbortController().signal
+         );
+ 
+@@ -125,11 +136,13 @@ describe('DeterministicTargetGrounder 消歧与阻塞', () => {
+ 
+     it('同等级重复目标在没有 scope 时返回 ambiguous', async () => {
+         const decision = await grounder.ground(
+-            createAction('CLICK', '收藏'),
+-            createObservation([
+-                createElement('e1', { name: '收藏' }),
+-                createElement('e2', { name: '收藏' })
+-            ]),
++            createRequest(
++                createAction('CLICK', '收藏'),
++                createObservation([
++                    createElement('e1', { name: '收藏' }),
++                    createElement('e2', { name: '收藏' })
++                ])
++            ),
+             new AbortController().signal
+         );
+ 
+@@ -139,11 +152,13 @@ describe('DeterministicTargetGrounder 消歧与阻塞', () => {
+ 
+     it('只把能够证明的 disabled 状态分类为 blocked', async () => {
+         const decision = await grounder.ground(
+-            createAction('CLICK', '提交'),
+-            createObservation([createElement('e1', {
+-                name: '提交',
+-                disabled: true
+-            })]),
++            createRequest(
++                createAction('CLICK', '提交'),
++                createObservation([createElement('e1', {
++                    name: '提交',
++                    disabled: true
++                })])
++            ),
+             new AbortController().signal
+         );
+ 
+@@ -168,6 +183,28 @@ function createAction(
+     };
+ }
+ 
++function createRequest(
++    action: SemanticAction,
++    observation: PageObservation
++): GroundingRequest {
++    return {
++        action,
++        perception: {
++            perceptionId: 'perception-1',
++            capturedAt: observation.capturedAt,
++            accessibility: {
++                nodes: [],
++                source: 'playwright-aria-snapshot',
++                truncated: false
++            },
++            dom: observation,
++            interactionStates: {}
++        },
++        session: { sessionId: 'session-1' },
++        visualAllowed: false
++    };
++}
++
+ function createObservation(elements: ObservedElement[]): PageObservation {
+     return {
+         schemaVersion: 1,
+diff --git a/modules/engine-core/test/model_action_planner.test.ts b/modules/engine-core/test/model_action_planner.test.ts
+index 4256087..fa33d4b 100644
+--- a/modules/engine-core/test/model_action_planner.test.ts
++++ b/modules/engine-core/test/model_action_planner.test.ts
+@@ -150,15 +150,16 @@ describe('ModelActionPlanner', () => {
+         );
+     });
+ 
+-    it('提示模型在无法定位时保留业务语义目标供视觉恢复', async () => {
++    it('物理候选缺失时仍要求输出明确的业务语义动作', async () => {
+         const adapter = new FakeModelAdapter({
+-            type: 'UNCERTAIN',
++            type: 'CLICK',
+             target: {
+-                description: '当前页面内能够返回工作台的控件'
++                description: '应用11的收藏星标',
++                scope: '应用11卡片'
+             },
+             value: null,
+-            expectedEffect: '返回工作台',
+-            reasonSummary: '没有对应的 DOM 候选元素'
++            expectedEffect: '应用11变为已收藏',
++            reasonSummary: '下一业务动作明确，由 Grounder 解析物理目标'
+         });
+         const planner = new ModelActionPlanner(adapter, semanticActionSchema);
+ 
+@@ -168,16 +169,20 @@ describe('ModelActionPlanner', () => {
+         );
+ 
+         assert.equal(
+-            command.target?.description,
+-            '当前页面内能够返回工作台的控件'
++            command.type,
++            'CLICK'
++        );
++        assert.match(
++            adapter.lastRequest?.systemPrompt ?? '',
++            /即使 observation 暂时没有可定位元素/u
+         );
+         assert.match(
+             adapter.lastRequest?.systemPrompt ?? '',
+-            /业务语义目标/u
++            /不得仅因为 observation 缺少物理候选/u
+         );
+         assert.match(
+             adapter.lastRequest?.systemPrompt ?? '',
+-            /不得猜测目标的外观、位置/u
++            /UNCERTAIN 只表示下一条业务语义动作本身不明确/u
+         );
+     });
+ });
+diff --git a/modules/engine-core/test/perception_service.test.ts b/modules/engine-core/test/perception_service.test.ts
+new file mode 100644
+index 0000000..5844e6f
+--- /dev/null
++++ b/modules/engine-core/test/perception_service.test.ts
+@@ -0,0 +1,105 @@
++import assert from 'node:assert/strict';
++
++import type {
++    PageObservation,
++    PagePerceptionPort,
++} from '../src';
++import {
++    PerceptionService,
++} from '../src';
++
++describe('PerceptionService', () => {
++    it('组合 bounded 感知信号并复用已有 screenshotRef', async () => {
++        const service = new PerceptionService(new FakePerceptionPort());
++        const perception = await service.capture(
++            { sessionId: 'session-1' },
++            createObservation('observation-1'),
++            undefined,
++            new AbortController().signal
++        );
++
++        assert.equal(perception.dom.observationId, 'observation-1');
++        assert.equal(perception.accessibility.nodes[0].name, '创建应用');
++        assert.equal(perception.visual?.screenshotRef, 'artifact://screen-1');
++        assert.deepEqual(perception.visual?.regions, []);
++    });
++
++    it('计算 URL、标题、候选、文本、A11y 和 overlay 的低成本差异', async () => {
++        const service = new PerceptionService(new FakePerceptionPort());
++        const first = await service.capture(
++            { sessionId: 'session-1' },
++            createObservation('observation-1'),
++            undefined,
++            new AbortController().signal
++        );
++        const nextObservation = createObservation('observation-2');
++        nextObservation.page.url = 'https://example.test/workbench';
++        nextObservation.page.title = '工作台';
++        nextObservation.visibleText = [ '工作台' ];
++        nextObservation.interactiveElements[0].candidateId = 'e2';
++        const second = await service.capture(
++            { sessionId: 'session-1' },
++            nextObservation,
++            first,
++            new AbortController().signal
++        );
++
++        assert.equal(second.delta?.urlChanged, true);
++        assert.equal(second.delta?.titleChanged, true);
++        assert.deepEqual(second.delta?.candidates.added, [ 'e2' ]);
++        assert.deepEqual(second.delta?.candidates.removed, [ 'e1' ]);
++        assert.deepEqual(second.delta?.visibleText.added, [ '工作台' ]);
++        assert.equal(second.delta?.overlayState.changed, false);
++    });
++});
++
++class FakePerceptionPort implements PagePerceptionPort {
++    public capture: PagePerceptionPort['capture'] = async () => ({
++        accessibility: {
++            nodes: [{
++                id: 'ax-create',
++                ancestors: [],
++                domCandidateId: 'e1',
++                name: '创建应用',
++                role: 'button'
++            }],
++            source: 'playwright-aria-snapshot',
++            truncated: false
++        },
++        interactionStates: {}
++    });
++}
++function createObservation(observationId: string): PageObservation {
++    return {
++        schemaVersion: 1,
++        observationId,
++        capturedAt: '2026-08-31T00:00:00.000Z',
++        page: {
++            loading: false,
++            title: '首页',
++            url: 'https://example.test/',
++            viewport: {
++                height: 720,
++                width: 1280
++            }
++        },
++        visibleText: [ '首页' ],
++        interactiveElements: [{
++            candidateId: 'e1',
++            tag: 'button',
++            role: 'button',
++            name: '创建应用',
++            disabled: false,
++            visible: true,
++            inViewport: true,
++            attributes: {},
++            nearbyText: [],
++            locatorHints: []
++        }],
++        notices: [],
++        screenshotRef: 'artifact://screen-1',
++        stateFingerprint: observationId,
++        tabs: [],
++        truncated: false
++    };
++}
+diff --git a/modules/engine-core/test/run_coordinator.test.ts b/modules/engine-core/test/run_coordinator.test.ts
+index 5386536..db7fd19 100644
+--- a/modules/engine-core/test/run_coordinator.test.ts
++++ b/modules/engine-core/test/run_coordinator.test.ts
+@@ -274,7 +274,7 @@ describe('RunCoordinator', () => {
+ });
+ 
+ describe('RunCoordinator 最终观察', () => {
+-    it('最终 Verdict 使用视觉批量标注后保存的最新页面观察', async () => {
++    it('最终 Verdict 使用动作后保存的最新页面观察', async () => {
+         const retryObservation = createObservation(
+             'https://test.jdydevelop.com/dashboard#/',
+             false,
+@@ -282,19 +282,12 @@ describe('RunCoordinator 最终观察', () => {
+             true
+         );
+         retryObservation.visibleText = [ '应用列表', '蒋捷欣' ];
+-        const staleObservation = {
+-            ...structuredClone(retryObservation),
+-            visibleText: [],
+-            interactiveElements: [],
+-            stateFingerprint: 'stale-observation'
+-        };
+         const artifactStore = new FakeArtifactStore();
+         const eventPublisher = new FakeRunEventPublisher();
+         const browserAdapter = new FakeBrowserAdapter(
+             false,
+             false,
+-            retryObservation,
+-            [ undefined, undefined, staleObservation ]
++            [ undefined, undefined, retryObservation ]
+         );
+         const actionPlanner = new FakeActionPlanner([
+             plannedClickCommand,
+@@ -330,13 +323,13 @@ describe('RunCoordinator 最终观察', () => {
+         );
+         assert.equal(
+             artifactStore.updatedSnapshots.at(-1)?.metadata.observationRef,
+-            `${ result.runId }/json/observation-after-visual-retry-1.json`
++            `${ result.runId }/json/observation-after-action-2.json`
+         );
+         assert.equal(
+             eventPublisher.events.find(
+                 (event) => event.type === 'verdict.completed'
+             )?.payload.observationRef,
+-            `${ result.runId }/json/observation-after-visual-retry-1.json`
++            `${ result.runId }/json/observation-after-action-2.json`
+         );
+     });
+ });
+@@ -401,8 +394,8 @@ describe('RunCoordinator 扩展动作', () => {
+     });
+ });
+ 
+-describe('RunCoordinator 视觉恢复', () => {
+-    it('首次不确定时直接用视觉批量命名候选并交回 Planner', async () => {
++describe('RunCoordinator Planner UNCERTAIN 语义', () => {
++    it('下一语义动作不明确时终止，不再触发浏览器侧视觉重试', async () => {
+         const unresolvedCommand: ActionCommand = {
+             type: 'UNCERTAIN',
+             target: {
+@@ -412,26 +405,8 @@ describe('RunCoordinator 视觉恢复', () => {
+             reasonSummary: '当前观察缺少返回工作台的候选元素',
+             risk: 'read-only'
+         };
+-        const visualObservation = createVisualRecoveryObservation();
+-        const browserAdapter = new FakeBrowserAdapter(
+-            false,
+-            false,
+-            visualObservation
+-        );
+-        const actionPlanner = new FakeActionPlanner([
+-            unresolvedCommand,
+-            {
+-                type: 'CLICK',
+-                target: {
+-                    candidateId: 'e4',
+-                    description: '当前页面内能够返回工作台的控件'
+-                },
+-                expectedEffect: '返回工作台并显示应用列表',
+-                reasonSummary: '选择视觉补充的返回控件',
+-                risk: 'read-only'
+-            },
+-            finishCommand
+-        ]);
++        const browserAdapter = new FakeBrowserAdapter();
++        const actionPlanner = new FakeActionPlanner([ unresolvedCommand ]);
+         const artifactStore = new FakeArtifactStore();
+         const coordinator = new RunCoordinator(
+             artifactStore,
+@@ -452,32 +427,10 @@ describe('RunCoordinator 视觉恢复', () => {
+ 
+         assert.equal(result.lifecycle, 'COMPLETED', result.summary);
+         assert.equal(result.result, 'UNCERTAIN');
+-        assert.equal(result.metrics.modelCallCount, 6);
+-        assert.equal(browserAdapter.visualGroundingCount, 1);
+-        assert.equal(
+-            browserAdapter.lastVisualObservation?.observationId,
+-            actionPlanner.inputs[0]?.observation.observationId
+-        );
+-        assert.equal(
+-            actionPlanner.inputs[1]?.observation.interactiveElements.some(
+-                (element) => element.candidateId === 'e4' &&
+-                    element.discoverySource === 'vision-assisted'
+-            ),
+-            true
+-        );
+-        assert.equal(
+-            browserAdapter.commands.some(
+-                (command) => command.target?.candidateId === 'e4'
+-            ),
+-            true
+-        );
+-        assert.equal(
+-            artifactStore.savedJson.some(
+-                ({ name }) =>
+-                    name === 'visual-candidate-annotations-retry-1'
+-            ),
+-            true
+-        );
++        assert.equal(result.metrics.modelCallCount, 3);
++        assert.equal(actionPlanner.callCount, 1);
++        assert.equal(browserAdapter.executeCount, 1);
++        assert.equal(artifactStore.traces.length, 1);
+     });
+ });
+ 
+@@ -563,10 +516,13 @@ function assertCompletedAiRun(state: CompletedRunState): void {
+             'intent',
+             'observation-before-navigation',
+             'observation-after-navigation',
++            'page-perception-1',
+             'grounding-decision-1',
+             'observation-after-action-2',
++            'page-perception-2',
+             'grounding-decision-2',
+             'observation-after-action-3',
++            'page-perception-3',
+             'grounding-decision-3',
+             'observation-after-action-4',
+             'verdict',
+@@ -1249,12 +1205,6 @@ class FakeBrowserAdapter implements BrowserAdapter {
+     public executeCount = 0;
+     public closeCount = 0;
+     public captureScreenshotCount = 0;
+-    public visualGroundingCount = 0;
+-    public lastVisualObservation?: Parameters<
+-        NonNullable<BrowserAdapter['enhanceObservationWithVision']>
+-    >[1];
+-    public enhanceObservationWithVision?:
+-        BrowserAdapter['enhanceObservationWithVision'];
+     public readonly commands: ActionCommand[] = [];
+     public readonly resolvedTargets: Array<ResolvedTarget | undefined> = [];
+     private readonly sessionCommands = new Map<string, ActionCommand[]>();
+@@ -1262,35 +1212,10 @@ class FakeBrowserAdapter implements BrowserAdapter {
+     constructor(
+         private readonly failReplay = false,
+         private readonly unreadyAfterLogin = false,
+-        visualObservation?: PageObservation,
+         private readonly observationOverrides: Array<
+             PageObservation | undefined
+         > = []
+-    ) {
+-        if (visualObservation) {
+-            this.enhanceObservationWithVision = (
+-                _session,
+-                observation,
+-                signal
+-            ) => {
+-                signal.throwIfAborted();
+-                this.visualGroundingCount += 1;
+-                this.lastVisualObservation = observation;
+-                const candidateIds = visualObservation.interactiveElements
+-                    .filter(
+-                        (element) =>
+-                            element.discoverySource === 'vision-assisted'
+-                    )
+-                    .map(({ candidateId }) => candidateId);
+-                return Promise.resolve({
+-                    status: 'grounded',
+-                    summary: '视觉模型已批量标注测试候选。',
+-                    candidateIds,
+-                    observation: structuredClone(visualObservation)
+-                });
+-            };
+-        }
+-    }
++    ) {}
+ 
+     /** 返回一段固定的浏览器会话。 */
+     public start = (): Promise<BrowserSession> => {
+@@ -1473,36 +1398,6 @@ function createObservation(
+     };
+ }
+ 
+-/** 创建视觉补充候选后的页面观察。 */
+-function createVisualRecoveryObservation(): PageObservation {
+-    const observation = createObservation(startInput.test.startUrl ?? '');
+-    observation.interactiveElements.push({
+-        candidateId: 'e4',
+-        discoverySource: 'vision-assisted',
+-        visualDescription: '当前页面内能够返回工作台的控件',
+-        tag: 'div',
+-        role: 'button',
+-        disabled: false,
+-        visible: true,
+-        inViewport: true,
+-        boundingBox: {
+-            x: 10,
+-            y: 10,
+-            width: 100,
+-            height: 32
+-        },
+-        attributes: {
+-            class: 'workspace-back'
+-        },
+-        nearbyText: ['当前页面内能够返回工作台的控件'],
+-        locatorHints: [{
+-            strategy: 'css',
+-            value: '.workspace-back'
+-        }]
+-    });
+-    return observation;
+-}
+-
+ /** 创建登录页的三个确定性候选元素。 */
+ function createLoginElements(
+     usernameFilled: boolean,
+diff --git a/server/src/adapters/browser/index.ts b/server/src/adapters/browser/index.ts
+index 2536321..e2fdece 100644
+--- a/server/src/adapters/browser/index.ts
++++ b/server/src/adapters/browser/index.ts
+@@ -1,2 +1,6 @@
+ export * from './jiandaoyun_login_browser_adapter';
+ export * from './playwright_browser_adapter';
++export * from './playwright_candidate_mapping_adapter';
++export * from './playwright_element_evidence';
++export * from './playwright_page_perception_adapter';
++export * from './playwright_page_provider';
+diff --git a/server/src/adapters/browser/jiandaoyun_login_browser_adapter.ts b/server/src/adapters/browser/jiandaoyun_login_browser_adapter.ts
+index 903aea7..66d3408 100644
+--- a/server/src/adapters/browser/jiandaoyun_login_browser_adapter.ts
++++ b/server/src/adapters/browser/jiandaoyun_login_browser_adapter.ts
+@@ -11,7 +11,6 @@ import type {
+     JsonValue,
+     PageObservation,
+     ResolvedTarget,
+-    VisualGroundingResult,
+ } from '@ai-web-test-engine/core';
+ import {
+     CompiledTargetResolver,
+@@ -180,24 +179,6 @@ export class JiandaoyunLoginBrowserAdapter implements BrowserAdapter {
+         return await this.delegate.captureStorageState(session);
+     };
+ 
+-    public enhanceObservationWithVision = async (
+-        session: BrowserSession,
+-        observation: PageObservation,
+-        signal: AbortSignal
+-    ): Promise<VisualGroundingResult> => {
+-        if (!this.delegate.enhanceObservationWithVision) {
+-            return {
+-                status: 'unsupported',
+-                summary: '当前浏览器未接入视觉定位。'
+-            };
+-        }
+-        return await this.delegate.enhanceObservationWithVision(
+-            session,
+-            observation,
+-            signal
+-        );
+-    };
+-
+     public reset: BrowserAdapter['reset'] = (session) =>
+         this.delegate.reset(session);
+ 
+diff --git a/server/src/adapters/browser/playwright_browser_adapter.ts b/server/src/adapters/browser/playwright_browser_adapter.ts
+index 6e2bb34..4d3e42f 100644
+--- a/server/src/adapters/browser/playwright_browser_adapter.ts
++++ b/server/src/adapters/browser/playwright_browser_adapter.ts
+@@ -26,7 +26,6 @@ import type {
+     ObservedElement,
+     PageObservation,
+     ResolvedTarget,
+-    VisualGroundingResult,
+ } from '@ai-web-test-engine/core';
+ 
+ import {
+@@ -39,9 +38,8 @@ import type {
+     CapturedInteractiveElement,
+ } from './interactive_element_script';
+ import type {
+-    VisualCandidateAnnotation,
+-    VisualCandidateAnnotator,
+-} from '../visual';
++    PlaywrightPageProvider,
++} from './playwright_page_provider';
+ 
+ /** 保存 Playwright 运行时对象，不把这些对象暴露给核心引擎。 */
+ interface ManagedBrowserSession {
+@@ -69,7 +67,6 @@ interface CapturedPageState {
+ /** 允许测试缩短页面内容等待时间，生产环境继续使用稳健默认值。 */
+ export interface PlaywrightBrowserAdapterOptions {
+     pageContentWaitMs?: number;
+-    visualCandidateAnnotator?: VisualCandidateAnnotator;
+ }
+ 
+ const NAVIGATION_TIMEOUT_MS = 30_000;
+@@ -108,16 +105,15 @@ export function shouldUseWindowsBrowserFallback(
+  * 核心引擎只持有 sessionId，真正的 Browser、Context 和 Page
+  * 统一保存在当前适配器内部。
+  */
+-export class PlaywrightBrowserAdapter implements BrowserAdapter {
++export class PlaywrightBrowserAdapter
++implements BrowserAdapter, PlaywrightPageProvider {
+     private readonly sessions =
+         new Map<string, ManagedBrowserSession>();
+     private readonly pageContentWaitMs: number;
+-    private readonly visualCandidateAnnotator?: VisualCandidateAnnotator;
+ 
+     constructor(options: PlaywrightBrowserAdapterOptions = {}) {
+         this.pageContentWaitMs = options.pageContentWaitMs ??
+             DEFAULT_PAGE_CONTENT_WAIT_MS;
+-        this.visualCandidateAnnotator = options.visualCandidateAnnotator;
+     }
+ 
+     /**
+@@ -270,78 +266,6 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
+         };
+     };
+ 
+-    /** 用 Midscene 一次性识别已有候选框，并把视觉语义合并回同一份观察。 */
+-    public enhanceObservationWithVision = async (
+-        session: BrowserSession,
+-        observation: PageObservation,
+-        signal: AbortSignal
+-    ): Promise<VisualGroundingResult> => {
+-        if (!this.visualCandidateAnnotator) {
+-            return {
+-                status: 'unsupported',
+-                summary: '当前浏览器适配器未配置候选元素视觉标注能力。'
+-            };
+-        }
+-        const managedSession = this.requireSession(session);
+-        signal.throwIfAborted();
+-        if (
+-            managedSession.page.url() !== observation.page.url ||
+-            managedSession.elementIndex?.observationId !==
+-                observation.observationId
+-        ) {
+-            return {
+-                status: 'not-found',
+-                summary: '页面状态已变化，已拒绝对过期候选框进行视觉标注。'
+-            };
+-        }
+-        const candidates = observation.interactiveElements.filter(
+-            (element) => element.visible && element.inViewport &&
+-                !element.disabled && element.boundingBox
+-        );
+-        if (candidates.length === 0) {
+-            return {
+-                status: 'not-found',
+-                summary: '当前视口没有可供视觉模型标注的候选框。'
+-            };
+-        }
+-
+-        try {
+-            const annotations = await this.visualCandidateAnnotator.annotate(
+-                managedSession.page,
+-                candidates,
+-                signal
+-            );
+-            signal.throwIfAborted();
+-            if (annotations.length === 0) {
+-                return {
+-                    status: 'not-found',
+-                    summary: '视觉模型未能为当前候选框返回有效名称。'
+-                };
+-            }
+-            const enhancedObservation = this.mergeVisualAnnotations(
+-                observation,
+-                annotations
+-            );
+-            return {
+-                status: 'grounded',
+-                summary: `视觉模型已批量标注 ${
+-                    annotations.length
+-                } 个候选元素。`,
+-                candidateIds: annotations.map(
+-                    ({ candidateId }) => candidateId
+-                ),
+-                observation: enhancedObservation
+-            };
+-        } catch (error) {
+-            signal.throwIfAborted();
+-            return {
+-                status: 'not-found',
+-                summary: `视觉候选标注失败：${
+-                    error instanceof Error ? error.message : '未知错误'
+-                }`
+-            };
+-        }
+-    };
+ 
+     /**
+      * 执行导航、点击、输入等受控浏览器动作。
+@@ -559,6 +483,53 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
+         }
+     };
+ 
++    /** 只向 server 内感知适配器暴露当前 session 的 Playwright Page。 */
++    public getPage = (session: BrowserSession): Page =>
++        this.requireSession(session).page;
++
++    public isObservationCurrent = (
++        session: BrowserSession,
++        observationId: string
++    ): boolean => this.requireSession(session).elementIndex?.observationId ===
++        observationId;
++
++    public getCandidateLocator = (
++        session: BrowserSession,
++        observationId: string,
++        candidateId: string
++    ): Locator | undefined => {
++        const managed = this.requireSession(session);
++        return managed.elementIndex?.observationId === observationId
++            ? managed.elementIndex.locators.get(candidateId)
++            : undefined;
++    };
++
++    public getCandidateIds = (
++        session: BrowserSession,
++        observationId: string
++    ): string[] => {
++        const managed = this.requireSession(session);
++        return managed.elementIndex?.observationId === observationId
++            ? [ ...managed.elementIndex.locators.keys() ]
++            : [];
++    };
++
++    public registerTransientCandidate = (
++        session: BrowserSession,
++        observationId: string,
++        candidateId: string,
++        locator: Locator
++    ): void => {
++        const managed = this.requireSession(session);
++        if (managed.elementIndex?.observationId !== observationId) {
++            throw new Error('无法向过期 observation 注册 transient candidate。');
++        }
++        if (managed.elementIndex.locators.has(candidateId)) {
++            throw new Error(`Transient candidate 已存在：${ candidateId }`);
++        }
++        managed.elementIndex.locators.set(candidateId, locator);
++    };
++
+     /**
+      * 根据公开的 sessionId 查找 Playwright 运行时对象。
+      */
+@@ -1124,48 +1095,6 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
+         };
+     }
+ 
+-    /** 保留 DOM 语义和 Locator，只补充每个确定候选框的视觉名称。 */
+-    private mergeVisualAnnotations(
+-        observation: PageObservation,
+-        annotations: VisualCandidateAnnotation[]
+-    ): PageObservation {
+-        const annotationById = new Map(annotations.map((annotation) => [
+-            annotation.candidateId,
+-            annotation
+-        ]));
+-        const interactiveElements = observation.interactiveElements.map(
+-            (element): ObservedElement => {
+-                const annotation = annotationById.get(element.candidateId);
+-                if (!annotation) {
+-                    return element;
+-                }
+-                return {
+-                    ...element,
+-                    discoverySource: 'vision-assisted',
+-                    visualDescription: [
+-                        annotation.visualDescription,
+-                        ...annotation.elementType
+-                            ? [ `类型：${ annotation.elementType }` ]
+-                            : [],
+-                        ...annotation.confidence === undefined
+-                            ? []
+-                            : [ `置信度：${ annotation.confidence }` ]
+-                    ].join('；')
+-                };
+-            }
+-        );
+-        return {
+-            ...observation,
+-            interactiveElements,
+-            stateFingerprint: createHash('sha256')
+-                .update(JSON.stringify({
+-                    base: observation.stateFingerprint,
+-                    visualAnnotations: annotations
+-                }))
+-                .digest('hex')
+-        };
+-    }
+-
+     /** 为延迟渲染的 SPA 等待首批可见文本或交互元素。 */
+     private async waitForRenderedContent(page: Page): Promise<boolean> {
+         if (page.url() === 'about:blank') {
+diff --git a/server/src/adapters/browser/playwright_candidate_mapping_adapter.ts b/server/src/adapters/browser/playwright_candidate_mapping_adapter.ts
+new file mode 100644
+index 0000000..17b9612
+--- /dev/null
++++ b/server/src/adapters/browser/playwright_candidate_mapping_adapter.ts
+@@ -0,0 +1,325 @@
++import { randomUUID } from 'node:crypto';
++
++import type {
++    ActionType,
++    CandidateMappingPort,
++    CandidateMappingResult,
++    MappedCandidate,
++    ResolvedElementSnapshot,
++    VisualRegion,
++} from '@ai-web-test-engine/core';
++
++import {
++    RUNTIME_CANDIDATE_ATTRIBUTE,
++} from './interactive_element_script';
++import {
++    captureElementSnapshot,
++    captureInteractionState,
++} from './playwright_element_evidence';
++import type {
++    PlaywrightPageProvider,
++} from './playwright_page_provider';
++
++interface VisualDomMapping {
++    candidateId?: string;
++    created: boolean;
++    status: 'ambiguous' | 'mapped' | 'unmapped';
++}
++
++const VISUAL_MAPPING_SCRIPT = String.raw`(input) => {
++    const region = input.region;
++    const points = [
++        [0.5, 0.5], [0.2, 0.2], [0.8, 0.2], [0.2, 0.8], [0.8, 0.8]
++    ].map(([rx, ry]) => ({
++        x: region.x + region.width * rx,
++        y: region.y + region.height * ry
++    })).filter(({x, y}) =>
++        x >= 0 && y >= 0 && x < window.innerWidth && y < window.innerHeight
++    );
++    const hits = points.map(({x, y}) => document.elementFromPoint(x, y))
++        .filter(Boolean);
++    if (hits.length === 0) return { status: 'unmapped', created: false };
++    const existing = new Set(hits.map((hit) =>
++        hit.closest('[' + input.attribute + ']')
++            ?.getAttribute(input.attribute)
++    ).filter(Boolean));
++    if (existing.size === 1) {
++        return {
++            status: 'mapped', created: false,
++            candidateId: Array.from(existing)[0]
++        };
++    }
++    if (existing.size > 1) return { status: 'ambiguous', created: false };
++    const visible = (element) => {
++        const style = window.getComputedStyle(element);
++        const box = element.getBoundingClientRect();
++        return style.display !== 'none' && style.visibility !== 'hidden' &&
++            Number(style.opacity) !== 0 && box.width > 0 && box.height > 0;
++    };
++    const compatible = (element) => {
++        if (!visible(element)) return false;
++        if (input.actionType === 'HOVER') return true;
++        if (element.disabled || element.getAttribute('aria-disabled') === 'true') {
++            return false;
++        }
++        const tag = element.tagName.toLowerCase();
++        const role = element.getAttribute('role');
++        const type = (element.getAttribute('type') || '').toLowerCase();
++        if (input.actionType === 'TYPE') {
++            return ['input', 'textarea'].includes(tag) || role === 'textbox' ||
++                element.getAttribute('contenteditable') === 'true';
++        }
++        if (input.actionType === 'SELECT') {
++            return tag === 'select' || ['combobox', 'listbox'].includes(role);
++        }
++        if (input.actionType === 'CHECK') {
++            return ['checkbox', 'radio'].includes(role) ||
++                ['checkbox', 'radio'].includes(type);
++        }
++        if (input.actionType !== 'CLICK') return true;
++        return ['a', 'button', 'input', 'option', 'select', 'summary'].includes(tag) ||
++            ['button', 'checkbox', 'link', 'menuitem', 'option', 'radio',
++                'switch', 'tab'].includes(role) ||
++            element.hasAttribute('onclick') ||
++            element.hasAttribute('aria-haspopup') ||
++            window.getComputedStyle(element).cursor === 'pointer';
++    };
++    const candidates = [];
++    for (const hit of hits) {
++        let current = hit;
++        for (let depth = 0; current && depth < 7; depth += 1) {
++            if (compatible(current)) {
++                candidates.push(current);
++                break;
++            }
++            current = current.parentElement;
++        }
++    }
++    if (candidates.length === 0) {
++        return { status: 'unmapped', created: false };
++    }
++    let selected = candidates[0];
++    for (const candidate of candidates.slice(1)) {
++        if (candidate === selected || selected.contains(candidate)) continue;
++        if (candidate.contains(selected)) {
++            selected = candidate;
++            continue;
++        }
++        return { status: 'ambiguous', created: false };
++    }
++    selected.setAttribute(input.attribute, input.candidateId);
++    return {
++        status: 'mapped', created: true, candidateId: input.candidateId
++    };
++}`;
++
++/** 将 A11y/Visual evidence 安全映射到当前 observation 的 live DOM。 */
++export class PlaywrightCandidateMappingAdapter
++implements CandidateMappingPort {
++    constructor(private readonly pageProvider: PlaywrightPageProvider) {}
++
++    public map: CandidateMappingPort['map'] = async (
++        session,
++        perception,
++        action,
++        evidence,
++        signal
++    ): Promise<CandidateMappingResult> => {
++        signal.throwIfAborted();
++        const observationId = perception.dom.observationId;
++        if (!this.pageProvider.isObservationCurrent(session, observationId)) {
++            return unmapped('页面 observation 已过期，拒绝映射物理目标。');
++        }
++        if (!action.target) {
++            return unmapped('语义动作没有页面目标。');
++        }
++        if (evidence.source === 'accessibility') {
++            const ids = unique(evidence.nodes.flatMap((node) =>
++                node.domCandidateId ? [ node.domCandidateId ] : []
++            ));
++            return await this.mapCandidateIds(
++                session,
++                observationId,
++                action.type,
++                ids,
++                [ 'bounded accessibility 节点已映射到 live DOM' ]
++            );
++        }
++
++        const mappings: VisualDomMapping[] = [];
++        for (const region of evidence.regions) {
++            signal.throwIfAborted();
++            mappings.push(await this.mapVisualRegion(
++                session,
++                observationId,
++                action.type,
++                region
++            ));
++        }
++        if (mappings.some(({ status }) => status === 'ambiguous')) {
++            return {
++                status: 'ambiguous',
++                candidates: [],
++                evidence: [ '视觉区域命中了多个无关的可执行元素' ],
++                summary: '视觉区域无法唯一映射到 live DOM 元素。'
++            };
++        }
++        const ids = unique(mappings.flatMap(({ candidateId, status }) =>
++            status === 'mapped' && candidateId ? [ candidateId ] : []
++        ));
++        return await this.mapCandidateIds(
++            session,
++            observationId,
++            action.type,
++            ids,
++            [
++                '视觉 bbox 已通过 elementsFromPoint 映射到 live DOM',
++                ...mappings.some(({ created }) => created)
++                    ? [ '已注册 observation 生命周期 visual-* candidate' ]
++                    : []
++            ]
++        );
++    };
++
++    private async mapVisualRegion(
++        session: Parameters<CandidateMappingPort['map']>[0],
++        observationId: string,
++        actionType: ActionType,
++        region: VisualRegion
++    ): Promise<VisualDomMapping> {
++        if (region.mappedCandidateId) {
++            return {
++                candidateId: region.mappedCandidateId,
++                created: false,
++                status: 'mapped'
++            };
++        }
++        const page = this.pageProvider.getPage(session);
++        const candidateId = `visual-${ randomUUID().slice(0, 12) }`;
++        const result = await page.evaluate(`(${ VISUAL_MAPPING_SCRIPT })(${
++            JSON.stringify({
++                actionType,
++                attribute: RUNTIME_CANDIDATE_ATTRIBUTE,
++                candidateId,
++                region: region.boundingBox
++            })
++        })`) as VisualDomMapping;
++        if (result.status === 'mapped' && result.candidateId && result.created) {
++            this.pageProvider.registerTransientCandidate(
++                session,
++                observationId,
++                result.candidateId,
++                page.locator(
++                    `[${ RUNTIME_CANDIDATE_ATTRIBUTE }="${
++                        result.candidateId
++                    }"]`
++                )
++            );
++        }
++        return result;
++    }
++
++    private async mapCandidateIds(
++        session: Parameters<CandidateMappingPort['map']>[0],
++        observationId: string,
++        actionType: ActionType,
++        candidateIds: string[],
++        evidence: string[]
++    ): Promise<CandidateMappingResult> {
++        if (candidateIds.length === 0) {
++            return unmapped('感知证据无法映射到安全的 live DOM 元素。');
++        }
++        if (candidateIds.length > 1) {
++            return {
++                status: 'ambiguous',
++                candidates: [],
++                evidence,
++                summary: `感知证据映射到 ${ candidateIds.length } 个不同元素。`
++            };
++        }
++        const page = this.pageProvider.getPage(session);
++        const candidates = (await Promise.all(candidateIds.map(
++            async (candidateId): Promise<MappedCandidate | undefined> => {
++                if (!this.pageProvider.getCandidateLocator(
++                    session,
++                    observationId,
++                    candidateId
++                )) {
++                    return undefined;
++                }
++                const [ elementSnapshot, interactionState ] =
++                    await Promise.all([
++                        captureElementSnapshot(page, candidateId),
++                        captureInteractionState(page, candidateId)
++                    ]);
++                if (!elementSnapshot || !interactionState) {
++                    return undefined;
++                }
++                return {
++                    actionCompatible: isActionCompatible(
++                        actionType,
++                        elementSnapshot
++                    ),
++                    candidateId,
++                    elementSnapshot,
++                    evidence: [ ...evidence, `candidate=${ candidateId }` ],
++                    interactionState
++                };
++            }
++        ))).filter((candidate): candidate is MappedCandidate =>
++            candidate !== undefined
++        );
++        return candidates.length === 1
++            ? {
++                status: 'mapped',
++                candidates,
++                evidence: candidates[0].evidence,
++                summary: '感知证据已唯一映射到当前页面元素。'
++            }
++            : unmapped('映射后的 live DOM 元素已经失效。');
++    }
++}
++
++function isActionCompatible(
++    actionType: ActionType,
++    element: ResolvedElementSnapshot
++): boolean {
++    if (actionType === 'HOVER') {
++        return element.visible && Boolean(element.boundingBox);
++    }
++    if (actionType === 'TYPE') {
++        return element.role === 'textbox' ||
++            [ 'input', 'textarea' ].includes(element.tag) ||
++            element.attributes.contenteditable === 'true';
++    }
++    if (actionType === 'SELECT') {
++        return element.tag === 'select' ||
++            [ 'combobox', 'listbox' ].includes(element.role ?? '');
++    }
++    if (actionType === 'CHECK') {
++        return [ 'checkbox', 'radio' ].includes(element.role ?? '') ||
++            [ 'checkbox', 'radio' ].includes(element.attributes.type ?? '');
++    }
++    if (actionType === 'CLICK') {
++        return [ 'a', 'button', 'input', 'option', 'select', 'summary' ]
++            .includes(element.tag) || [
++                'button', 'checkbox', 'link', 'menuitem', 'option',
++                'radio', 'switch', 'tab'
++            ].includes(element.role ?? '') ||
++            element.attributes['aria-haspopup'] !== undefined;
++    }
++    return true;
++}
++
++function unique(values: string[]): string[] {
++    return [ ...new Set(values) ];
++}
++
++function unmapped(summary: string): CandidateMappingResult {
++    return {
++        status: 'unmapped',
++        candidates: [],
++        evidence: [],
++        summary
++    };
++}
+diff --git a/server/src/adapters/browser/playwright_element_evidence.ts b/server/src/adapters/browser/playwright_element_evidence.ts
+new file mode 100644
+index 0000000..636d8ea
+--- /dev/null
++++ b/server/src/adapters/browser/playwright_element_evidence.ts
+@@ -0,0 +1,186 @@
++import type {
++    ElementInteractionState,
++    ResolvedElementSnapshot,
++} from '@ai-web-test-engine/core';
++import type {
++    Page,
++} from 'playwright';
++
++import {
++    RUNTIME_CANDIDATE_ATTRIBUTE,
++} from './interactive_element_script';
++
++const SNAPSHOT_SCRIPT = String.raw`(input) => {
++    const element = document.querySelector(
++        '[' + input.attribute + '="' + CSS.escape(input.candidateId) + '"]'
++    );
++    if (!element) return undefined;
++    const clean = (value, limit = 200) => {
++        const normalized = value && String(value).replace(/\s+/gu, ' ').trim();
++        return normalized ? normalized.slice(0, limit) : undefined;
++    };
++    const box = element.getBoundingClientRect();
++    const style = window.getComputedStyle(element);
++    const tag = element.tagName.toLowerCase();
++    const type = (element.getAttribute('type') || '').toLowerCase();
++    const role = element.getAttribute('role') || (
++        tag === 'button' ? 'button' :
++        tag === 'a' ? 'link' :
++        tag === 'select' ? 'combobox' :
++        tag === 'textarea' ? 'textbox' :
++        tag === 'input' && ['checkbox', 'radio'].includes(type) ? type :
++        tag === 'input' ? 'textbox' : undefined
++    );
++    const label = 'labels' in element && element.labels
++        ? clean(Array.from(element.labels).map((item) => item.innerText).join(' '))
++        : undefined;
++    const text = clean(element.innerText || element.textContent);
++    const name = clean(
++        element.getAttribute('aria-label') ||
++        element.getAttribute('title') ||
++        label || text
++    );
++    const id = clean(element.getAttribute('id'), 100);
++    const testId = clean(element.getAttribute('data-testid'), 100);
++    const placeholder = clean(element.getAttribute('placeholder'));
++    const attributes = {};
++    for (const key of [
++        'id', 'class', 'type', 'name', 'href', 'title', 'aria-label',
++        'aria-haspopup', 'aria-controls', 'data-testid', 'contenteditable'
++    ]) {
++        const value = clean(element.getAttribute(key), 200);
++        if (value) attributes[key] = value;
++    }
++    const locatorHints = [{ strategy: 'css', value: tag }];
++    if (id) locatorHints.unshift({ strategy: 'css', value: '#' + CSS.escape(id) });
++    if (testId) locatorHints.unshift({ strategy: 'test-id', value: testId });
++    if (placeholder) locatorHints.unshift({
++        strategy: 'placeholder', value: placeholder
++    });
++    if (role && name) locatorHints.unshift({
++        strategy: 'role-name', value: role + '|' + name
++    });
++    const parentText = clean(element.parentElement?.innerText);
++    const visible = style.display !== 'none' && style.visibility !== 'hidden' &&
++        Number(style.opacity) !== 0 && box.width > 0 && box.height > 0;
++    const inViewport = box.right > 0 && box.bottom > 0 &&
++        box.left < window.innerWidth && box.top < window.innerHeight;
++    return {
++        tag,
++        role,
++        name,
++        text,
++        label,
++        placeholder,
++        disabled: Boolean(element.disabled) ||
++            element.getAttribute('aria-disabled') === 'true',
++        checked: 'checked' in element ? Boolean(element.checked) : undefined,
++        visible,
++        inViewport,
++        attributes,
++        nearbyText: parentText && parentText !== text ? [parentText] : [],
++        boundingBox: box.width > 0 && box.height > 0 ? {
++            x: box.x, y: box.y, width: box.width, height: box.height
++        } : undefined,
++        locatorHints: locatorHints.slice(0, 5)
++    };
++}`;
++
++const INTERACTION_SCRIPT = String.raw`(input) => {
++    const element = document.querySelector(
++        '[' + input.attribute + '="' + CSS.escape(input.candidateId) + '"]'
++    );
++    if (!element) return undefined;
++    const box = element.getBoundingClientRect();
++    const style = window.getComputedStyle(element);
++    const visible = style.display !== 'none' && style.visibility !== 'hidden' &&
++        Number(style.opacity) !== 0 && box.width > 0 && box.height > 0;
++    const inViewport = box.right > 0 && box.bottom > 0 &&
++        box.left < window.innerWidth && box.top < window.innerHeight;
++    const enabled = !Boolean(element.disabled) &&
++        element.getAttribute('aria-disabled') !== 'true';
++    const points = [
++        [0.5, 0.5], [0.2, 0.2], [0.8, 0.2], [0.2, 0.8], [0.8, 0.8]
++    ].map(([rx, ry]) => ({
++        x: box.left + box.width * rx,
++        y: box.top + box.height * ry
++    })).filter(({x, y}) =>
++        x >= 0 && y >= 0 && x < window.innerWidth && y < window.innerHeight
++    );
++    let receives = 0;
++    let blocked = 0;
++    let unknown = 0;
++    let blocker;
++    for (const point of points) {
++        const hit = document.elementFromPoint(point.x, point.y);
++        if (!hit) {
++            unknown += 1;
++            continue;
++        }
++        if (hit === element || element.contains(hit)) {
++            receives += 1;
++            continue;
++        }
++        blocked += 1;
++        if (!blocker) {
++            blocker = {
++                tag: hit.tagName.toLowerCase(),
++                role: hit.getAttribute('role') || undefined,
++                name: hit.getAttribute('aria-label') ||
++                    hit.getAttribute('title') || undefined,
++                text: (hit.innerText || hit.textContent || '')
++                    .replace(/\s+/gu, ' ').trim().slice(0, 120) || undefined
++            };
++        }
++    }
++    const hitTest = receives > 0
++        ? 'receives-events'
++        : points.length > 0 && blocked === points.length
++            ? 'blocked'
++            : 'unknown';
++    return {
++        candidateId: input.candidateId,
++        enabled,
++        hitTest,
++        inViewport,
++        visible,
++        blockedBy: hitTest === 'blocked' ? blocker : undefined,
++        samples: { receives, blocked, unknown, total: points.length }
++    };
++}`;
++
++export async function captureElementSnapshot(
++    page: Page,
++    candidateId: string
++): Promise<ResolvedElementSnapshot | undefined> {
++    return await page.evaluate(`(${ SNAPSHOT_SCRIPT })(${
++        JSON.stringify({
++        attribute: RUNTIME_CANDIDATE_ATTRIBUTE,
++        candidateId
++        })
++    })`) as ResolvedElementSnapshot | undefined;
++}
++
++export async function captureInteractionState(
++    page: Page,
++    candidateId: string
++): Promise<ElementInteractionState | undefined> {
++    const result = await page.evaluate(`(${ INTERACTION_SCRIPT })(${
++        JSON.stringify({
++            attribute: RUNTIME_CANDIDATE_ATTRIBUTE,
++            candidateId
++        })
++    })`) as (ElementInteractionState & {
++        samples: {
++            blocked: number,
++            receives: number,
++            total: number,
++            unknown: number
++        }
++    }) | undefined;
++    if (!result) {
++        return undefined;
++    }
++    const { samples: _samples, ...state } = result;
++    return state;
++}
+diff --git a/server/src/adapters/browser/playwright_page_perception_adapter.ts b/server/src/adapters/browser/playwright_page_perception_adapter.ts
+new file mode 100644
+index 0000000..103c778
+--- /dev/null
++++ b/server/src/adapters/browser/playwright_page_perception_adapter.ts
+@@ -0,0 +1,290 @@
++import { createHash } from 'node:crypto';
++
++import type {
++    AccessibilityAncestor,
++    AccessibilityNode,
++    BoundingBox,
++    BrowserSession,
++    CapturedPerceptionSignals,
++    PageObservation,
++    PagePerceptionPort,
++} from '@ai-web-test-engine/core';
++import { parseDocument } from 'yaml';
++
++import { RUNTIME_CANDIDATE_ATTRIBUTE } from './interactive_element_script';
++import { captureInteractionState } from './playwright_element_evidence';
++import type { PlaywrightPageProvider } from './playwright_page_provider';
++
++const MAX_ACCESSIBILITY_NODES = 200;
++const MAX_ACCESSIBILITY_DEPTH = 12;
++const MAX_ANCESTORS = 4;
++const ACCESSIBLE_ACTION_ROLES = new Set([
++    'button',
++    'checkbox',
++    'combobox',
++    'link',
++    'menuitem',
++    'option',
++    'radio',
++    'slider',
++    'spinbutton',
++    'switch',
++    'tab',
++    'textbox'
++]);
++
++interface ParsedAriaNode extends Omit<AccessibilityNode, 'id'> {
++    children: ParsedAriaNode[];
++    ref?: string;
++}
++
++/** 使用 Playwright AI aria snapshot 采集独立、bounded A11y 表示。 */
++export class PlaywrightPagePerceptionAdapter implements PagePerceptionPort {
++    constructor(private readonly pageProvider: PlaywrightPageProvider) {}
++
++    public capture = async (
++        session: BrowserSession,
++        observation: PageObservation,
++        signal: AbortSignal
++    ): Promise<CapturedPerceptionSignals> => {
++        signal.throwIfAborted();
++        if (!this.pageProvider.isObservationCurrent(
++            session,
++            observation.observationId
++        )) {
++            throw new Error('页面 observation 已过期，无法采集 Perception。');
++        }
++        const page = this.pageProvider.getPage(session);
++        const yaml = await page.ariaSnapshot({
++            boxes: true,
++            depth: MAX_ACCESSIBILITY_DEPTH,
++            mode: 'ai',
++            signal,
++            timeout: 5_000
++        });
++        signal.throwIfAborted();
++        const parsed = parseAriaSnapshot(yaml);
++        const flattened = flattenAriaNodes(parsed).slice(
++            0,
++            MAX_ACCESSIBILITY_NODES
++        );
++        const nodes: AccessibilityNode[] = [];
++        const identityCounts = new Map<string, number>();
++        let transientSequence = 0;
++        for (const node of flattened) {
++            signal.throwIfAborted();
++            const identity = accessibilityIdentity(node);
++            const occurrence = (identityCounts.get(identity) ?? 0) + 1;
++            identityCounts.set(identity, occurrence);
++            const domCandidateId = node.ref
++                ? await this.mapAriaRefToCandidate(
++                    session,
++                    observation.observationId,
++                    node,
++                    () => `ax-${ ++transientSequence }`
++                )
++                : undefined;
++            const {
++                children: _children,
++                ref: _ref,
++                ...snapshot
++            } = node;
++            nodes.push({
++                ...snapshot,
++                id: createStableAccessibilityId(identity, occurrence),
++                ...domCandidateId ? { domCandidateId } : {}
++            });
++        }
++        const interactionStates = Object.fromEntries((await Promise.all(
++            this.pageProvider.getCandidateIds(
++                session,
++                observation.observationId
++            ).map(async (candidateId) => {
++                const state = await captureInteractionState(page, candidateId);
++                return state ? [ candidateId, state ] as const : undefined;
++            })
++        )).filter((entry): entry is readonly [string, NonNullable<
++        typeof entry
++        >[1]] => entry !== undefined));
++        return {
++            accessibility: {
++                nodes,
++                source: 'playwright-aria-snapshot',
++                truncated: flattenAriaNodes(parsed).length >
++                    MAX_ACCESSIBILITY_NODES
++            },
++            interactionStates
++        };
++    };
++
++    private async mapAriaRefToCandidate(
++        session: BrowserSession,
++        observationId: string,
++        node: ParsedAriaNode,
++        nextCandidateId: () => string
++    ): Promise<string | undefined> {
++        const page = this.pageProvider.getPage(session);
++        const locator = page.locator(`aria-ref=${ node.ref! }`);
++        if (await locator.count() !== 1) {
++            return undefined;
++        }
++        const existing = await locator.evaluate((element, attribute) =>
++            (element as unknown as {
++                closest: (selector: string) => {
++                    getAttribute: (name: string) => string | null
++                } | null
++            }).closest(`[${ attribute }]`)
++                ?.getAttribute(attribute) ??
++                undefined,
++        RUNTIME_CANDIDATE_ATTRIBUTE);
++        if (existing) {
++            return existing;
++        }
++        if (!node.role || !ACCESSIBLE_ACTION_ROLES.has(node.role)) {
++            return undefined;
++        }
++        const candidateId = nextCandidateId();
++        await locator.evaluate(
++            (element, input) =>
++                (element as unknown as {
++                    setAttribute: (name: string, value: string) => void
++                }).setAttribute(input.attribute, input.candidateId),
++            {
++                attribute: RUNTIME_CANDIDATE_ATTRIBUTE,
++                candidateId
++            }
++        );
++        this.pageProvider.registerTransientCandidate(
++            session,
++            observationId,
++            candidateId,
++            page.locator(
++                `[${ RUNTIME_CANDIDATE_ATTRIBUTE }="${ candidateId }"]`
++            )
++        );
++        return candidateId;
++    }
++}
++
++/** 将 Playwright YAML 解析为不包含临时 ref 的内部树。 */
++export function parseAriaSnapshot(yaml: string): ParsedAriaNode[] {
++    const document = parseDocument(yaml);
++    if (document.errors.length > 0) {
++        throw new Error(`Accessibility snapshot 解析失败：${
++            document.errors[0].message
++        }`);
++    }
++    return parseAriaValue(document.toJS(), []);
++}
++
++function parseAriaValue(
++    value: unknown,
++    ancestors: AccessibilityAncestor[]
++): ParsedAriaNode[] {
++    if (Array.isArray(value)) {
++        return value.flatMap((item) => parseAriaValue(item, ancestors));
++    }
++    if (typeof value === 'string') {
++        const node = parseAriaKey(value, ancestors);
++        return node ? [ node ] : [];
++    }
++    if (!isRecord(value)) {
++        return [];
++    }
++    return Object.entries(value).flatMap(([ key, children ]) => {
++        const node = parseAriaKey(key, ancestors);
++        if (!node) {
++            return parseAriaValue(children, ancestors);
++        }
++        const nextAncestors = [
++            ...ancestors,
++            {
++                ...node.role ? { role: node.role } : {},
++                ...node.name ? { name: node.name } : {}
++            }
++        ].slice(-MAX_ANCESTORS);
++        node.children = parseAriaValue(children, nextAncestors);
++        return [ node ];
++    });
++}
++
++function parseAriaKey(
++    key: string,
++    ancestors: AccessibilityAncestor[]
++): ParsedAriaNode | undefined {
++    const match = /^([a-z][\w-]*)(?:\s+"((?:\\.|[^"])*)")?(.*)$/iu.exec(
++        key.trim()
++    );
++    if (!match) {
++        return undefined;
++    }
++    const attributes = match[3];
++    const box = parseBoundingBox(attributes);
++    const checked = /\[checked=(true|false|mixed)\]/u.exec(attributes)?.[1];
++    return {
++        ancestors: ancestors.slice(-MAX_ANCESTORS),
++        children: [],
++        role: match[1],
++        ...match[2] ? { name: match[2].replace(/\\"/gu, '"') } : {},
++        ...box ? { boundingBox: box } : {},
++        .../\[disabled(?:=true)?\]/u.test(attributes)
++            ? { disabled: true }
++            : {},
++        ...checked
++            ? {
++                checked: checked === 'mixed'
++                    ? 'mixed'
++                    : checked === 'true'
++            }
++            : {},
++        .../\[expanded=true\]/u.test(attributes) ? { expanded: true } : {},
++        .../\[expanded=false\]/u.test(attributes) ? { expanded: false } : {},
++        .../\[selected(?:=true)?\]/u.test(attributes)
++            ? { selected: true }
++            : {},
++        ref: /\[ref=([^\]]+)\]/u.exec(attributes)?.[1]
++    };
++}
++
++function parseBoundingBox(value: string): BoundingBox | undefined {
++    const match = /\[box=(-?[\d.]+),(-?[\d.]+),([\d.]+),([\d.]+)\]/u.exec(
++        value
++    );
++    if (!match) {
++        return undefined;
++    }
++    const [ x, y, width, height ] = match.slice(1).map(Number);
++    return [ x, y, width, height ].every(Number.isFinite) &&
++        width > 0 && height > 0
++        ? { height, width, x, y }
++        : undefined;
++}
++
++function flattenAriaNodes(nodes: ParsedAriaNode[]): ParsedAriaNode[] {
++    return nodes.flatMap((node) => [
++        node,
++        ...flattenAriaNodes(node.children)
++    ]).filter((node) => Boolean(node.ref || node.name));
++}
++
++function accessibilityIdentity(node: ParsedAriaNode): string {
++    return JSON.stringify({
++        ancestors: node.ancestors,
++        name: node.name ?? '',
++        role: node.role ?? ''
++    });
++}
++
++function createStableAccessibilityId(
++    identity: string,
++    occurrence: number
++): string {
++    return `axnode-${ createHash('sha256')
++        .update(`${ identity }#${ occurrence }`)
++        .digest('hex')
++        .slice(0, 12) }`;
++}
++
++function isRecord(value: unknown): value is Record<string, unknown> {
++    return typeof value === 'object' && value !== null && !Array.isArray(value);
++}
+diff --git a/server/src/adapters/browser/playwright_page_provider.ts b/server/src/adapters/browser/playwright_page_provider.ts
+new file mode 100644
+index 0000000..191d2f8
+--- /dev/null
++++ b/server/src/adapters/browser/playwright_page_provider.ts
+@@ -0,0 +1,31 @@
++import type {
++    BrowserSession,
++} from '@ai-web-test-engine/core';
++import type {
++    Locator,
++    Page,
++} from 'playwright';
++
++/** 仅供 server 内 Playwright 感知与映射适配器共享当前 live page。 */
++export interface PlaywrightPageProvider {
++    getPage: (session: BrowserSession) => Page;
++    getCandidateLocator: (
++        session: BrowserSession,
++        observationId: string,
++        candidateId: string
++    ) => Locator | undefined;
++    getCandidateIds: (
++        session: BrowserSession,
++        observationId: string
++    ) => string[];
++    isObservationCurrent: (
++        session: BrowserSession,
++        observationId: string
++    ) => boolean;
++    registerTransientCandidate: (
++        session: BrowserSession,
++        observationId: string,
++        candidateId: string,
++        locator: Locator
++    ) => void;
++}
+diff --git a/server/src/adapters/visual/index.ts b/server/src/adapters/visual/index.ts
+index e4f9446..06cc50a 100644
+--- a/server/src/adapters/visual/index.ts
++++ b/server/src/adapters/visual/index.ts
+@@ -1,3 +1,4 @@
+ export * from './midscene_visual_agent';
+ export * from './midscene_visual_candidate_annotator';
++export * from './midscene_visual_grounding_adapter';
+ export * from './visual_candidate_overlay_script';
+diff --git a/server/src/adapters/visual/midscene_visual_grounding_adapter.ts b/server/src/adapters/visual/midscene_visual_grounding_adapter.ts
+new file mode 100644
+index 0000000..f8c1cff
+--- /dev/null
++++ b/server/src/adapters/visual/midscene_visual_grounding_adapter.ts
+@@ -0,0 +1,150 @@
++import { randomUUID } from 'node:crypto';
++
++import type {
++    PagePerception,
++    SemanticTarget,
++    VisualGroundingPort,
++    VisualGroundingResult,
++} from '@ai-web-test-engine/core';
++
++import type {
++    PlaywrightPageProvider,
++} from '../browser';
++import {
++    createConfiguredMidsceneVisualAgent,
++} from './midscene_visual_agent';
++
++/** 配置关闭视觉时保持同一 Grounder 组合结构。 */
++export class DisabledVisualGroundingAdapter implements VisualGroundingPort {
++    public locate: VisualGroundingPort['locate'] = () => Promise.resolve({
++        modelCalls: 0,
++        status: 'unsupported',
++        regions: [],
++        summary: '当前环境已关闭视觉定位。'
++    });
++}
++
++/** 使用 Midscene aiLocate 发现目标区域，但不让 Midscene 执行鼠标动作。 */
++export class MidsceneVisualGroundingAdapter implements VisualGroundingPort {
++    constructor(private readonly pageProvider: PlaywrightPageProvider) {}
++
++    public locate: VisualGroundingPort['locate'] = async (
++        session,
++        target,
++        perception,
++        signal
++    ): Promise<VisualGroundingResult> => {
++        signal.throwIfAborted();
++        if (!this.pageProvider.isObservationCurrent(
++            session,
++            perception.dom.observationId
++        )) {
++            return {
++                modelCalls: 0,
++                status: 'not-found',
++                regions: [],
++                summary: '页面 observation 已过期，拒绝使用视觉结果。'
++            };
++        }
++        const agent = createConfiguredMidsceneVisualAgent(
++            this.pageProvider.getPage(session)
++        );
++        try {
++            const located = await waitForVisualResult(
++                agent.aiLocate(buildVisualLocatePrompt(target, perception)),
++                signal
++            );
++            signal.throwIfAborted();
++            const rect = located.rect;
++            if (
++                !rect ||
++                !isValidNumber(rect.left) ||
++                !isValidNumber(rect.top) ||
++                !isValidNumber(rect.width) ||
++                !isValidNumber(rect.height) ||
++                rect.width <= 0 || rect.height <= 0
++            ) {
++                return {
++                    modelCalls: 1,
++                    status: 'not-found',
++                    regions: [],
++                    summary: `视觉模型没有找到“${ target.description }”。`
++                };
++            }
++            return {
++                modelCalls: 1,
++                status: 'located',
++                regions: [{
++                    id: `visual-${ randomUUID() }`,
++                    boundingBox: {
++                        height: rect.height,
++                        width: rect.width,
++                        x: rect.left,
++                        y: rect.top
++                    },
++                    context: target.scope ? [ target.scope ] : [],
++                    description: target.description
++                }],
++                summary: `视觉模型发现了“${ target.description }”的页面区域。`
++            };
++        } catch (error) {
++            signal.throwIfAborted();
++            return {
++                modelCalls: 1,
++                status: 'not-found',
++                regions: [],
++                summary: `视觉定位失败：${
++                    error instanceof Error ? error.message : '未知错误'
++                }`
++            };
++        } finally {
++            await agent.destroy();
++        }
++    };
++}
++
++/** relation 在 Phase 2 仍不进入视觉 Prompt。 */
++export function buildVisualLocatePrompt(
++    target: SemanticTarget,
++    perception: PagePerception
++): string {
++    return [
++        `请只定位当前页面中的目标：${ target.description }。`,
++        target.scope ? `业务范围：${ target.scope }。` : '',
++        `当前页面标题：${ perception.dom.page.title }。`,
++        '只返回目标区域，不要点击、悬浮、滚动或改变页面。'
++    ].filter(Boolean).join('\n');
++}
++
++function isValidNumber(value: number): boolean {
++    return Number.isFinite(value);
++}
++
++/** 主动终止只结束等待；Midscene 后台结果仍由 Promise 安全消费。 */
++async function waitForVisualResult<T>(
++    task: Promise<T>,
++    signal: AbortSignal
++): Promise<T> {
++    signal.throwIfAborted();
++    return await new Promise<T>((resolve, reject) => {
++        const cleanup = (): void => signal.removeEventListener(
++            'abort',
++            onAbort
++        );
++        const onAbort = (): void => {
++            cleanup();
++            reject(signal.reason ?? new Error('视觉定位已终止。'));
++        };
++        signal.addEventListener('abort', onAbort, { once: true });
++        task.then(
++            (result) => {
++                cleanup();
++                resolve(result);
++            },
++            (error: unknown) => {
++                cleanup();
++                reject(error);
++            }
++        );
++    });
++}
+diff --git a/server/src/services/run_debug.service.ts b/server/src/services/run_debug.service.ts
+index 7bb98db..a290b24 100644
+--- a/server/src/services/run_debug.service.ts
++++ b/server/src/services/run_debug.service.ts
+@@ -6,9 +6,10 @@ import type {
+ } from '@ai-web-test-engine/core';
+ import path from 'node:path';
+ import {
+-    DeterministicTargetGrounder,
++    CompositeTargetGrounder,
+     ModelActionPlanner,
+     ModelVerdictEvaluator,
++    PerceptionService,
+     RunCoordinator,
+     semanticActionSchema,
+     verdictDecisionSchema,
+@@ -17,13 +18,18 @@ import { service } from 'nstarter-core';
+ import {
+     JiandaoyunLoginBrowserAdapter,
+     PlaywrightBrowserAdapter,
++    PlaywrightCandidateMappingAdapter,
++    PlaywrightPagePerceptionAdapter,
+ } from '../adapters/browser';
+ import { resolveArtifactRootDirectories } from '../adapters/storage/artifact_root';
+ import { LocalEnvironmentValueResolver } from '../adapters/environment';
+ import { LoggingRunEventPublisher } from '../adapters/events';
+ import { LocalArtifactStore } from '../adapters/storage/local_artifact_store';
+-import { MidsceneVisualCandidateAnnotator } from '../adapters/visual';
+ import { config } from '../config';
++import {
++    DisabledVisualGroundingAdapter,
++    MidsceneVisualGroundingAdapter,
++} from '../adapters/visual';
+ import {
+     createConfiguredIntentBuilder,
+     createConfiguredModelAdapter,
+@@ -72,16 +78,18 @@ function createConfiguredExecutionEngine(
+         config.storage.artifact_root
+     )[0];
+     const modelAdapter = createConfiguredModelAdapter();
+-    const visualGroundingEnabled =
+-        config.components.visual_grounding?.enabled !== false;
+-    const baseBrowserAdapter = new PlaywrightBrowserAdapter({
+-        ...visualGroundingEnabled
+-            ? {
+-                visualCandidateAnnotator:
+-                    new MidsceneVisualCandidateAnnotator()
+-            }
+-            : {}
+-    });
++    const baseBrowserAdapter = new PlaywrightBrowserAdapter();
++    const visualGrounding =
++        config.components.visual_grounding?.enabled === false
++            ? new DisabledVisualGroundingAdapter()
++            : new MidsceneVisualGroundingAdapter(baseBrowserAdapter);
++    const perceptionService = new PerceptionService(
++        new PlaywrightPagePerceptionAdapter(baseBrowserAdapter)
++    );
++    const targetGrounder = new CompositeTargetGrounder(
++        new PlaywrightCandidateMappingAdapter(baseBrowserAdapter),
++        visualGrounding
++    );
+     const browserAdapter = setupModules.includes(JIANDAOYUN_LOGIN_MODULE_ID)
+         ? new JiandaoyunLoginBrowserAdapter(baseBrowserAdapter, {
+             cacheRoot: path.join(
+@@ -107,7 +115,8 @@ function createConfiguredExecutionEngine(
+                     timeoutMs: 300_000
+                 }
+             ),
+-            targetGrounder: new DeterministicTargetGrounder(),
++            perceptionService,
++            targetGrounder,
+             verdictEvaluator: new ModelVerdictEvaluator(
+                 modelAdapter,
+                 verdictDecisionSchema,
+diff --git a/server/test/server/adapters/browser/playwright_browser_adapter.test.ts b/server/test/server/adapters/browser/playwright_browser_adapter.test.ts
+index ec095c9..98b2bae 100644
+--- a/server/test/server/adapters/browser/playwright_browser_adapter.test.ts
++++ b/server/test/server/adapters/browser/playwright_browser_adapter.test.ts
+@@ -923,93 +923,6 @@ describe('PlaywrightBrowserAdapter', () => {
+         }
+     }).timeout(15_000);
+ 
+-    it('批量标注已有候选框并继续使用原 DOM Locator 点击', async () => {
+-        let annotatedCandidateCount = 0;
+-        const adapter = new PlaywrightBrowserAdapter({
+-            visualCandidateAnnotator: {
+-                annotate: (_page, candidates) => {
+-                    annotatedCandidateCount = candidates.length;
+-                    return Promise.resolve(candidates.map((candidate) => ({
+-                        candidateId: candidate.candidateId,
+-                        visualDescription: candidate.attributes.id ===
+-                            'favorite'
+-                            ? '空心五角星图标，收藏按钮'
+-                            : '齿轮图标，设置按钮',
+-                        elementType: '图标按钮',
+-                        confidence: 0.96
+-                    })));
+-                }
+-            }
+-        });
+-        const session = await adapter.start(START_OPTIONS);
+-
+-        try {
+-            const page = requireManagedPage(adapter, session);
+-            await page.setContent([
+-                '<!doctype html><body>',
+-                '<button id="favorite" style="position:fixed;left:20px;',
+-                'top:20px;width:50px;height:50px">☆</button>',
+-                '<button id="settings" style="position:fixed;left:90px;',
+-                'top:20px;width:50px;height:50px">⚙</button>',
+-                '<script>',
+-                'document.querySelector("#favorite").addEventListener(',
+-                '"click", () => { document.body.dataset.clicked = "true"; });',
+-                '</script>',
+-                '</body>'
+-            ].join(''));
+-            const ordinary = await adapter.observe(session);
+-            const favorite = ordinary.interactiveElements.find(
+-                (element) => element.attributes.id === 'favorite'
+-            );
+-            assert.ok(favorite);
+-
+-            const result = await adapter.enhanceObservationWithVision(
+-                session,
+-                ordinary,
+-                new AbortController().signal
+-            );
+-
+-            assert.equal(result.status, 'grounded', result.summary);
+-            const candidate = result.observation?.interactiveElements.find(
+-                (element) => element.candidateId === favorite.candidateId
+-            );
+-            assert.equal(candidate?.discoverySource, 'vision-assisted');
+-            assert.equal(
+-                candidate?.visualDescription,
+-                '空心五角星图标，收藏按钮；类型：图标按钮；置信度：0.96'
+-            );
+-            assert.equal(candidate?.attributes.id, 'favorite');
+-            assert.equal(annotatedCandidateCount, 2);
+-            assert.equal(
+-                result.observation?.interactiveElements.length,
+-                ordinary.interactiveElements.length
+-            );
+-            assert.deepEqual(
+-                result.candidateIds,
+-                ordinary.interactiveElements.map(
+-                    ({ candidateId }) => candidateId
+-                )
+-            );
+-            const clickResult = await adapter.execute(session, {
+-                type: 'CLICK',
+-                target: {
+-                    candidateId: favorite.candidateId,
+-                    description: '收藏按钮'
+-                },
+-                expectedEffect: '添加收藏',
+-                reasonSummary: '选择视觉增强候选',
+-                risk: 'read-only'
+-            });
+-            assert.equal(clickResult.status, 'executed');
+-            assert.equal(
+-                await page.locator('body').getAttribute('data-clicked'),
+-                'true'
+-            );
+-        } finally {
+-            await adapter.close(session);
+-        }
+-    }).timeout(15_000);
+-
+     it('拒绝尚未支持的动作和不安全的导航地址', async () => {
+         const adapter = new PlaywrightBrowserAdapter();
+         const session = await adapter.start(START_OPTIONS);
+diff --git a/server/test/server/adapters/browser/playwright_candidate_mapping_adapter.test.ts b/server/test/server/adapters/browser/playwright_candidate_mapping_adapter.test.ts
+new file mode 100644
+index 0000000..19e181a
+--- /dev/null
++++ b/server/test/server/adapters/browser/playwright_candidate_mapping_adapter.test.ts
+@@ -0,0 +1,226 @@
++import assert from 'node:assert/strict';
++import type {
++    PagePerception,
++    SemanticAction,
++    VisualRegion,
++} from '@ai-web-test-engine/core';
++import {
++    captureInteractionState,
++    PlaywrightBrowserAdapter,
++    PlaywrightCandidateMappingAdapter,
++} from '../../../../src/adapters/browser';
++
++const START_OPTIONS = {
++    headless: true,
++    viewport: { width: 800, height: 600 }
++};
++
++describe('PlaywrightCandidateMappingAdapter', () => {
++    it('把 DOM candidate 外的视觉星标注册为 visual-* candidate 后执行', async () => {
++        const browser = new PlaywrightBrowserAdapter();
++        const session = await browser.start(START_OPTIONS);
++        try {
++            const page = browser.getPage(session);
++            await page.setContent([
++                '<style>.star{display:block;width:48px;height:48px;',
++                'font-size:32px}</style>',
++                '<details class="card">应用 11<summary class="star">',
++                '☆</summary></details>',
++                '<script>document.querySelector(".star").addEventListener(',
++                '"click",()=>document.body.dataset.favorite="true")</script>'
++            ].join(''));
++            const observation = await browser.observe(session);
++            assert.equal(observation.interactiveElements.some(
++                ({ attributes }) => attributes.class === 'star'
++            ), false);
++            const box = await page.locator('.star').boundingBox();
++            assert.ok(box);
++            const mapper = new PlaywrightCandidateMappingAdapter(browser);
++            const result = await mapper.map(
++                session,
++                createPerception(observation),
++                createClickAction(),
++                { source: 'visual', regions: [ createRegion(box) ] },
++                new AbortController().signal
++            );
++
++            assert.equal(result.status, 'mapped', result.summary);
++            const candidate = result.candidates[0];
++            assert.match(candidate.candidateId, /^visual-/u);
++            assert.equal(candidate.actionCompatible, true);
++            assert.equal(candidate.interactionState.hitTest, 'receives-events');
++            const execution = await browser.execute(
++                session,
++                {
++                    type: 'CLICK',
++                    target: {
++                        candidateId: candidate.candidateId,
++                        description: '应用 11 的收藏星标'
++                    },
++                    expectedEffect: '应用 11 被收藏',
++                    reasonSummary: '执行已完成物理绑定的语义动作'
++                },
++                {
++                    description: '应用 11 的收藏星标',
++                    observationId: observation.observationId,
++                    candidateId: candidate.candidateId,
++                    elementSnapshot: candidate.elementSnapshot,
++                    strategy: 'candidate-id',
++                    locatorData: {},
++                    confidence: 0.85,
++                    unique: true,
++                    actionable: true,
++                    evidence: candidate.evidence
++                }
++            );
++            assert.equal(execution.status, 'executed');
++            assert.equal(await page.locator('body').getAttribute(
++                'data-favorite'
++            ), 'true');
++        } finally {
++            await browser.close(session);
++        }
++    }).timeout(15_000);
++
++    it('scope 已由视觉 bbox 区分时只映射应用 11，不混淆重复星标', async () => {
++        const browser = new PlaywrightBrowserAdapter();
++        const session = await browser.start(START_OPTIONS);
++        try {
++            const page = browser.getPage(session);
++            await page.setContent([
++                '<style>.star{display:block;width:40px;height:40px}</style>',
++                '<details id="app11">应用 11<summary class="star">',
++                '☆</summary></details>',
++                '<details id="app12">应用 12<summary class="star">',
++                '☆</summary></details>'
++            ].join(''));
++            const observation = await browser.observe(session);
++            const box = await page.locator('#app11 .star').boundingBox();
++            assert.ok(box);
++            const result = await new PlaywrightCandidateMappingAdapter(
++                browser
++            ).map(
++                session,
++                createPerception(observation),
++                createClickAction(),
++                { source: 'visual', regions: [ createRegion(box) ] },
++                new AbortController().signal
++            );
++
++            assert.equal(result.status, 'mapped', result.summary);
++            assert.equal(
++                await page.locator('#app11 .star').getAttribute(
++                    'data-ai-web-test-candidate'
++                ),
++                result.candidates[0].candidateId
++            );
++            assert.equal(
++                await page.locator('#app12 .star').getAttribute(
++                    'data-ai-web-test-candidate'
++                ),
++                null
++            );
++        } finally {
++            await browser.close(session);
++        }
++    }).timeout(15_000);
++
++    it('视觉区域没有动作兼容元素时返回 unmapped，不创建坐标目标', async () => {
++        const browser = new PlaywrightBrowserAdapter();
++        const session = await browser.start(START_OPTIONS);
++        try {
++            const page = browser.getPage(session);
++            await page.setContent('<span id="plain">仅展示文本</span>');
++            const observation = await browser.observe(session);
++            const box = await page.locator('#plain').boundingBox();
++            assert.ok(box);
++            const result = await new PlaywrightCandidateMappingAdapter(
++                browser
++            ).map(
++                session,
++                createPerception(observation),
++                createClickAction(),
++                { source: 'visual', regions: [ createRegion(box) ] },
++                new AbortController().signal
++            );
++
++            assert.equal(result.status, 'unmapped');
++            assert.deepEqual(result.candidates, []);
++            assert.equal(await page.locator('#plain').getAttribute(
++                'data-ai-web-test-candidate'
++            ), null);
++        } finally {
++            await browser.close(session);
++        }
++    }).timeout(15_000);
++
++    it('多点 hit-test：部分采样点可接收则可执行，全部遮挡才 blocked', async () => {
++        const browser = new PlaywrightBrowserAdapter();
++        const session = await browser.start(START_OPTIONS);
++        try {
++            const page = browser.getPage(session);
++            await page.setContent([
++                '<button id="target" style="position:fixed;left:20px;',
++                'top:20px;width:100px;height:100px">目标</button>',
++                '<div id="overlay" style="position:fixed;left:60px;',
++                'top:60px;width:20px;height:20px;z-index:2"></div>'
++            ].join(''));
++            const observation = await browser.observe(session);
++            const candidateId = observation.interactiveElements.find(
++                ({ attributes }) => attributes.id === 'target'
++            )?.candidateId;
++            assert.ok(candidateId);
++
++            const partial = await captureInteractionState(page, candidateId);
++            assert.equal(partial?.hitTest, 'receives-events');
++
++            await page.evaluate(String.raw`document.querySelector('#overlay')
++                .setAttribute('style', 'position:fixed;left:20px;top:20px;' +
++                    'width:100px;height:100px;z-index:2')`);
++            const covered = await captureInteractionState(page, candidateId);
++            assert.equal(covered?.hitTest, 'blocked');
++            assert.equal(covered?.blockedBy?.tag, 'div');
++        } finally {
++            await browser.close(session);
++        }
++    }).timeout(15_000);
++});
++
++function createClickAction(): SemanticAction {
++    return {
++        type: 'CLICK',
++        target: {
++            description: '收藏星标',
++            scope: '应用 11'
++        },
++        expectedEffect: '应用 11 被收藏',
++        reasonSummary: '下一语义动作明确'
++    };
++}
++
++function createPerception(
++    dom: PagePerception['dom']
++): PagePerception {
++    return {
++        perceptionId: 'perception-1',
++        capturedAt: dom.capturedAt,
++        accessibility: {
++            nodes: [],
++            source: 'playwright-aria-snapshot',
++            truncated: false
++        },
++        dom,
++        interactionStates: {}
++    };
++}
++
++function createRegion(
++    boundingBox: VisualRegion['boundingBox']
++): VisualRegion {
++    return {
++        id: 'visual-region-1',
++        boundingBox,
++        context: [ '应用 11' ],
++        description: '收藏星标'
++    };
++}
+diff --git a/server/test/server/adapters/browser/playwright_page_perception_adapter.test.ts b/server/test/server/adapters/browser/playwright_page_perception_adapter.test.ts
+new file mode 100644
+index 0000000..20e4421
+--- /dev/null
++++ b/server/test/server/adapters/browser/playwright_page_perception_adapter.test.ts
+@@ -0,0 +1,30 @@
++import assert from 'node:assert/strict';
++
++import {
++    parseAriaSnapshot,
++} from '../../../../src/adapters/browser';
++
++describe('PlaywrightPagePerceptionAdapter', () => {
++    it('解析 AI aria snapshot 的语义、状态、bbox 和祖先上下文', () => {
++        const nodes = parseAriaSnapshot([
++            '- region "应用11" [ref=e1] [box=10,20,300,200]:',
++            '  - button "收藏" [ref=e2] [box=20,30,24,24] [disabled]',
++            '  - checkbox "启用" [ref=e3] [checked=mixed]'
++        ].join('\n'));
++
++        assert.equal(nodes[0].role, 'region');
++        assert.deepEqual(nodes[0].boundingBox, {
++            height: 200,
++            width: 300,
++            x: 10,
++            y: 20
++        });
++        assert.equal(nodes[0].children[0].name, '收藏');
++        assert.equal(nodes[0].children[0].disabled, true);
++        assert.deepEqual(nodes[0].children[0].ancestors, [{
++            name: '应用11',
++            role: 'region'
++        }]);
++        assert.equal(nodes[0].children[1].checked, 'mixed');
++    });
++});
+diff --git a/server/test/server/adapters/visual/midscene_visual_grounding_adapter.test.ts b/server/test/server/adapters/visual/midscene_visual_grounding_adapter.test.ts
+new file mode 100644
+index 0000000..fe13bb8
+--- /dev/null
++++ b/server/test/server/adapters/visual/midscene_visual_grounding_adapter.test.ts
+@@ -0,0 +1,54 @@
++import assert from 'node:assert/strict';
++import type {
++    PagePerception,
++    SemanticTarget,
++} from '@ai-web-test-engine/core';
++import {
++    buildVisualLocatePrompt,
++} from '../../../../src/adapters/visual';
++
++describe('MidsceneVisualGroundingAdapter', () => {
++    it('视觉定位 Prompt 使用 description/scope，但忽略 relation', () => {
++        const target: SemanticTarget = {
++            description: '收藏星标',
++            scope: '应用 11',
++            relation: '应用名称左上角'
++        };
++        const prompt = buildVisualLocatePrompt(target, createPerception());
++
++        assert.match(prompt, /收藏星标/u);
++        assert.match(prompt, /应用 11/u);
++        assert.doesNotMatch(prompt, /左上角/u);
++        assert.match(prompt, /不要点击、悬浮、滚动/u);
++    });
++});
++
++function createPerception(): PagePerception {
++    return {
++        perceptionId: 'perception-1',
++        capturedAt: '2026-08-31T00:00:00.000Z',
++        accessibility: {
++            nodes: [],
++            source: 'playwright-aria-snapshot',
++            truncated: false
++        },
++        dom: {
++            schemaVersion: 1,
++            observationId: 'observation-1',
++            capturedAt: '2026-08-31T00:00:00.000Z',
++            page: {
++                loading: false,
++                title: '工作台',
++                url: 'https://example.com/',
++                viewport: { width: 1280, height: 720 }
++            },
++            visibleText: [],
++            interactiveElements: [],
++            notices: [],
++            tabs: [],
++            stateFingerprint: 'fingerprint-1',
++            truncated: false
++        },
++        interactionStates: {}
++    };
++}

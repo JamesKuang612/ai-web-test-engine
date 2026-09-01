@@ -1,9 +1,0 @@
-schemaVersion: 1
-id: test-5533ac27
-name: 验证添加收藏
-environmentId: jiandaoyun-test
-startUrl: https://test.jdydevelop.com/dashboard#/
-action: ""
-execution:
-  setupModules:
-    - jiandaoyun-login

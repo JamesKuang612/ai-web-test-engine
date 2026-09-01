@@ -1,0 +1,296 @@
+diff --git a/modules/engine-core/src/run/model_recovery_planner.ts b/modules/engine-core/src/run/model_recovery_planner.ts
+index f4054dd56c4c7a40ed14178f6ae92db74420514c..4e766659315ff881f6bf49f19549743e34d2ef38 100644
+--- a/modules/engine-core/src/run/model_recovery_planner.ts
++++ b/modules/engine-core/src/run/model_recovery_planner.ts
+@@ -136,6 +136,7 @@ export class ModelRecoveryPlanner implements RecoveryPlannerPort {
+ 
+ interface SemanticRepairGuard {
+     values: Record<string, string>;
++    nullOnlyPaths: string[];
+ }
+ 
+ const RECOVERY_ACTION_TYPES = new Set([
+@@ -150,9 +151,10 @@ function createSemanticRepairGuard(
+         return undefined;
+     }
+     const values: Record<string, string> = { kind: value.kind };
++    const nullOnlyPaths: string[] = [];
+     if (value.kind === 'stop') {
+         preserveString(values, 'stop.reason', value.reason);
+-        return { values };
++        return { values, nullOnlyPaths };
+     }
+     if (!isRecord(value.action)) {
+         return undefined;
+@@ -171,20 +173,46 @@ function createSemanticRepairGuard(
+             return undefined;
+         }
+         values['target.description'] = action.target.description;
+-        preserveString(values, 'target.scope', action.target.scope);
++        if (!preserveNullableString(
++            values,
++            nullOnlyPaths,
++            'target.scope',
++            action.target.scope
++        )) {
++            return undefined;
++        }
++    }
++    if (actionType === 'SCROLL' && (
++        !preserveRequiredEnum(values, 'direction', action.direction, [
++            'up', 'down'
++        ])
++        || !preserveRequiredEnum(values, 'amount', action.amount, [
++            'small', 'medium', 'page'
++        ])
++    )) {
++        return undefined;
++    }
++    if (
++        actionType === 'WAIT'
++        && !preserveRequiredEnum(
++            values,
++            'duration',
++            action.duration,
++            [ 'short', 'medium' ]
++        )
++    ) {
++        return undefined;
+     }
+-    preserveEnum(values, 'direction', action.direction, [ 'up', 'down' ]);
+-    preserveEnum(values, 'amount', action.amount, [
+-        'small', 'medium', 'page'
+-    ]);
+-    preserveEnum(values, 'duration', action.duration, [ 'short', 'medium' ]);
+     preserveString(values, 'reasonSummary', action.reasonSummary);
+-    preserveString(
++    if (!preserveNullableString(
+         values,
++        nullOnlyPaths,
+         'expectedTransientEffect',
+         action.expectedTransientEffect
+-    );
+-    return { values };
++    )) {
++        return undefined;
++    }
++    return { values, nullOnlyPaths };
+ }
+ 
+ function changedSemanticPaths(
+@@ -195,9 +223,13 @@ function changedSemanticPaths(
+     if (!repairedGuard) {
+         return [ 'strategy.identity' ];
+     }
+-    return Object.entries(guard.values)
++    const changedValues = Object.entries(guard.values)
+         .filter(([ path, value ]) => repairedGuard.values[path] !== value)
+         .map(([ path ]) => path);
++    const inventedValues = guard.nullOnlyPaths.filter(
++        (path) => repairedGuard.values[path] !== undefined
++    );
++    return [ ...new Set([ ...changedValues, ...inventedValues ]) ];
+ }
+ 
+ function unavailableRepair(
+@@ -245,15 +277,34 @@ function preserveString(
+     }
+ }
+ 
+-function preserveEnum(
++function preserveRequiredEnum(
+     output: Record<string, string>,
+     path: string,
+     value: unknown,
+     allowed: string[]
+-): void {
++): boolean {
+     if (typeof value === 'string' && allowed.includes(value)) {
+         output[path] = value;
++        return true;
++    }
++    return false;
++}
++
++function preserveNullableString(
++    output: Record<string, string>,
++    nullOnlyPaths: string[],
++    path: string,
++    value: unknown
++): boolean {
++    if (value === undefined || value === null) {
++        nullOnlyPaths.push(path);
++        return true;
++    }
++    if (!nonEmptyString(value)) {
++        return false;
+     }
++    output[path] = value;
++    return true;
+ }
+ 
+ function nonEmptyString(value: unknown): value is string {
+diff --git a/modules/engine-core/test/model_recovery_services.test.ts b/modules/engine-core/test/model_recovery_services.test.ts
+index 87e842e4d44c20a004e9cb45d9e318daeb55c5b2..b70360eebebff5fdd20cfb51ad4a2226db4f70f4 100644
+--- a/modules/engine-core/test/model_recovery_services.test.ts
++++ b/modules/engine-core/test/model_recovery_services.test.ts
+@@ -100,6 +100,7 @@ describe('Phase 3 model recovery services', () => {
+             status: 'protocol-invalid',
+             diagnostic
+         });
++        assert.equal(planner.canRepairProtocol(diagnostic), true);
+         assert.equal(planner.repairProtocol !== undefined, true);
+         const repaired = await planner.repairProtocol(
+             diagnostic,
+@@ -158,6 +159,77 @@ describe('Phase 3 model recovery services', () => {
+         );
+     });
+ 
++    it('HOVER scope 缺失时 repair 不得发明非空 scope', async () => {
++        const diagnostic = hoverProtocolDiagnostic();
++        const planner = new ModelRecoveryPlanner(new FakeModelAdapter({
++            kind: 'recover',
++            action: {
++                type: 'HOVER',
++                target: {
++                    description: '应用11卡片',
++                    scope: '设置区域'
++                },
++                expectedTransientEffect: null,
++                reasonSummary: '显示收藏入口'
++            },
++            reason: null
++        }));
++
++        const repaired = await planner.repairProtocol(diagnostic, signal());
++
++        assert.equal(repaired.status, 'unavailable');
++        assert.equal(
++            repaired.status === 'unavailable'
++                ? repaired.diagnostic.schemaIssues.some(
++                    ({ path }) => path === 'target.scope'
++                )
++                : false,
++            true
++        );
++    });
++
++    it('缺失 expectedTransientEffect 时 repair 只能补 null', async () => {
++        const diagnostic = hoverProtocolDiagnostic();
++        const planner = new ModelRecoveryPlanner(new FakeModelAdapter({
++            kind: 'recover',
++            action: {
++                type: 'HOVER',
++                target: { description: '应用11卡片', scope: null },
++                expectedTransientEffect: '打开设置区域',
++                reasonSummary: '显示收藏入口'
++            },
++            reason: null
++        }));
++
++        const repaired = await planner.repairProtocol(diagnostic, signal());
++
++        assert.equal(repaired.status, 'unavailable');
++        assert.equal(
++            repaired.status === 'unavailable'
++                ? repaired.diagnostic.schemaIssues.some(
++                    ({ path }) => path === 'expectedTransientEffect'
++                )
++                : false,
++            true
++        );
++    });
++
++    it('SCROLL 缺 direction/amount 时不调用 repair', async () => {
++        await assertUnrepairableActionDoesNotCallModel({
++            type: 'SCROLL',
++            expectedTransientEffect: null,
++            reasonSummary: '查找目标'
++        });
++    });
++
++    it('WAIT 缺 duration 时不调用 repair', async () => {
++        await assertUnrepairableActionDoesNotCallModel({
++            type: 'WAIT',
++            expectedTransientEffect: null,
++            reasonSummary: '等待页面'
++        });
++    });
++
+     it('缺少 Recovery strategy identity 时不调用 repair 模型', async () => {
+         const diagnostic = unrepairableProtocolDiagnostic();
+         const adapter = new FakeModelAdapter({
+@@ -299,6 +371,36 @@ function unrepairableProtocolDiagnostic(): ModelProtocolDiagnostic {
+     };
+ }
+ 
++async function assertUnrepairableActionDoesNotCallModel(
++    action: Record<string, unknown>
++): Promise<void> {
++    const diagnostic: ModelProtocolDiagnostic = {
++        schemaVersion: 1,
++        modelRole: 'recovery-planner',
++        phase: 'initial',
++        failureType: 'schema-invalid',
++        parsedJson: { kind: 'recover', action, reason: null },
++        schemaIssues: [{
++            path: 'RecoveryDecision.action',
++            code: 'missing-field',
++            message: '执行策略参数缺失。'
++        }],
++        sanitized: true,
++        truncated: false
++    };
++    const adapter = new FakeModelAdapter({
++        kind: 'stop', action: null, reason: '不应调用'
++    });
++    const planner = new ModelRecoveryPlanner(adapter);
++
++    assert.equal(planner.canRepairProtocol(diagnostic), false);
++    assert.equal(
++        (await planner.repairProtocol(diagnostic, signal())).status,
++        'unavailable'
++    );
++    assert.equal(adapter.requests.length, 0);
++}
++
+ function signal(): AbortSignal {
+     return new AbortController().signal;
+ }
+diff --git a/server/src/adapters/model/model_protocol_diagnostic.ts b/server/src/adapters/model/model_protocol_diagnostic.ts
+index 1b4d7aae1ec4192319a6aefa2f8aab683deb8258..1f78afd27ec31b9623cf75fa87b4ad70dc32ef9f 100644
+--- a/server/src/adapters/model/model_protocol_diagnostic.ts
++++ b/server/src/adapters/model/model_protocol_diagnostic.ts
+@@ -16,7 +16,7 @@ const MAX_OBJECT_KEYS = 50;
+ const MAX_DEPTH = 6;
+ const SENSITIVE_KEY = /(?:authorization|cookie|credential|password|secret|token)/iu;
+ const RAW_HEADER_SECRET = /(["']?(?:authorization|cookie)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n}]+)/giu;
+-const RAW_NAMED_SECRET = /(["']?(?:credential|password|secret|token)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}\]]+)/giu;
++const RAW_NAMED_SECRET = /(["']?(?:credential|password|secret|token)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n}]+)/giu;
+ const URL_PATTERN = /https?:\/\/[^\s"'<>]+/giu;
+ 
+ interface DiagnosticInput {
+diff --git a/server/test/server/adapters/model/codex_app_server_model_adapter.test.ts b/server/test/server/adapters/model/codex_app_server_model_adapter.test.ts
+index 1779b515b8dfa4b1219d62c9cdb34dc73a40da1f..65733991f8f802595231c67fa09bd6b4fedffc83 100644
+--- a/server/test/server/adapters/model/codex_app_server_model_adapter.test.ts
++++ b/server/test/server/adapters/model/codex_app_server_model_adapter.test.ts
+@@ -102,6 +102,9 @@ describe('CodexAppServerModelAdapter', () => {
+                 'password="multi word password"',
+                 "token='multi word token'",
+                 'credential = "multi word credential"',
++                'password: my secret password',
++                'token=alpha beta gamma',
++                'credential: foo bar baz',
+                 'https://example.test/path?q=query-secret#fragment-secret',
+                 'not-json'
+             ].join('\n')
+@@ -122,6 +125,9 @@ describe('CodexAppServerModelAdapter', () => {
+                     'multi word password',
+                     'multi word token',
+                     'multi word credential',
++                    'my secret password',
++                    'alpha beta gamma',
++                    'foo bar baz',
+                     'query-secret',
+                     'fragment-secret'
+                 ].forEach((secret) => assert.equal(

@@ -1,0 +1,2655 @@
+diff --git a/modules/engine-core/src/contracts/trace.ts b/modules/engine-core/src/contracts/trace.ts
+index 2fade85ca82c2633b813df3965a501098acabf0c..4528baf4b8de259c087defb21a49bec7cb92f3a4 100644
+--- a/modules/engine-core/src/contracts/trace.ts
++++ b/modules/engine-core/src/contracts/trace.ts
+@@ -94,3 +94,19 @@ export interface TraceEvent {
+     retryOf?: number;
+     artifacts: EvidenceRef[];
+ }
++
++/** 对已持久化 execution fact 的后续判定；不修改原始 TraceEvent。 */
++export interface ActionTraceAdjudication {
++    schemaVersion: EngineSchemaVersion;
++    runId: string;
++    traceSequence: number;
++    status: 'completed';
++    semanticStepId?: string;
++    origin: 'planner' | 'recovery';
++    recoveryOutcome?: 'progress' | 'no-progress' | 'wrong-state';
++    semanticStepProgress?: SemanticStepProgress;
++    compilationContribution: CompilationContribution;
++    afterObservationRef: string;
++    effect: EffectVerification;
++    artifacts: EvidenceRef[];
++}
+diff --git a/modules/engine-core/src/planning/semantic_action_schema.ts b/modules/engine-core/src/planning/semantic_action_schema.ts
+index b7842e6ea6ea3b9f2e266cf9e23f8245c0dec76e..09da6c358132e41b39380873ee7815c11b0e82b5 100644
+--- a/modules/engine-core/src/planning/semantic_action_schema.ts
++++ b/modules/engine-core/src/planning/semantic_action_schema.ts
+@@ -53,10 +53,10 @@ const JSON_SCHEMA: Record<string, JsonValue> = {
+             anyOf: [{
+                 type: 'object',
+                 additionalProperties: false,
+-                required: ['description'],
++                required: ['description', 'scope'],
+                 properties: {
+                     description: { type: 'string', minLength: 1 },
+-                    scope: { type: 'string', minLength: 1 }
++                    scope: { type: ['string', 'null'], minLength: 1 }
+                 }
+             }, { type: 'null' }]
+         },
+@@ -154,7 +154,7 @@ function parseTarget(value: unknown): SemanticTarget {
+             object.description,
+             `${ path }.description`
+         ),
+-        ...object.scope === undefined
++        ...object.scope === undefined || object.scope === null
+             ? {}
+             : { scope: requireNonEmptyString(object.scope, `${ path }.scope`) }
+     };
+diff --git a/modules/engine-core/src/ports/model_adapter.ts b/modules/engine-core/src/ports/model_adapter.ts
+index 478b71dc05eb30c5734b1f27814e3ac6a106720b..f5acf318063d23153ce3177e494b2d25d4fab503 100644
+--- a/modules/engine-core/src/ports/model_adapter.ts
++++ b/modules/engine-core/src/ports/model_adapter.ts
+@@ -2,6 +2,62 @@ import type {
+     JsonValue,
+ } from '../contracts';
+ 
++export type ModelRole =
++    | 'action-planner'
++    | 'intent-builder'
++    | 'recovery-planner'
++    | 'step-progress'
++    | 'verdict-evaluator';
++
++export type ModelProtocolFailureType =
++    | 'invalid-json'
++    | 'model-timeout'
++    | 'provider-unavailable'
++    | 'schema-invalid';
++
++export interface ModelProtocolSchemaIssue {
++    path: string;
++    code: string;
++    message: string;
++}
++
++/** 已在 provider 边界脱敏、截断，可安全持久化的模型协议诊断。 */
++export interface ModelProtocolDiagnostic {
++    schemaVersion: 1;
++    modelRole: ModelRole;
++    phase: 'initial' | 'repair';
++    failureType: ModelProtocolFailureType;
++    model?: string;
++    requestId?: string;
++    rawOutputPreview?: string;
++    rawSha256?: string;
++    parsedJson?: JsonValue;
++    schemaIssues: ModelProtocolSchemaIssue[];
++    sanitized: true;
++    truncated: boolean;
++}
++
++/** 只表示已分类的模型/provider 失败；内部程序错误不得包装成该类型。 */
++export class ClassifiedModelFailure extends Error {
++    constructor(
++        public readonly failureType: ModelProtocolFailureType,
++        message: string,
++        public readonly diagnostic: ModelProtocolDiagnostic
++    ) {
++        super(message);
++        this.name = 'ClassifiedModelFailure';
++    }
++}
++
++/** RuntimeSchema 用明确路径报告本地可信边界的校验失败。 */
++export class RuntimeSchemaValidationError extends Error {
++    constructor(public readonly issues: ModelProtocolSchemaIssue[]) {
++        super(issues.map(({ path, message }) =>
++            `${ path }: ${ message }`).join('; '));
++        this.name = 'RuntimeSchemaValidationError';
++    }
++}
++
+ /** 同时提供 JSON Schema 和运行时解析器，约束模型输出。 */
+ export interface RuntimeSchema<T> {
+     name: string;
+@@ -16,6 +72,8 @@ export interface ModelRequest {
+     userPrompt: string;
+     timeoutMs: number;
+     maxOutputTokens: number;
++    modelRole?: ModelRole;
++    protocolPhase?: 'initial' | 'repair';
+ }
+ 
+ /** 已通过结构化校验的模型结果及其调用标识。 */
+diff --git a/modules/engine-core/src/replay/productive_trace_selector.ts b/modules/engine-core/src/replay/productive_trace_selector.ts
+index e9aafd0577d5eb820667112e14b20c8f0083e75b..0446139dd2aa81fe1a9d49832bb86b28ee8546a0 100644
+--- a/modules/engine-core/src/replay/productive_trace_selector.ts
++++ b/modules/engine-core/src/replay/productive_trace_selector.ts
+@@ -6,6 +6,7 @@ import type {
+ export interface CompilationContributionRecord {
+     command: Pick<ActionCommand, 'type'>;
+     compilationContribution?: CompilationContribution;
++    adjudicationStatus?: 'completed';
+ }
+ 
+ /** Runtime progress 与编译生产性分离；BACK 无条件保持 Trace-only。 */
+@@ -13,6 +14,8 @@ export function selectProductiveActions<
+     T extends CompilationContributionRecord
+ >(actions: T[]): T[] {
+     return actions.filter((action) => (
++        action.adjudicationStatus === 'completed'
++        &&
+         action.compilationContribution === 'productive'
+         && action.command.type !== 'BACK'
+     ));
+diff --git a/modules/engine-core/src/run/deterministic_recovery_planner.ts b/modules/engine-core/src/run/deterministic_recovery_planner.ts
+index 9180790a88bccb072298c2455518deb9f3d1bb15..9dcaff430a1e52421d7326a094cdab0a203cbcc5 100644
+--- a/modules/engine-core/src/run/deterministic_recovery_planner.ts
++++ b/modules/engine-core/src/run/deterministic_recovery_planner.ts
+@@ -2,15 +2,12 @@ import type {
+     RecoveryDecision,
+     RecoveryPlannerInput,
+ } from '../contracts';
+-import type {
+-    RecoveryPlannerPort,
+-} from './recovery_ports';
+ import {
+     isSpecificRecoveryTarget,
+ } from './recovery_target_quality_policy';
+ 
+ /** 只提出当前感知能够明确证明安全且通用的 transient 恢复。 */
+-export class DeterministicRecoveryPlanner implements RecoveryPlannerPort {
++export class DeterministicRecoveryPlanner {
+     public async plan(
+         input: RecoveryPlannerInput
+     ): Promise<RecoveryDecision> {
+diff --git a/modules/engine-core/src/run/model_recovery_planner.ts b/modules/engine-core/src/run/model_recovery_planner.ts
+index 7aee4ed0a6c64a9b1d94cf5e2e94de8a5df3d93e..6c7dfdc896da8db7468fb4570e3beef1ad231a37 100644
+--- a/modules/engine-core/src/run/model_recovery_planner.ts
++++ b/modules/engine-core/src/run/model_recovery_planner.ts
+@@ -5,10 +5,17 @@ import type {
+     SemanticTarget,
+ } from '../contracts';
+ import type {
++    ModelProtocolDiagnostic,
+     ModelAdapter,
++    ModelRequest,
+     RuntimeSchema,
+ } from '../ports';
++import {
++    ClassifiedModelFailure,
++    RuntimeSchemaValidationError,
++} from '../ports';
+ import type {
++    RecoveryPlannerAttempt,
+     RecoveryPlannerPort,
+ } from './recovery_ports';
+ 
+@@ -32,8 +39,8 @@ export class ModelRecoveryPlanner implements RecoveryPlannerPort {
+     public async plan(
+         input: RecoveryPlannerInput,
+         signal: AbortSignal
+-    ): Promise<RecoveryDecision> {
+-        const result = await this.modelAdapter.generateStructured({
++    ): Promise<RecoveryPlannerAttempt> {
++        return await this.generate({
+             systemPrompt: [
+                 '你是 Web 测试单步恢复规划器，不是主任务规划器。',
+                 '原始 primaryAction 永远不变；只能提出低风险、可逆、临时状态恢复。',
+@@ -44,78 +51,224 @@ export class ModelRecoveryPlanner implements RecoveryPlannerPort {
+             ].join('\n'),
+             userPrompt: JSON.stringify(input, null, 2),
+             timeoutMs: this.options.timeoutMs,
+-            maxOutputTokens: this.options.maxOutputTokens
+-        }, recoveryDecisionSchema, signal);
+-        return result.value;
++            maxOutputTokens: this.options.maxOutputTokens,
++            modelRole: 'recovery-planner',
++            protocolPhase: 'initial'
++        }, signal);
++    }
++
++    public async repairProtocol(
++        diagnostic: ModelProtocolDiagnostic,
++        signal: AbortSignal
++    ): Promise<RecoveryPlannerAttempt> {
++        return await this.generate({
++            systemPrompt: [
++                '你只负责修复 RecoveryDecision JSON 的协议结构。',
++                '不得重新规划策略，不得改变原动作意图、目标或理由。',
++                '仅根据校验错误调整字段、null 和对象结构。',
++                '只输出符合给定 JSON Schema 的 JSON。'
++            ].join('\n'),
++            userPrompt: JSON.stringify({
++                originalDecision: diagnostic.parsedJson ??
++                    diagnostic.rawOutputPreview,
++                schemaIssues: diagnostic.schemaIssues
++            }, null, 2),
++            timeoutMs: this.options.timeoutMs,
++            maxOutputTokens: this.options.maxOutputTokens,
++            modelRole: 'recovery-planner',
++            protocolPhase: 'repair'
++        }, signal);
++    }
++
++    private async generate(
++        request: ModelRequest,
++        signal: AbortSignal
++    ): Promise<RecoveryPlannerAttempt> {
++        try {
++            const result = await this.modelAdapter.generateStructured(
++                request,
++                recoveryDecisionSchema,
++                signal
++            );
++            return { status: 'decision', decision: result.value };
++        } catch (error) {
++            if (!(error instanceof ClassifiedModelFailure)) {
++                throw error;
++            }
++            if (
++                error.failureType === 'invalid-json'
++                || error.failureType === 'schema-invalid'
++            ) {
++                return {
++                    status: 'protocol-invalid',
++                    diagnostic: error.diagnostic
++                };
++            }
++            return {
++                status: 'unavailable',
++                reason: error.message,
++                diagnostic: error.diagnostic
++            };
++        }
+     }
+ }
+ 
+ const recoveryDecisionSchema: RuntimeSchema<RecoveryDecision> = {
+     name: 'RecoveryDecision',
+     jsonSchema: {
+-        oneOf: [
+-            {
+-                type: 'object',
+-                additionalProperties: false,
+-                required: [ 'kind', 'action' ],
+-                properties: {
+-                    kind: { const: 'recover' },
+-                    action: {
+-                        type: 'object',
+-                        additionalProperties: false,
+-                        required: [ 'type', 'reasonSummary' ],
+-                        properties: {
+-                            type: {
+-                                enum: [
+-                                    'CLEAR', 'CLICK', 'HOVER', 'SCROLL',
+-                                    'WAIT', 'BACK', 'REOBSERVE'
+-                                ]
+-                            },
+-                            target: {
+-                                type: 'object',
+-                                additionalProperties: false,
+-                                required: [ 'description' ],
+-                                properties: {
+-                                    description: { type: 'string' },
+-                                    scope: { type: 'string' }
+-                                }
+-                            },
+-                            direction: { enum: [ 'up', 'down' ] },
+-                            amount: { enum: [ 'small', 'medium', 'page' ] },
+-                            duration: { enum: [ 'short', 'medium' ] },
+-                            expectedTransientEffect: { type: 'string' },
+-                            reasonSummary: { type: 'string' }
+-                        }
+-                    }
+-                }
++        type: 'object',
++        additionalProperties: false,
++        required: [ 'kind', 'action', 'reason' ],
++        properties: {
++            kind: {
++                type: 'string',
++                enum: [ 'recover', 'stop' ]
+             },
+-            {
++            action: {
++                anyOf: [
++                    targetedRecoveryActionSchema(),
++                    scrollRecoveryActionSchema(),
++                    waitRecoveryActionSchema(),
++                    targetlessRecoveryActionSchema(),
++                    { type: 'null' }
++                ]
++            },
++            reason: { type: [ 'string', 'null' ] }
++        }
++    },
++    parse: parseRecoveryDecision
++};
++
++function targetedRecoveryActionSchema() {
++    return {
++        type: 'object',
++        additionalProperties: false,
++        required: [
++            'type', 'target', 'expectedTransientEffect', 'reasonSummary'
++        ],
++        properties: {
++            type: {
++                type: 'string',
++                enum: [ 'CLEAR', 'CLICK', 'HOVER' ]
++            },
++            target: {
+                 type: 'object',
+                 additionalProperties: false,
+-                required: [ 'kind', 'reason' ],
++                required: [ 'description', 'scope' ],
+                 properties: {
+-                    kind: { const: 'stop' },
+-                    reason: { type: 'string' }
++                    description: { type: 'string', minLength: 1 },
++                    scope: { type: [ 'string', 'null' ], minLength: 1 }
+                 }
+-            }
+-        ]
+-    },
+-    parse: parseRecoveryDecision
+-};
++            },
++            expectedTransientEffect: {
++                type: [ 'string', 'null' ], minLength: 1
++            },
++            reasonSummary: { type: 'string', minLength: 1 }
++        }
++    };
++}
++
++function scrollRecoveryActionSchema() {
++    return {
++        type: 'object',
++        additionalProperties: false,
++        required: [
++            'type', 'direction', 'amount', 'expectedTransientEffect',
++            'reasonSummary'
++        ],
++        properties: {
++            type: { type: 'string', const: 'SCROLL' },
++            direction: { type: 'string', enum: [ 'up', 'down' ] },
++            amount: {
++                type: 'string',
++                enum: [ 'small', 'medium', 'page' ]
++            },
++            expectedTransientEffect: {
++                type: [ 'string', 'null' ], minLength: 1
++            },
++            reasonSummary: { type: 'string', minLength: 1 }
++        }
++    };
++}
++
++function waitRecoveryActionSchema() {
++    return {
++        type: 'object',
++        additionalProperties: false,
++        required: [
++            'type', 'duration', 'expectedTransientEffect', 'reasonSummary'
++        ],
++        properties: {
++            type: { type: 'string', const: 'WAIT' },
++            duration: {
++                type: 'string',
++                enum: [ 'short', 'medium' ]
++            },
++            expectedTransientEffect: {
++                type: [ 'string', 'null' ], minLength: 1
++            },
++            reasonSummary: { type: 'string', minLength: 1 }
++        }
++    };
++}
++
++function targetlessRecoveryActionSchema() {
++    return {
++        type: 'object',
++        additionalProperties: false,
++        required: [ 'type', 'expectedTransientEffect', 'reasonSummary' ],
++        properties: {
++            type: {
++                type: 'string',
++                enum: [ 'BACK', 'REOBSERVE' ]
++            },
++            expectedTransientEffect: {
++                type: [ 'string', 'null' ], minLength: 1
++            },
++            reasonSummary: { type: 'string', minLength: 1 }
++        }
++    };
++}
+ 
+ function parseRecoveryDecision(value: unknown): RecoveryDecision {
+     const object = requireObject(value, 'RecoveryDecision');
+     if (object.kind === 'stop') {
+-        requireFields(object, [ 'kind', 'reason' ], 'RecoveryDecision');
++        requireFields(
++            object,
++            [ 'kind', 'action', 'reason' ],
++            'RecoveryDecision'
++        );
++        if (object.action !== null) {
++            invalid(
++                'RecoveryDecision.action',
++                'invalid-stop-action',
++                'stop.action 必须为 null。'
++            );
++        }
+         return {
+             kind: 'stop',
+             reason: requireString(object.reason, 'RecoveryDecision.reason')
+         };
+     }
+     if (object.kind !== 'recover') {
+-        throw new Error('RecoveryDecision.kind 必须是 recover 或 stop。');
++        invalid(
++            'RecoveryDecision.kind',
++            'invalid-kind',
++            '必须是 recover 或 stop。'
++        );
++    }
++    requireFields(
++        object,
++        [ 'kind', 'action', 'reason' ],
++        'RecoveryDecision'
++    );
++    if (object.reason !== null) {
++        invalid(
++            'RecoveryDecision.reason',
++            'invalid-recover-reason',
++            'recover.reason 必须为 null。'
++        );
+     }
+-    requireFields(object, [ 'kind', 'action' ], 'RecoveryDecision');
+     return {
+         kind: 'recover',
+         action: parseRecoveryAction(object.action)
+@@ -127,6 +280,7 @@ function parseRecoveryAction(value: unknown): RecoveryAction {
+     const type = requireString(object.type, 'RecoveryDecision.action.type');
+     const common = {
+         ...object.expectedTransientEffect === undefined
++            || object.expectedTransientEffect === null
+             ? {}
+             : {
+                 expectedTransientEffect: requireString(
+@@ -152,10 +306,15 @@ function parseRecoveryAction(value: unknown): RecoveryAction {
+         ], 'RecoveryDecision.action', true);
+         return {
+             type,
+-            direction: requireEnum(object.direction, [ 'up', 'down' ]),
++            direction: requireEnum(
++                object.direction,
++                [ 'up', 'down' ],
++                'RecoveryDecision.action.direction'
++            ),
+             amount: requireEnum(
+                 object.amount,
+-                [ 'small', 'medium', 'page' ]
++                [ 'small', 'medium', 'page' ],
++                'RecoveryDecision.action.amount'
+             ),
+             ...common
+         };
+@@ -166,7 +325,11 @@ function parseRecoveryAction(value: unknown): RecoveryAction {
+         ], 'RecoveryDecision.action', true);
+         return {
+             type,
+-            duration: requireEnum(object.duration, [ 'short', 'medium' ]),
++            duration: requireEnum(
++                object.duration,
++                [ 'short', 'medium' ],
++                'RecoveryDecision.action.duration'
++            ),
+             ...common
+         };
+     }
+@@ -176,7 +339,11 @@ function parseRecoveryAction(value: unknown): RecoveryAction {
+         ], 'RecoveryDecision.action', true);
+         return { type, ...common };
+     }
+-    throw new Error(`不支持的 RecoveryAction：${ type }`);
++    invalid(
++        'RecoveryDecision.action.type',
++        'unsupported-action',
++        `不支持的 RecoveryAction：${ type }`
++    );
+ }
+ 
+ function parseTarget(value: unknown): SemanticTarget {
+@@ -188,7 +355,7 @@ function parseTarget(value: unknown): SemanticTarget {
+             object.description,
+             'RecoveryDecision.action.target.description'
+         ),
+-        ...object.scope === undefined
++        ...object.scope === undefined || object.scope === null
+             ? {}
+             : { scope: requireString(object.scope, 'target.scope') }
+     };
+@@ -196,7 +363,7 @@ function parseTarget(value: unknown): SemanticTarget {
+ 
+ function requireObject(value: unknown, path: string): Record<string, unknown> {
+     if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+-        throw new Error(`${ path } 必须是对象。`);
++        invalid(path, 'expected-object', '必须是对象。');
+     }
+     return value as Record<string, unknown>;
+ }
+@@ -209,26 +376,46 @@ function requireFields(
+ ): void {
+     const unexpected = Object.keys(object).find((key) => !fields.includes(key));
+     if (unexpected) {
+-        throw new Error(`${ path }.${ unexpected } 不允许出现。`);
++        invalid(
++            `${ path }.${ unexpected }`,
++            'unexpected-field',
++            '字段不允许出现。'
++        );
+     }
+     if (!optionalAllowed) {
+         const missing = fields.find((field) => !(field in object));
+         if (missing) {
+-            throw new Error(`${ path }.${ missing } 缺失。`);
++            invalid(
++                `${ path }.${ missing }`,
++                'missing-field',
++                '字段缺失。'
++            );
+         }
+     }
+ }
+ 
+ function requireString(value: unknown, path: string): string {
+     if (typeof value !== 'string' || !value.trim()) {
+-        throw new Error(`${ path } 必须是非空字符串。`);
++        invalid(path, 'expected-non-empty-string', '必须是非空字符串。');
+     }
+     return value;
+ }
+ 
+-function requireEnum<T extends string>(value: unknown, allowed: T[]): T {
++function requireEnum<T extends string>(
++    value: unknown,
++    allowed: T[],
++    path: string
++): T {
+     if (typeof value !== 'string' || !allowed.includes(value as T)) {
+-        throw new Error(`值不在允许集合中：${ String(value) }`);
++        invalid(
++            path,
++            'invalid-enum',
++            `值不在允许集合中：${ String(value) }`
++        );
+     }
+     return value as T;
+ }
++
++function invalid(path: string, code: string, message: string): never {
++    throw new RuntimeSchemaValidationError([{ path, code, message }]);
++}
+diff --git a/modules/engine-core/src/run/recovery_ports.ts b/modules/engine-core/src/run/recovery_ports.ts
+index 56ee1e3b3b436e05300152d6559241b1c364c5ca..eef9d935b1a6e1f9f89bf5a10e2f87b60a880306 100644
+--- a/modules/engine-core/src/run/recovery_ports.ts
++++ b/modules/engine-core/src/run/recovery_ports.ts
+@@ -4,12 +4,35 @@ import type {
+     RecoverySafetyDecision,
+     RecoverySafetyInput,
+ } from '../contracts';
++import type {
++    ModelProtocolDiagnostic,
++} from '../ports';
++
++export type RecoveryPlannerAttempt =
++    | {
++        status: 'decision',
++        decision: RecoveryDecision
++    }
++    | {
++        status: 'protocol-invalid',
++        diagnostic: ModelProtocolDiagnostic
++    }
++    | {
++        status: 'unavailable',
++        reason: string,
++        diagnostic: ModelProtocolDiagnostic
++    };
+ 
+ export interface RecoveryPlannerPort {
+     plan: (
+         input: RecoveryPlannerInput,
+         signal: AbortSignal
+-    ) => Promise<RecoveryDecision>;
++    ) => Promise<RecoveryPlannerAttempt>;
++    /** 只修复原 decision 的协议结构，不得重新读取页面上下文或规划策略。 */
++    repairProtocol?: (
++        diagnostic: ModelProtocolDiagnostic,
++        signal: AbortSignal
++    ) => Promise<RecoveryPlannerAttempt>;
+ }
+ 
+ export interface RecoverySafetyPolicy {
+diff --git a/modules/engine-core/src/run/run_coordinator.ts b/modules/engine-core/src/run/run_coordinator.ts
+index 1a0b8764941a2c85efc1b7ecaf95ef96f55e8589..f0e9537f6f2cb5b0a7e84a11b402445378badaef 100644
+--- a/modules/engine-core/src/run/run_coordinator.ts
++++ b/modules/engine-core/src/run/run_coordinator.ts
+@@ -1,6 +1,7 @@
+ import { randomUUID } from 'node:crypto';
+ 
+ import type {
++    ActionTraceAdjudication,
+     ActionCommand,
+     ActionResult,
+     CompilationContribution,
+@@ -51,6 +52,7 @@ import type {
+     BrowserSession,
+     BrowserStartOptions,
+     EnvironmentValueResolver,
++    ModelProtocolDiagnostic,
+     PageStabilityPort,
+     RunEventPublisher,
+ } from '../ports';
+@@ -181,6 +183,8 @@ interface PlannedActionExecution {
+     semanticStepId?: string;
+     compilationContribution?: CompilationContribution;
+     semanticStepProgress?: SemanticStepProgress;
++    traceSequence: number;
++    adjudicationStatus?: 'completed';
+ }
+ 
+ /** 浏览器阶段完成后交给最终判定的数据。 */
+@@ -561,7 +565,8 @@ export class RunCoordinator implements ExecutionEngine {
+                 ?.stateFingerprint;
+             const controller = this.createSemanticStepController(
+                 context,
+-                runtime
++                runtime,
++                step
+             );
+             const stepResult = await controller.execute(
+                 step,
+@@ -694,7 +699,8 @@ export class RunCoordinator implements ExecutionEngine {
+     // eslint-disable-next-line max-lines-per-function
+     private createSemanticStepController(
+         context: RunExecutionContext,
+-        runtime: RunContext
++        runtime: RunContext,
++        step: SemanticStep
+     ): SemanticStepController<PlannedActionExecution> {
+         const settler = new PageSettler({
+             canContinue: () => this.getRemainingBudgets(context)
+@@ -785,7 +791,17 @@ export class RunCoordinator implements ExecutionEngine {
+                         command,
+                         resolvedTarget: input.resolvedTarget
+                     },
+-                    beforeReference
++                    beforeReference,
++                    {
++                        semanticStepId: step.id,
++                        origin: input.origin,
++                        ...input.recoveryAction
++                            ? { recoveryAction: input.recoveryAction }
++                            : {},
++                        ...input.recoveryAttempt
++                            ? { recoveryAttempt: input.recoveryAttempt }
++                            : {}
++                    }
+                 );
+                 const after = await this.captureRuntimePerception(
+                     context,
+@@ -838,6 +854,20 @@ export class RunCoordinator implements ExecutionEngine {
+                     signal
+                 );
+             },
++            recordRecoveryProtocolDiagnostic: async (
++                diagnostic,
++                stepId,
++                recoveryAttempt,
++                signal
++            ) => {
++                await this.recordRecoveryProtocolDiagnostic(
++                    context,
++                    diagnostic,
++                    stepId,
++                    recoveryAttempt,
++                    signal
++                );
++            },
+             consumeModelCalls: (count) => {
+                 context.modelCallCount += count;
+                 runtime.counters.modelCallCount = context.modelCallCount;
+@@ -872,6 +902,25 @@ export class RunCoordinator implements ExecutionEngine {
+         context.evidence.push(reference);
+     }
+ 
++    /** 持久化 provider 边界已经脱敏、截断的 Recovery 模型协议诊断。 */
++    private async recordRecoveryProtocolDiagnostic(
++        context: RunExecutionContext,
++        diagnostic: ModelProtocolDiagnostic,
++        stepId: string,
++        recoveryAttempt: number,
++        signal: AbortSignal
++    ): Promise<void> {
++        signal.throwIfAborted();
++        const reference = await this.artifactStore.saveJson(
++            context.runId,
++            `recovery-protocol-${ stepId }-${ recoveryAttempt }-${
++                diagnostic.phase
++            }`,
++            toJsonValue(diagnostic)
++        );
++        context.evidence.push(reference);
++    }
++
+     /** 捕获并保存当前 Runtime 的统一 PagePerception。 */
+     private async captureRuntimePerception(
+         context: RunExecutionContext,
+@@ -1638,7 +1687,13 @@ export class RunCoordinator implements ExecutionEngine {
+         context: RunExecutionContext,
+         runtime: RunContext,
+         grounded: ReturnType<GroundedActionBuilder['build']>,
+-        beforeObservationReference: EvidenceRef
++        beforeObservationReference: EvidenceRef,
++        metadata: {
++            semanticStepId: string,
++            origin: 'planner' | 'recovery',
++            recoveryAction?: RecoveryAction,
++            recoveryAttempt?: number
++        }
+     ): Promise<PlannedActionExecution> {
+         const beforeObservation = runtime.latestObservation;
+         if (!beforeObservation) {
+@@ -1654,6 +1709,15 @@ export class RunCoordinator implements ExecutionEngine {
+             executableCommand,
+             grounded.resolvedTarget
+         );
++        const traceSequence = context.actionCount;
++        await this.appendActionExecutionFact(
++            context,
++            grounded,
++            beforeObservationReference,
++            result,
++            traceSequence,
++            metadata
++        );
+         runtime.counters.actionCount = context.actionCount;
+         const after = await this.observeAfterPlannedAction(
+             context,
+@@ -1679,13 +1743,61 @@ export class RunCoordinator implements ExecutionEngine {
+             beforeObservationReference,
+             afterObservation: after.observation,
+             afterObservationReference: after.observationReference,
+-            afterScreenshotReference: after.screenshotReference
++            afterScreenshotReference: after.screenshotReference,
++            traceSequence
+         };
+         runtime.latestObservation = execution.afterObservation;
+         runtime.latestObservationReference = execution.afterObservationReference;
+         return execution;
+     }
+ 
++    /** Browser 返回结果后立即持久化不可变执行事实。 */
++    private async appendActionExecutionFact(
++        context: RunExecutionContext,
++        grounded: ReturnType<GroundedActionBuilder['build']>,
++        beforeObservationReference: EvidenceRef,
++        result: ActionResult,
++        traceSequence: number,
++        metadata: {
++            semanticStepId: string,
++            origin: 'planner' | 'recovery',
++            recoveryAction?: RecoveryAction,
++            recoveryAttempt?: number
++        }
++    ): Promise<void> {
++        const traceEvent: TraceEvent = {
++            schemaVersion: 1,
++            runId: context.runId,
++            sequence: traceSequence,
++            semanticAction: grounded.semanticAction,
++            semanticStepId: metadata.semanticStepId,
++            origin: metadata.origin,
++            ...metadata.recoveryAction
++                ? {
++                    recoveryAction: metadata.recoveryAction,
++                    recoveryIntent: metadata.recoveryAction.reasonSummary
++                }
++                : {},
++            ...metadata.recoveryAttempt
++                ? { recoveryAttempt: metadata.recoveryAttempt }
++                : {},
++            command: grounded.command,
++            resolvedTarget: grounded.resolvedTarget,
++            beforeObservationRef: beforeObservationReference.ref,
++            actionResult: result,
++            artifacts: [ beforeObservationReference ]
++        };
++        await this.artifactStore.appendTrace(context.runId, traceEvent);
++        await this.publishEvent(
++            context.runId,
++            this.nextSequence(context),
++            'trace.appended', {
++                traceSequence,
++                fact: 'execution'
++            }
++        );
++    }
++
+     /** 只在浏览器调用边界把逻辑环境变量替换为实际字面量。 */
+     private async resolveCommandValue(
+         context: RunExecutionContext,
+@@ -1779,12 +1891,17 @@ export class RunCoordinator implements ExecutionEngine {
+         );
+     }
+ 
+-    /** 追加本轮 Trace，并把安全命令引用加入 Planner 历史。 */
++    /** 为已持久化执行事实追加独立判定，并更新 Planner 历史。 */
+     private async recordPlannedAction(
+         context: RunExecutionContext,
+         runtime: RunContext,
+         execution: PlannedActionExecution
+     ): Promise<void> {
++        if (execution.adjudicationStatus === 'completed') {
++            throw new Error(
++                `Trace ${ execution.traceSequence } 已完成判定，禁止重复记录。`
++            );
++        }
+         await this.publishEffect(context, execution.effect);
+         if (context.lifecycle.current() !== 'RECORDING') {
+             await this.transition(
+@@ -1793,52 +1910,37 @@ export class RunCoordinator implements ExecutionEngine {
+                 '正在记录 AI 页面动作轨迹'
+             );
+         }
+-        const traceEvent: TraceEvent = {
++        const adjudication: ActionTraceAdjudication = {
+             schemaVersion: 1,
+             runId: context.runId,
+-            sequence: runtime.history.length + 1,
+-            semanticAction: execution.semanticAction,
++            traceSequence: execution.traceSequence,
++            status: 'completed',
++            origin: execution.origin ?? 'planner',
+             ...execution.semanticStepId
+                 ? { semanticStepId: execution.semanticStepId }
+                 : {},
+-            origin: execution.origin ?? 'planner',
+-            ...execution.recoveryAction
+-                ? {
+-                    recoveryAction: execution.recoveryAction,
+-                    recoveryIntent: execution.recoveryAction.reasonSummary
+-                }
+-                : {},
+-            ...execution.recoveryAttempt
+-                ? { recoveryAttempt: execution.recoveryAttempt }
+-                : {},
+-            ...execution.compilationContribution
+-                ? {
+-                    compilationContribution:
+-                        execution.compilationContribution
+-                }
++            ...execution.recoveryOutcome
++                ? { recoveryOutcome: execution.recoveryOutcome }
+                 : {},
+             ...execution.semanticStepProgress
+                 ? { semanticStepProgress: execution.semanticStepProgress }
+                 : {},
+-            command: execution.command,
+-            resolvedTarget: execution.resolvedTarget,
+-            beforeObservationRef: execution.beforeObservationReference.ref,
++            compilationContribution:
++                execution.compilationContribution ?? 'failed',
+             afterObservationRef: execution.afterObservationReference.ref,
+-            actionResult: execution.result,
+             effect: execution.effect,
+             artifacts: [
+                 execution.afterObservationReference,
+                 execution.afterScreenshotReference
+             ]
+         };
+-        await this.artifactStore.appendTrace(context.runId, traceEvent);
+-        await this.publishEvent(
++        const adjudicationReference = await this.artifactStore.saveJson(
+             context.runId,
+-            this.nextSequence(context),
+-            'trace.appended', {
+-                traceSequence: traceEvent.sequence
+-            }
++            `trace-adjudication-${ execution.traceSequence }`,
++            toJsonValue(adjudication)
+         );
++        context.evidence.push(adjudicationReference);
++        execution.adjudicationStatus = 'completed';
+         runtime.latestObservation = execution.afterObservation;
+         runtime.latestObservationReference = execution.afterObservationReference;
+         runtime.history.push({
+diff --git a/modules/engine-core/src/run/semantic_step_controller.ts b/modules/engine-core/src/run/semantic_step_controller.ts
+index bd273473167e7225bf93dd01e905ee04b6c4dd1e..e830549bf8f725a4f08a467dddf3ef9764eac6b1 100644
+--- a/modules/engine-core/src/run/semantic_step_controller.ts
++++ b/modules/engine-core/src/run/semantic_step_controller.ts
+@@ -16,6 +16,9 @@ import type {
+     SemanticStepProgress,
+     TestIntent,
+ } from '../contracts';
++import type {
++    ModelProtocolDiagnostic,
++} from '../ports';
+ import type {
+     PageSettlingResult,
+ } from './page_settler';
+@@ -35,6 +38,7 @@ import {
+     PrimaryRetryPolicy,
+ } from './primary_retry_policy';
+ import type {
++    RecoveryPlannerAttempt,
+     RecoveryPlannerPort,
+     RecoverySafetyPolicy,
+ } from './recovery_ports';
+@@ -82,6 +86,7 @@ export interface SemanticStepRuntimePort<TRecord> {
+         action: SemanticAction,
+         origin: 'planner' | 'recovery',
+         recoveryAction?: RecoveryAction,
++        recoveryAttempt?: number,
+         resolvedTarget?: ResolvedTarget,
+         before: PagePerception,
+         signal: AbortSignal
+@@ -96,16 +101,23 @@ export interface SemanticStepRuntimePort<TRecord> {
+         attempt: number,
+         signal: AbortSignal
+     ) => Promise<void>;
++    recordRecoveryProtocolDiagnostic: (
++        diagnostic: ModelProtocolDiagnostic,
++        stepId: string,
++        recoveryAttempt: number,
++        signal: AbortSignal
++    ) => Promise<void>;
+     consumeModelCalls: (
+         count: number,
+         purpose: 'primary-visual' | 'recovery-planner' | 'recovery-visual' |
+-            'step-progress'
++            'recovery-protocol-repair' | 'step-progress'
+     ) => void;
+ }
+ 
+ export interface SemanticStepControllerOptions {
+     maxRecoveryAttemptsPerStep: number;
+     maxRecoveryPlannerCallsPerStep: number;
++    maxRecoveryProtocolRepairCallsPerStep: number;
+     maxRecoveryVisualCallsPerStep: number;
+     maxStepProgressModelCallsPerStep: number;
+     maxSameRecoveryAction: number;
+@@ -122,6 +134,7 @@ export interface SemanticStepControllerResult<TRecord> {
+ const DEFAULT_OPTIONS: SemanticStepControllerOptions = {
+     maxRecoveryAttemptsPerStep: 3,
+     maxRecoveryPlannerCallsPerStep: 1,
++    maxRecoveryProtocolRepairCallsPerStep: 1,
+     maxRecoveryVisualCallsPerStep: 1,
+     maxStepProgressModelCallsPerStep: 1,
+     maxSameRecoveryAction: 1,
+@@ -183,7 +196,7 @@ export class SemanticStepController<TRecord> {
+     }
+ 
+     // Recovery loop keeps its bounded state transitions together for auditability.
+-    // eslint-disable-next-line max-lines-per-function
++    // eslint-disable-next-line complexity, max-lines-per-function
+     private async recover(
+         step: SemanticStep,
+         testIntent: TestIntent,
+@@ -199,18 +212,29 @@ export class SemanticStepController<TRecord> {
+                 step,
+                 testIntent,
+                 state,
++                attempt,
+                 signal
+             );
+-            if (decision.kind === 'stop') {
++            if (decision.status === 'unavailable') {
++                return this.result(
++                    state,
++                    unavailableRecoveryOutcome(
++                        decision.reason,
++                        state.latestProgress
++                    )
++                );
++            }
++            const recoveryDecision = decision.decision;
++            if (recoveryDecision.kind === 'stop') {
+                 return this.result(state, {
+                     status: 'exhausted',
+-                    reason: decision.reason,
++                    reason: recoveryDecision.reason,
+                     ...state.latestProgress
+                         ? { progress: state.latestProgress }
+                         : {}
+                 });
+             }
+-            const cycle = this.detectCycle(state, decision.action);
++            const cycle = this.detectCycle(state, recoveryDecision.action);
+             if (cycle) {
+                 return this.result(state, {
+                     status: 'cycle',
+@@ -222,7 +246,7 @@ export class SemanticStepController<TRecord> {
+             const recovery = await this.executeRecovery(
+                 step,
+                 testIntent,
+-                decision.action,
++                recoveryDecision.action,
+                 attempt,
+                 state,
+                 signal
+@@ -281,7 +305,7 @@ export class SemanticStepController<TRecord> {
+                 state.executions.push(recovery.execution);
+             }
+             state.attempts.push({
+-                action: decision.action,
++                action: recoveryDecision.action,
+                 outcome: recoveryOutcome,
+                 summary: recovery.execution?.effect.summary ??
+                     '重新观察了当前页面。'
+@@ -540,11 +564,11 @@ export class SemanticStepController<TRecord> {
+             action: semanticAction,
+             origin: 'recovery',
+             recoveryAction: action,
++            recoveryAttempt: attempt,
+             ...target ? { resolvedTarget: target } : {},
+             before: state.perception,
+             signal
+         });
+-        execution.recoveryAttempt = attempt;
+         return { after: execution.after, execution };
+     }
+ 
+@@ -552,8 +576,9 @@ export class SemanticStepController<TRecord> {
+         step: SemanticStep,
+         testIntent: TestIntent,
+         state: ControllerState<TRecord>,
++        recoveryAttempt: number,
+         signal: AbortSignal
+-    ): Promise<RecoveryDecision> {
++    ): Promise<RecoveryPlanningResolution> {
+         const input: RecoveryPlannerInput = {
+             step: createRecoveryPlanningStepView(step),
+             testIntent,
+@@ -581,12 +606,15 @@ export class SemanticStepController<TRecord> {
+         };
+         const deterministic = await this.deterministicPlanner.plan(input);
+         if (deterministic.kind === 'recover') {
+-            return this.hasSpecificRecoveryTarget(deterministic)
+-                ? deterministic
+-                : {
++            return {
++                status: 'decision',
++                decision: this.hasSpecificRecoveryTarget(deterministic)
++                    ? deterministic
++                    : {
+                     kind: 'stop',
+                     reason: '确定性 RecoveryTarget 缺少具体语义身份。'
+-                };
++                    }
++            };
+         }
+         if (
+             !this.modelRecoveryPlanner
+@@ -594,19 +622,83 @@ export class SemanticStepController<TRecord> {
+                 this.options.maxRecoveryPlannerCallsPerStep
+             || !this.runtime.canUseModel()
+         ) {
+-            return deterministic;
++            return { status: 'decision', decision: deterministic };
+         }
+         state.recoveryPlannerCalls += 1;
+         this.runtime.consumeModelCalls(1, 'recovery-planner');
+         const modeled = await this.modelRecoveryPlanner.plan(input, signal);
+-        return modeled.kind === 'recover' && !this.hasSpecificRecoveryTarget(
+-            modeled
+-        )
+-            ? {
++        return await this.resolveModeledRecovery(
++            step,
++            state,
++            recoveryAttempt,
++            modeled,
++            signal
++        );
++    }
++
++    private async resolveModeledRecovery(
++        step: SemanticStep,
++        state: ControllerState<TRecord>,
++        recoveryAttempt: number,
++        initial: RecoveryPlannerAttempt,
++        signal: AbortSignal
++    ): Promise<RecoveryPlanningResolution> {
++        let modeled = initial;
++        const repairProtocol = this.modelRecoveryPlanner?.repairProtocol;
++        if (modeled.status !== 'decision') {
++            await this.runtime.recordRecoveryProtocolDiagnostic(
++                modeled.diagnostic,
++                step.id,
++                recoveryAttempt,
++                signal
++            );
++        }
++        if (modeled.status === 'protocol-invalid') {
++            if (
++                !repairProtocol
++                || state.recoveryProtocolRepairCalls >=
++                    this.options.maxRecoveryProtocolRepairCallsPerStep
++                || !this.runtime.canUseModel()
++            ) {
++                return {
++                    status: 'unavailable',
++                    reason: 'Recovery planner 协议无效，且修复预算不可用。'
++                };
++            }
++            state.recoveryProtocolRepairCalls += 1;
++            this.runtime.consumeModelCalls(1, 'recovery-protocol-repair');
++            modeled = await repairProtocol(
++                modeled.diagnostic,
++                signal
++            );
++            if (modeled.status !== 'decision') {
++                await this.runtime.recordRecoveryProtocolDiagnostic(
++                    modeled.diagnostic,
++                    step.id,
++                    recoveryAttempt,
++                    signal
++                );
++            }
++        }
++        if (modeled.status !== 'decision') {
++            return {
++                status: 'unavailable',
++                reason: modeled.status === 'unavailable'
++                    ? `Recovery planner unavailable：${ modeled.reason }`
++                    : 'Recovery planner 协议修复后仍不合法。'
++            };
++        }
++        const decision = modeled.decision;
++        return {
++            status: 'decision',
++            decision: decision.kind === 'recover'
++                && !this.hasSpecificRecoveryTarget(decision)
++                ? {
+                 kind: 'stop',
+                 reason: '模型 RecoveryTarget 缺少具体语义身份，已拒绝执行。'
+-            }
+-            : modeled;
++                }
++                : decision
++        };
+     }
+ 
+     private hasSpecificRecoveryTarget(
+@@ -671,6 +763,7 @@ export class SemanticStepController<TRecord> {
+             attempts: [],
+             recoveryFingerprints: new Map(),
+             recoveryPlannerCalls: 0,
++            recoveryProtocolRepairCalls: 0,
+             recoveryVisualCalls: 0,
+             progressModelCalls: 0,
+             consecutiveNoProgress: 0,
+@@ -703,6 +796,7 @@ interface ControllerState<TRecord> {
+     attempts: RecoveryAttemptSummary[];
+     recoveryFingerprints: Map<string, number>;
+     recoveryPlannerCalls: number;
++    recoveryProtocolRepairCalls: number;
+     recoveryVisualCalls: number;
+     progressModelCalls: number;
+     consecutiveNoProgress: number;
+@@ -713,6 +807,27 @@ interface ControllerState<TRecord> {
+     };
+ }
+ 
++type RecoveryPlanningResolution =
++    | {
++        status: 'decision',
++        decision: RecoveryDecision
++    }
++    | {
++        status: 'unavailable',
++        reason: string
++    };
++
++function unavailableRecoveryOutcome(
++    reason: string,
++    progress: SemanticStepProgress | undefined
++): SemanticStepExecutionOutcome {
++    return {
++        status: 'exhausted',
++        reason,
++        ...progress ? { progress } : {}
++    };
++}
++
+ function toRecoverySemanticAction(action: RecoveryAction): SemanticAction {
+     if (action.type === 'CLEAR') {
+         return {
+diff --git a/modules/engine-core/test/model_recovery_services.test.ts b/modules/engine-core/test/model_recovery_services.test.ts
+index e5fc7a1a6b6ce2b39c87ab499c74dac899b04877..a32fe95dc1f440666e30a2c73c4a628401794ead 100644
+--- a/modules/engine-core/test/model_recovery_services.test.ts
++++ b/modules/engine-core/test/model_recovery_services.test.ts
+@@ -1,6 +1,7 @@
+ import assert from 'node:assert/strict';
+ 
+ import type {
++    ModelProtocolDiagnostic,
+     ModelAdapter,
+     ModelRequest,
+     ModelResult,
+@@ -9,33 +10,129 @@ import type {
+     StepProgressModelInput,
+ } from '../src';
+ import {
++    ClassifiedModelFailure,
+     ModelRecoveryPlanner,
+     ModelStepProgressEvaluator,
+ } from '../src';
+ 
++// eslint-disable-next-line max-lines-per-function
+ describe('Phase 3 model recovery services', () => {
+     it('RecoveryPlanner 只接收 typed safe view 并输出 semantic action', async () => {
+         const adapter = new FakeModelAdapter({
+             kind: 'recover',
+             action: {
+                 type: 'HOVER',
+-                target: { description: '应用 11 卡片' },
++                target: {
++                    description: '应用 11 卡片',
++                    scope: null
++                },
++                expectedTransientEffect: null,
+                 reasonSummary: '显示隐藏收藏按钮'
+-            }
++            },
++            reason: null
+         });
+-        const decision = await new ModelRecoveryPlanner(adapter).plan(
++        const attempt = await new ModelRecoveryPlanner(adapter).plan(
+             recoveryInput(),
+             new AbortController().signal
+         );
+         const prompt = adapter.lastRequest?.userPrompt ?? '';
+ 
+-        assert.equal(decision.kind, 'recover');
++        assert.equal(attempt.status, 'decision');
++        assert.equal(
++            attempt.status === 'decision' ? attempt.decision.kind : undefined,
++            'recover'
++        );
++        assertStrictObjectSchemas(adapter.lastSchema?.jsonSchema);
+         [
+             'candidateId', 'domCandidateId', 'locatorHints', 'boundingBox',
+             'coordinates', 'attributes', 'secret-value', 'https://'
+         ].forEach((field) => assert.equal(prompt.includes(field), false));
+     });
+ 
++    it('RecoveryPlanner 接受 strict schema 的 nullable stop 字段', async () => {
++        const adapter = new FakeModelAdapter({
++            kind: 'stop',
++            action: null,
++            reason: '没有安全恢复动作'
++        });
++
++        const attempt = await new ModelRecoveryPlanner(adapter).plan(
++            recoveryInput(),
++            new AbortController().signal
++        );
++
++        assert.deepEqual(attempt, {
++            status: 'decision',
++            decision: {
++                kind: 'stop',
++                reason: '没有安全恢复动作'
++            }
++        });
++        assertStrictObjectSchemas(adapter.lastSchema?.jsonSchema);
++    });
++
++    it('schema invalid 可做一次只修协议结构的 repair', async () => {
++        const diagnostic = protocolDiagnostic('initial');
++        const adapter = new FakeModelAdapter([
++            new ClassifiedModelFailure(
++                'schema-invalid',
++                'RecoveryDecision schema invalid',
++                diagnostic
++            ),
++            {
++                kind: 'stop',
++                action: null,
++                reason: '没有安全恢复动作'
++            }
++        ]);
++        const planner = new ModelRecoveryPlanner(adapter);
++
++        const initial = await planner.plan(recoveryInput(), signal());
++        assert.deepEqual(initial, {
++            status: 'protocol-invalid',
++            diagnostic
++        });
++        assert.equal(planner.repairProtocol !== undefined, true);
++        const repaired = await planner.repairProtocol(
++            diagnostic,
++            signal()
++        );
++
++        assert.equal(repaired.status, 'decision');
++        assert.equal(adapter.requests.length, 2);
++        assert.equal(adapter.requests[1]?.protocolPhase, 'repair');
++        assert.equal(adapter.requests[1]?.modelRole, 'recovery-planner');
++        assert.equal(
++            adapter.requests[1]?.userPrompt.includes('originalDecision'),
++            true
++        );
++        assert.equal(
++            adapter.requests[1]?.userPrompt.includes('visibleText'),
++            false
++        );
++    });
++
++    it('已分类 provider failure 返回 unavailable 而不是抛内部异常', async () => {
++        const diagnostic = protocolDiagnostic('initial', 'provider-unavailable');
++        const adapter = new FakeModelAdapter(new ClassifiedModelFailure(
++            'provider-unavailable',
++            'provider offline',
++            diagnostic
++        ));
++
++        assert.deepEqual(
++            await new ModelRecoveryPlanner(adapter).plan(
++                recoveryInput(),
++                signal()
++            ),
++            {
++                status: 'unavailable',
++                reason: 'provider offline',
++                diagnostic
++            }
++        );
++    });
++
+     it('Progress 模型只能返回分类，额外动作字段会被拒绝', async () => {
+         const adapter = new FakeModelAdapter({
+             status: 'complete',
+@@ -50,19 +147,87 @@ describe('Phase 3 model recovery services', () => {
+ 
+ class FakeModelAdapter implements ModelAdapter {
+     public lastRequest?: ModelRequest;
+-    constructor(private readonly output: unknown) {}
+-    public generateStructured<T>(
++    public lastSchema?: RuntimeSchema<unknown>;
++    public readonly requests: ModelRequest[] = [];
++    private readonly outputs: unknown[];
++    constructor(output: unknown | unknown[]) {
++        this.outputs = Array.isArray(output) ? [ ...output ] : [ output ];
++    }
++    public async generateStructured<T>(
+         request: ModelRequest,
+         schema: RuntimeSchema<T>
+     ): Promise<ModelResult<T>> {
+         this.lastRequest = request;
+-        return Promise.resolve({
++        this.lastSchema = schema;
++        this.requests.push(request);
++        const output = this.outputs.shift();
++        if (output instanceof Error) {
++            throw output;
++        }
++        return {
+             model: 'fake-model',
+-            value: schema.parse(this.output)
+-        });
++            value: schema.parse(output)
++        };
+     }
+ }
+ 
++function protocolDiagnostic(
++    phase: 'initial' | 'repair',
++    failureType: 'provider-unavailable' | 'schema-invalid' = 'schema-invalid'
++): ModelProtocolDiagnostic {
++    return {
++        schemaVersion: 1,
++        modelRole: 'recovery-planner',
++        phase,
++        failureType,
++        rawOutputPreview: '{"kind":"stop"}',
++        rawSha256: 'abc',
++        parsedJson: { kind: 'stop' },
++        schemaIssues: [{
++            path: 'RecoveryDecision.action',
++            code: 'missing-field',
++            message: '字段缺失。'
++        }],
++        sanitized: true,
++        truncated: false
++    };
++}
++
++function signal(): AbortSignal {
++    return new AbortController().signal;
++}
++
++function assertStrictObjectSchemas(value: unknown, path = 'schema'): void {
++    if (Array.isArray(value)) {
++        value.forEach((item, index) => assertStrictObjectSchemas(
++            item,
++            `${ path }[${ index }]`
++        ));
++        return;
++    }
++    if (typeof value !== 'object' || value === null) {
++        return;
++    }
++    const record = value as Record<string, unknown>;
++    if (
++        record.type === 'object'
++        && typeof record.properties === 'object'
++        && record.properties !== null
++    ) {
++        const properties = Object.keys(
++            record.properties as Record<string, unknown>
++        ).sort();
++        assert.deepEqual(
++            Array.isArray(record.required) ? [ ...record.required ].sort() : [],
++            properties,
++            `${ path }.required 必须包含 properties 的全部字段`
++        );
++    }
++    Object.entries(record).forEach(([ key, item ]) => {
++        assertStrictObjectSchemas(item, `${ path }.${ key }`);
++    });
++}
++
+ function recoveryInput(): RecoveryPlannerInput {
+     return {
+         step: {
+diff --git a/modules/engine-core/test/productive_trace_selector.test.ts b/modules/engine-core/test/productive_trace_selector.test.ts
+index e7b66c6afc520168417d0f99d1f28c2d5a0aab04..dba08f3f7a5811b70761a29b969226f34c59d0a0 100644
+--- a/modules/engine-core/test/productive_trace_selector.test.ts
++++ b/modules/engine-core/test/productive_trace_selector.test.ts
+@@ -35,6 +35,7 @@ function action(
+     return {
+         command: { type },
+         name,
++        adjudicationStatus: 'completed' as const,
+         compilationContribution
+     };
+ }
+diff --git a/modules/engine-core/test/run_coordinator.test.ts b/modules/engine-core/test/run_coordinator.test.ts
+index fb5c34f08f15de2a8e7a241fb77f2cf50817e0be..35ae3b30175565e0f6a74a293faa03b95b7e709a 100644
+--- a/modules/engine-core/test/run_coordinator.test.ts
++++ b/modules/engine-core/test/run_coordinator.test.ts
+@@ -17,6 +17,7 @@ import type {
+     JsonValue,
+     PageObservation,
+     PlanActionInput,
++    RecoveryPlannerPort,
+     RunEvent,
+     RunEventPublisher,
+     RunResult,
+@@ -478,6 +479,63 @@ describe('RunCoordinator Grounding 边界', () => {
+     });
+ });
+ 
++describe('RunCoordinator Recovery Trace durability', () => {
++    it('CLEAR 执行后即使 Recovery 协议修复失败仍只保留一条执行事实', async () => {
++        const artifactStore = new FakeArtifactStore();
++        const browserAdapter = new RecoveryTraceBrowserAdapter();
++        const coordinator = new RunCoordinator(
++            artifactStore,
++            new FakeRunEventPublisher(),
++            new FakeIntentBuilder(testIntent),
++            browserAdapter,
++            {
++                actionPlanner: new FakeActionPlanner({
++                    type: 'CLICK',
++                    target: { description: '新建应用' },
++                    expectedEffect: '进入新建应用流程',
++                    reasonSummary: '打开新建应用'
++                }),
++                recoveryPlanner: new InvalidRecoveryPlanner(),
++                verdictEvaluator: new FakeVerdictEvaluator(uncertainVerdict)
++            },
++            new FakeEnvironmentValueResolver()
++        );
++
++        const result = await coordinator.start(
++            startInput,
++            new AbortController().signal
++        );
++        const recoveryFacts = artifactStore.traces.filter(
++            ({ origin }) => origin === 'recovery'
++        );
++        const adjudication = artifactStore.savedJson.find(
++            ({ name }) => name === 'trace-adjudication-2'
++        )?.value as unknown as {compilationContribution?: string};
++
++        assert.equal(result.lifecycle, 'COMPLETED', result.summary);
++        assert.equal(result.result, 'UNCERTAIN');
++        assert.deepEqual(
++            browserAdapter.commands.map(({ type }) => type),
++            [ 'NAVIGATE', 'TYPE' ]
++        );
++        assert.equal(recoveryFacts.length, 1);
++        assert.equal(recoveryFacts[0]?.recoveryAction?.type, 'CLEAR');
++        assert.equal(recoveryFacts[0]?.actionResult?.status, 'executed');
++        assert.equal(recoveryFacts[0]?.effect, undefined);
++        assert.equal(recoveryFacts[0]?.compilationContribution, undefined);
++        assert.equal(adjudication.compilationContribution, 'non-productive');
++        assert.deepEqual(
++            artifactStore.savedJson
++                .filter(({ name }) => name.startsWith('recovery-protocol-'))
++                .map(({ value }) => (value as any).phase),
++            [ 'initial', 'repair' ]
++        );
++        assert.equal(artifactStore.savedJson.some(
++            ({ name }) => name === 'plan-compilation-source'
++        ), false);
++    });
++});
++
+ interface CompletedRunState {
+     actionPlanner: FakeActionPlanner;
+     artifactStore: FakeArtifactStore;
+@@ -585,12 +643,14 @@ function assertCompletedArtifactNames(artifactStore: FakeArtifactStore): void {
+         'observation-reobserve-4',
+         'page-perception-4',
+         'page-settling-2',
++        'trace-adjudication-2',
+         'grounding-decision-2',
+         'observation-after-action-3',
+         'page-perception-5',
+         'observation-reobserve-6',
+         'page-perception-6',
+         'page-settling-3',
++        'trace-adjudication-3',
+         'grounding-decision-3',
+         'observation-after-action-4',
+         'page-perception-7',
+@@ -598,6 +658,7 @@ function assertCompletedArtifactNames(artifactStore: FakeArtifactStore): void {
+         'page-perception-8',
+         'page-settling-4',
+         'grounding-decision-4',
++        'trace-adjudication-4',
+         'verdict',
+         'plan-compilation-source'
+     ]);
+@@ -607,10 +668,18 @@ function assertGroundingEvidencePersisted(
+     artifactStore: FakeArtifactStore
+ ): void {
+     const groundedTrace = artifactStore.traces[1];
++    const adjudication = artifactStore.savedJson.find(
++        ({ name }) => name === 'trace-adjudication-2'
++    )?.value as unknown as {
++        compilationContribution?: string,
++        semanticStepProgress?: {status?: string}
++    };
+     assert.equal(groundedTrace?.origin, 'planner');
+     assert.equal(groundedTrace?.semanticStepId, 'runtime-step-1');
+-    assert.equal(groundedTrace?.compilationContribution, 'productive');
+-    assert.equal(groundedTrace?.semanticStepProgress?.status, 'complete');
++    assert.equal(groundedTrace?.compilationContribution, undefined);
++    assert.equal(groundedTrace?.semanticStepProgress, undefined);
++    assert.equal(adjudication.compilationContribution, 'productive');
++    assert.equal(adjudication.semanticStepProgress?.status, 'complete');
+     assert.equal(
+         groundedTrace?.semanticAction?.target?.description,
+         '账号输入框'
+@@ -1374,6 +1443,130 @@ class FakeBrowserAdapter implements BrowserAdapter {
+     };
+ }
+ 
++/** 让确定性 Recovery 执行 CLEAR，但原始 New App 目标始终不可见。 */
++class RecoveryTraceBrowserAdapter implements BrowserAdapter {
++    public readonly commands: ActionCommand[] = [];
++    private searchFilled = true;
++
++    public start = (): Promise<BrowserSession> => Promise.resolve({
++        sessionId: 'recovery-trace-session'
++    });
++
++    public observe = (): Promise<PageObservation> => Promise.resolve(
++        this.commands.length === 0
++            ? createObservation('about:blank')
++            : createRecoverySearchObservation(this.searchFilled)
++    );
++
++    public execute = (
++        _session: BrowserSession,
++        command: ActionCommand
++    ): Promise<ActionResult> => {
++        this.commands.push(command);
++        if (
++            command.type === 'TYPE'
++            && command.value?.source === 'literal'
++            && command.value.value === ''
++        ) {
++            this.searchFilled = false;
++        }
++        return Promise.resolve({
++            status: 'executed',
++            startedAt: '2026-09-01T00:00:00.000Z',
++            finishedAt: '2026-09-01T00:00:01.000Z',
++            browserSignals: {
++                dialogOpened: false,
++                downloadStarted: false,
++                newTabOpened: false,
++                urlChanged: command.type === 'NAVIGATE'
++            }
++        });
++    };
++
++    public captureScreenshot = (): Promise<{
++        content: Uint8Array,
++        mediaType: 'image/png'
++    }> => Promise.resolve({
++        content: new Uint8Array([ 137, 80, 78, 71 ]),
++        mediaType: 'image/png'
++    });
++
++    public reset = (): Promise<void> => Promise.resolve();
++    public close = (): Promise<void> => Promise.resolve();
++}
++
++/** 初始与 repair 都返回已分类协议失败，模拟真实模型坏响应。 */
++class InvalidRecoveryPlanner implements RecoveryPlannerPort {
++    public plan: RecoveryPlannerPort['plan'] = () => Promise.resolve({
++        status: 'protocol-invalid',
++        diagnostic: recoveryProtocolDiagnostic('initial')
++    });
++
++    public repairProtocol: NonNullable<
++        RecoveryPlannerPort['repairProtocol']
++    > = () => Promise.resolve({
++        status: 'protocol-invalid',
++        diagnostic: recoveryProtocolDiagnostic('repair')
++    });
++}
++
++function recoveryProtocolDiagnostic(phase: 'initial' | 'repair') {
++    return {
++        schemaVersion: 1 as const,
++        modelRole: 'recovery-planner' as const,
++        phase,
++        failureType: 'schema-invalid' as const,
++        rawSha256: `${ phase }-sha256`,
++        schemaIssues: [{
++            path: '$.action.target',
++            code: 'required',
++            message: '缺少 target'
++        }],
++        sanitized: true as const,
++        truncated: false
++    };
++}
++
++function createRecoverySearchObservation(
++    filled: boolean
++): PageObservation {
++    const url = 'https://test.jdydevelop.com/dashboard#/';
++    return {
++        schemaVersion: 1,
++        observationId: `recovery-search-${ filled ? 'filled' : 'empty' }`,
++        capturedAt: '2026-09-01T00:00:00.000Z',
++        page: {
++            loading: false,
++            title: '简道云工作台',
++            url,
++            viewport: { width: 1280, height: 720 }
++        },
++        visibleText: [ '应用列表' ],
++        interactiveElements: [{
++            candidateId: 'search-1',
++            tag: 'input',
++            role: 'textbox',
++            name: '搜索应用',
++            placeholder: '搜索应用',
++            valueState: filled ? 'filled' : 'empty',
++            disabled: false,
++            visible: true,
++            inViewport: true,
++            boundingBox: { x: 20, y: 20, width: 240, height: 32 },
++            attributes: { type: 'search' },
++            nearbyText: [],
++            locatorHints: [{
++                strategy: 'role-name',
++                value: 'textbox::搜索应用'
++            }]
++        }],
++        notices: [],
++        tabs: [{ active: true, title: '工作台', url }],
++        stateFingerprint: `recovery-search-${ filled ? 'filled' : 'empty' }`,
++        truncated: false
++    };
++}
++
+ /** 创建供协调器持久化的最小页面观察。 */
+ function createObservation(
+     url: string,
+diff --git a/modules/engine-core/test/semantic_action_schema.test.ts b/modules/engine-core/test/semantic_action_schema.test.ts
+index c93ae66214822d229ee98aa8357fccf1ac2226fe..37795949c4ab1c3fef3f4f1a1b5112ff82970bc4 100644
+--- a/modules/engine-core/test/semantic_action_schema.test.ts
++++ b/modules/engine-core/test/semantic_action_schema.test.ts
+@@ -5,6 +5,10 @@ import {
+ } from '../src';
+ 
+ describe('semanticActionSchema', () => {
++    it('所有对象节点满足 Codex strict required 约束', () => {
++        assertStrictObjectSchemas(semanticActionSchema.jsonSchema);
++    });
++
+     it('主 Planner Schema 不开放 Recovery-only 动作', () => {
+         [ 'BACK', 'SCROLL', 'INSPECT', 'NAVIGATE' ].forEach((type) => {
+             assert.throws(() => semanticActionSchema.parse({
+@@ -38,6 +42,23 @@ describe('semanticActionSchema', () => {
+         });
+     });
+ 
++    it('把 strict schema 的 nullable scope 还原为缺省 scope', () => {
++        assert.deepEqual(semanticActionSchema.parse({
++            type: 'CLICK',
++            target: {
++                description: '新建应用',
++                scope: null
++            },
++            value: null,
++            expectedEffect: null,
++            reasonSummary: '点击新建应用'
++        }), {
++            type: 'CLICK',
++            target: { description: '新建应用' },
++            reasonSummary: '点击新建应用'
++        });
++    });
++
+     it('Phase 1 拒绝 Planner 输出空间 relation', () => {
+         assert.throws(() => semanticActionSchema.parse({
+             type: 'CLICK',
+@@ -78,3 +99,34 @@ describe('semanticActionSchema', () => {
+             && error.path === 'SemanticAction.risk');
+     });
+ });
++
++function assertStrictObjectSchemas(value: unknown, path = 'schema'): void {
++    if (Array.isArray(value)) {
++        value.forEach((item, index) => assertStrictObjectSchemas(
++            item,
++            `${ path }[${ index }]`
++        ));
++        return;
++    }
++    if (typeof value !== 'object' || value === null) {
++        return;
++    }
++    const record = value as Record<string, unknown>;
++    if (
++        record.type === 'object'
++        && typeof record.properties === 'object'
++        && record.properties !== null
++    ) {
++        const properties = Object.keys(
++            record.properties as Record<string, unknown>
++        ).sort();
++        assert.deepEqual(
++            Array.isArray(record.required) ? [ ...record.required ].sort() : [],
++            properties,
++            `${ path }.required 必须包含 properties 的全部字段`
++        );
++    }
++    Object.entries(record).forEach(([ key, item ]) => {
++        assertStrictObjectSchemas(item, `${ path }.${ key }`);
++    });
++}
+diff --git a/modules/engine-core/test/semantic_step_controller.test.ts b/modules/engine-core/test/semantic_step_controller.test.ts
+index 96c916c49522369ea97f709730d90bb86e96d446..38a519c322b66c7dd6faf963d75ab062cf0c107f 100644
+--- a/modules/engine-core/test/semantic_step_controller.test.ts
++++ b/modules/engine-core/test/semantic_step_controller.test.ts
+@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
+ 
+ import type {
+     GroundingDecision,
++    ModelProtocolDiagnostic,
+     PagePerception,
+     RecoveryDecision,
+     RecoveryPlannerPort,
+@@ -378,6 +379,47 @@ describe('SemanticStepController', () => {
+         );
+     });
+ 
++    it('Recovery protocol repair 失败后 exhausted 而不抛异常', async () => {
++        const initial = perception('initial', {
++            elements: [ element('search', '搜索', 'filled') ]
++        });
++        const cleared = perception('cleared', {
++            previous: initial,
++            elements: [ element('search', '搜索', 'empty') ]
++        });
++        const runtime = new FakeRuntime(
++            initial,
++            (action, current) => action.type === 'TYPE'
++                ? grounded('search', current, '搜索')
++                : decision('not-found'),
++            (action) => action.type === 'TYPE' ? cleared : initial
++        );
++        const planner = new ProtocolFailureRecoveryPlanner();
++
++        const result = await controller(
++            runtime,
++            new SemanticStepProgressEvaluator(),
++            planner
++        ).execute(step({
++            type: 'CLICK',
++            target: { description: '新建应用' },
++            reasonSummary: '创建应用'
++        }), intent, signal());
++
++        assert.equal(result.outcome.status, 'exhausted');
++        assert.deepEqual(runtime.executedTypes, [ 'TYPE' ]);
++        assert.equal(result.executions[0]?.recoveryAction?.type, 'CLEAR');
++        assert.equal(
++            result.executions[0]?.compilationContribution,
++            'non-productive'
++        );
++        assert.deepEqual(runtime.modelPurposes, [
++            'recovery-planner',
++            'recovery-protocol-repair'
++        ]);
++        assert.deepEqual(runtime.protocolPhases, [ 'initial', 'repair' ]);
++    });
++
+     it('非导航 wrong-state 不会授权 BACK', () => {
+         const policy = new DeterministicRecoverySafetyPolicy();
+         const common = {
+@@ -432,6 +474,7 @@ class FakeRuntime implements SemanticStepRuntimePort<string> {
+     public executedTypes: string[] = [];
+     public modelPurposes: string[] = [];
+     public settleCalls = 0;
++    public protocolPhases: Array<'initial' | 'repair'> = [];
+     private current: PagePerception;
+ 
+     constructor(
+@@ -512,6 +555,11 @@ class FakeRuntime implements SemanticStepRuntimePort<string> {
+         return execution;
+     };
+     public recordReobserve = async () => {};
++    public recordRecoveryProtocolDiagnostic = async (
++        diagnostic: ModelProtocolDiagnostic
++    ) => {
++        this.protocolPhases.push(diagnostic.phase);
++    };
+     public reverifyEffectAfterSettling:
+     SemanticStepRuntimePort<string>['reverifyEffectAfterSettling'] = async (
+         execution
+@@ -522,8 +570,44 @@ class FakeRuntime implements SemanticStepRuntimePort<string> {
+ 
+ class SequenceRecoveryPlanner implements RecoveryPlannerPort {
+     constructor(private readonly decisions: RecoveryDecision[]) {}
+-    public plan: RecoveryPlannerPort['plan'] = async () =>
+-        this.decisions.shift() ?? { kind: 'stop', reason: '没有更多恢复动作' };
++    public plan: RecoveryPlannerPort['plan'] = async () => ({
++        status: 'decision',
++        decision: this.decisions.shift() ?? {
++            kind: 'stop',
++            reason: '没有更多恢复动作'
++        }
++    });
++}
++
++class ProtocolFailureRecoveryPlanner implements RecoveryPlannerPort {
++    public plan: RecoveryPlannerPort['plan'] = async () => ({
++        status: 'protocol-invalid',
++        diagnostic: protocolDiagnostic('initial')
++    });
++    public repairProtocol: NonNullable<
++    RecoveryPlannerPort['repairProtocol']> = async () => ({
++        status: 'protocol-invalid',
++        diagnostic: protocolDiagnostic('repair')
++    });
++}
++
++function protocolDiagnostic(
++    phase: 'initial' | 'repair'
++): ModelProtocolDiagnostic {
++    return {
++        schemaVersion: 1,
++        modelRole: 'recovery-planner',
++        phase,
++        failureType: 'schema-invalid',
++        parsedJson: { kind: 'stop' },
++        schemaIssues: [{
++            path: 'RecoveryDecision.action',
++            code: 'missing-field',
++            message: '字段缺失。'
++        }],
++        sanitized: true,
++        truncated: false
++    };
+ }
+ 
+ function controller(
+diff --git a/server/src/adapters/browser/playwright_page_stability_adapter.ts b/server/src/adapters/browser/playwright_page_stability_adapter.ts
+index 5e2a46f1f5f68393b4f81eec578e4aedc2e9840f..3f7928ea7c209521dc1bc60f3c950ab6288e95f2 100644
+--- a/server/src/adapters/browser/playwright_page_stability_adapter.ts
++++ b/server/src/adapters/browser/playwright_page_stability_adapter.ts
+@@ -12,7 +12,10 @@ import type { PlaywrightPageProvider } from './playwright_page_provider';
+ const MAX_SEMANTIC_CONTROLS = 80;
+ const MAX_SEMANTIC_TEXT_LINES = 80;
+ const MAX_SEMANTIC_TEXT_LENGTH = 160;
+-const DYNAMIC_TOKEN_PATTERN = /\b(?:\d+(?:[.:/-]\d+)*|[a-f\d]{8,})\b/giu;
++const DATE_TIME_PATTERN = /\b(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?|\d{1,2}:\d{2}(?::\d{2})?)\b/gu;
++const COUNTDOWN_PATTERN = /(倒计时\s*)\d+(?:\.\d+)?(\s*(?:毫秒|秒|分钟|分|小时|天))/giu;
++const RELATIVE_TIME_PATTERN = /\d+(?:\.\d+)?\s*(毫秒|秒|分钟|分|小时|天)(前|后)/giu;
++const LONG_DYNAMIC_TOKEN_PATTERN = /\b(?:\d{8,}|[a-f\d]{8,})\b/giu;
+ 
+ interface LightweightPageState {
+     busy: boolean;
+@@ -126,7 +129,10 @@ export class PlaywrightPageStabilityAdapter implements PageStabilityPort {
+ 
+ function normalizeVolatileTokens(value: string): string {
+     return value.trim().replace(/\s+/gu, ' ')
+-        .replace(DYNAMIC_TOKEN_PATTERN, '#')
++        .replace(DATE_TIME_PATTERN, '#')
++        .replace(COUNTDOWN_PATTERN, '$1#$2')
++        .replace(RELATIVE_TIME_PATTERN, '# $1$2')
++        .replace(LONG_DYNAMIC_TOKEN_PATTERN, '#')
+         .slice(0, 160);
+ }
+ 
+diff --git a/server/src/adapters/model/codex_app_server_model_adapter.ts b/server/src/adapters/model/codex_app_server_model_adapter.ts
+index 8c62a21fc189a7b05b2babe99109351ba7de0b5a..e02498a1c05893bf4ee9b8eab39d8b78b17e8362 100644
+--- a/server/src/adapters/model/codex_app_server_model_adapter.ts
++++ b/server/src/adapters/model/codex_app_server_model_adapter.ts
+@@ -1,9 +1,14 @@
+ import type {
+     ModelAdapter,
++    ModelProtocolSchemaIssue,
+     ModelRequest,
+     ModelResult,
+     RuntimeSchema,
+ } from '@ai-web-test-engine/core';
++import {
++    ClassifiedModelFailure,
++    RuntimeSchemaValidationError,
++} from '@ai-web-test-engine/core';
+ import {
+     CodexAppServerError,
+     StdioCodexAppServerClient,
+@@ -11,7 +16,11 @@ import {
+ import type {
+     CodexAppServerClient,
+     CodexReasoningEffort,
++    CodexStructuredTurnOutput,
+ } from './codex_app_server_client';
++import {
++    createSafeModelProtocolDiagnostic,
++} from './model_protocol_diagnostic';
+ 
+ export interface CodexAppServerModelAdapterOptions {
+     model: string;
+@@ -74,54 +83,125 @@ export class CodexAppServerModelAdapter implements ModelAdapter {
+                 maxOutputTokens: request.maxOutputTokens,
+                 outputSchema: schema.jsonSchema
+             }, requestSignal);
+-            let rawValue: unknown;
+-            try {
+-                rawValue = JSON.parse(output.text) as unknown;
+-            } catch {
+-                throw new CodexAppServerError(
+-                    'INVALID_RESPONSE',
+-                    'Codex App Server 最终输出不是合法 JSON。'
+-                );
+-            }
+-
+-            let value: T;
+-            try {
+-                value = schema.parse(rawValue);
+-            } catch {
+-                throw new CodexAppServerError(
+-                    'SCHEMA_VALIDATION_FAILED',
+-                    `Codex App Server 返回内容不符合 ${ schema.name } Schema。`
+-                );
+-            }
+-
+-            return {
+-                model: output.model,
+-                requestId: output.turnId,
+-                value
+-            };
++            return parseCodexOutput(output, request, schema);
+         } catch (error) {
+             if (signal.aborted) {
+                 signal.throwIfAborted();
+             }
+-            if (error instanceof CodexAppServerError) {
++            if (error instanceof ClassifiedModelFailure) {
+                 throw error;
+             }
+             if (timeoutController.signal.aborted) {
+-                throw new CodexAppServerError(
+-                    'TIMEOUT',
++                throw classifiedUnavailable(
++                    request,
++                    'model-timeout',
+                     'Codex App Server 模型调用超时。'
+                 );
+             }
+-            throw new CodexAppServerError(
+-                'PROTOCOL_ERROR',
+-                `Codex App Server 调用异常：${
+-                    error instanceof Error
+-                        ? error.message
+-                        : '未知错误'
+-                }`
+-            );
++            if (error instanceof CodexAppServerError) {
++                if (error.code === 'TIMEOUT') {
++                    throw classifiedUnavailable(
++                        request,
++                        'model-timeout',
++                        error.message
++                    );
++                }
++                throw classifiedUnavailable(
++                    request,
++                    'provider-unavailable',
++                    error.message
++                );
++            }
++            throw error;
+         } finally {
+             clearTimeout(timeoutHandle);
+         }
+     };
+ }
++
++function parseCodexOutput<T>(
++    output: CodexStructuredTurnOutput,
++    request: ModelRequest,
++    schema: RuntimeSchema<T>
++): ModelResult<T> {
++    let rawValue: unknown;
++    try {
++        rawValue = JSON.parse(output.text) as unknown;
++    } catch {
++        throw new ClassifiedModelFailure(
++            'invalid-json',
++            'Codex App Server 最终输出不是合法 JSON。',
++            createSafeModelProtocolDiagnostic({
++                modelRole: request.modelRole ?? 'action-planner',
++                phase: request.protocolPhase ?? 'initial',
++                failureType: 'invalid-json',
++                model: output.model,
++                requestId: output.turnId,
++                rawOutput: output.text,
++                schemaIssues: [{
++                    path: '$',
++                    code: 'invalid-json',
++                    message: '模型最终输出无法解析为 JSON。'
++                }]
++            })
++        );
++    }
++    let value: T;
++    try {
++        value = schema.parse(rawValue);
++    } catch (error) {
++        throw new ClassifiedModelFailure(
++            'schema-invalid',
++            `Codex App Server 返回内容不符合 ${ schema.name } Schema。`,
++            createSafeModelProtocolDiagnostic({
++                modelRole: request.modelRole ?? 'action-planner',
++                phase: request.protocolPhase ?? 'initial',
++                failureType: 'schema-invalid',
++                model: output.model,
++                requestId: output.turnId,
++                rawOutput: output.text,
++                parsedJson: rawValue,
++                schemaIssues: schemaIssues(error)
++            })
++        );
++    }
++    return {
++        model: output.model,
++        requestId: output.turnId,
++        value
++    };
++}
++
++function schemaIssues(error: unknown): ModelProtocolSchemaIssue[] {
++    if (error instanceof RuntimeSchemaValidationError) {
++        return error.issues;
++    }
++    return [{
++        path: '$',
++        code: 'schema-parse-failed',
++        message: error instanceof Error
++            ? error.message
++            : 'RuntimeSchema parser 未提供失败详情。'
++    }];
++}
++
++function classifiedUnavailable(
++    request: ModelRequest,
++    failureType: 'model-timeout' | 'provider-unavailable',
++    message: string
++): ClassifiedModelFailure {
++    return new ClassifiedModelFailure(
++        failureType,
++        message,
++        createSafeModelProtocolDiagnostic({
++            modelRole: request.modelRole ?? 'action-planner',
++            phase: request.protocolPhase ?? 'initial',
++            failureType,
++            schemaIssues: [{
++                path: '$provider',
++                code: failureType,
++                message
++            }]
++        })
++    );
++}
+diff --git a/server/src/adapters/model/fine_one_model_adapter.ts b/server/src/adapters/model/fine_one_model_adapter.ts
+index e4eeac8b5ef9dee5de9d6a9113dda8c61ae27b52..5538745535e826870fa9816495b70d9631499d39 100644
+--- a/server/src/adapters/model/fine_one_model_adapter.ts
++++ b/server/src/adapters/model/fine_one_model_adapter.ts
+@@ -1,9 +1,17 @@
+ import type {
+     ModelAdapter,
++    ModelProtocolSchemaIssue,
+     ModelRequest,
+     ModelResult,
+     RuntimeSchema,
+ } from '@ai-web-test-engine/core';
++import {
++    ClassifiedModelFailure,
++    RuntimeSchemaValidationError,
++} from '@ai-web-test-engine/core';
++import {
++    createSafeModelProtocolDiagnostic,
++} from './model_protocol_diagnostic';
+ 
+ export type FineOneApiProtocol =
+     | 'chat_completions'
+@@ -225,8 +233,9 @@ export class FineOneModelAdapter implements ModelAdapter {
+         signal.throwIfAborted();
+ 
+         if (!this.apiKey) {
+-            throw new FineOneModelAdapterError(
+-                'MISSING_API_KEY',
++            throw classifiedFineOneFailure(
++                request,
++                'provider-unavailable',
+                 'FineOneAPI API Key 尚未配置。'
+             );
+         }
+@@ -250,10 +259,19 @@ export class FineOneModelAdapter implements ModelAdapter {
+             let value: T;
+             try {
+                 value = schema.parse(parsedResponse.value);
+-            } catch {
+-                throw new FineOneModelAdapterError(
+-                    'SCHEMA_VALIDATION_FAILED',
+-                    `FineOneAPI 返回内容不符合 ${ schema.name } Schema。`
++            } catch (error) {
++                throw new ClassifiedModelFailure(
++                    'schema-invalid',
++                    `FineOneAPI 返回内容不符合 ${ schema.name } Schema。`,
++                    createSafeModelProtocolDiagnostic({
++                        modelRole: request.modelRole ?? 'action-planner',
++                        phase: request.protocolPhase ?? 'initial',
++                        failureType: 'schema-invalid',
++                        model: parsedResponse.model,
++                        requestId: parsedResponse.requestId,
++                        parsedJson: parsedResponse.value,
++                        schemaIssues: fineOneSchemaIssues(error)
++                    })
+                 );
+             }
+ 
+@@ -266,23 +284,28 @@ export class FineOneModelAdapter implements ModelAdapter {
+             if (signal.aborted) {
+                 signal.throwIfAborted();
+             }
+-            if (error instanceof FineOneModelAdapterError) {
++            if (error instanceof ClassifiedModelFailure) {
+                 throw error;
+             }
+             if (timeoutController.signal.aborted) {
+-                throw new FineOneModelAdapterError(
+-                    'TIMEOUT',
++                throw classifiedFineOneFailure(
++                    request,
++                    'model-timeout',
+                     'FineOneAPI 请求超时。'
+                 );
+             }
+-            throw new FineOneModelAdapterError(
+-                'NETWORK_ERROR',
+-                `FineOneAPI 请求异常：${
+-                    error instanceof Error
+-                        ? error.message
+-                        : '未知网络错误'
+-                }`
+-            );
++            if (error instanceof FineOneModelAdapterError) {
++                throw classifiedFineOneFailure(
++                    request,
++                    error.code === 'TIMEOUT'
++                        ? 'model-timeout'
++                        : error.code === 'INVALID_RESPONSE'
++                            ? 'invalid-json'
++                            : 'provider-unavailable',
++                    error.message
++                );
++            }
++            throw error;
+         } finally {
+             clearTimeout(timeoutHandle);
+         }
+@@ -568,3 +591,37 @@ export class FineOneModelAdapter implements ModelAdapter {
+             : undefined;
+     }
+ }
++
++function fineOneSchemaIssues(error: unknown): ModelProtocolSchemaIssue[] {
++    if (error instanceof RuntimeSchemaValidationError) {
++        return error.issues;
++    }
++    return [{
++        path: '$',
++        code: 'schema-parse-failed',
++        message: error instanceof Error
++            ? error.message
++            : 'RuntimeSchema parser 未提供失败详情。'
++    }];
++}
++
++function classifiedFineOneFailure(
++    request: ModelRequest,
++    failureType: 'invalid-json' | 'model-timeout' | 'provider-unavailable',
++    message: string
++): ClassifiedModelFailure {
++    return new ClassifiedModelFailure(
++        failureType,
++        message,
++        createSafeModelProtocolDiagnostic({
++            modelRole: request.modelRole ?? 'action-planner',
++            phase: request.protocolPhase ?? 'initial',
++            failureType,
++            schemaIssues: [{
++                path: '$provider',
++                code: failureType,
++                message
++            }]
++        })
++    );
++}
+diff --git a/server/src/adapters/model/model_protocol_diagnostic.ts b/server/src/adapters/model/model_protocol_diagnostic.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..89ac921777c32798ea44dc1c11c3669d79a52223
+--- /dev/null
++++ b/server/src/adapters/model/model_protocol_diagnostic.ts
+@@ -0,0 +1,154 @@
++import {
++    createHash,
++} from 'node:crypto';
++import type {
++    JsonValue,
++    ModelProtocolDiagnostic,
++    ModelProtocolFailureType,
++    ModelProtocolSchemaIssue,
++    ModelRole,
++} from '@ai-web-test-engine/core';
++
++const MAX_RAW_PREVIEW = 4_096;
++const MAX_STRING_LENGTH = 512;
++const MAX_ARRAY_LENGTH = 30;
++const MAX_OBJECT_KEYS = 50;
++const MAX_DEPTH = 6;
++const SENSITIVE_KEY = /(?:authorization|cookie|credential|password|secret|token)/iu;
++const RAW_SECRET = /((?:authorization|cookie|password|secret|token)\s*["']?\s*[:=]\s*)[^\s,}\]]+/giu;
++const URL_PATTERN = /https?:\/\/[^\s"'<>]+/giu;
++
++interface DiagnosticInput {
++    modelRole: ModelRole;
++    phase: 'initial' | 'repair';
++    failureType: ModelProtocolFailureType;
++    model?: string;
++    requestId?: string;
++    rawOutput?: string;
++    parsedJson?: unknown;
++    schemaIssues?: ModelProtocolSchemaIssue[];
++}
++
++/** 在模型/provider 边界完成脱敏与截断，调用方只能看到安全诊断。 */
++export function createSafeModelProtocolDiagnostic(
++    input: DiagnosticInput
++): ModelProtocolDiagnostic {
++    let truncated = false;
++    const rawOutputPreview = input.rawOutput === undefined
++        ? undefined
++        : bound(sanitizeText(input.rawOutput), MAX_RAW_PREVIEW, () => {
++            truncated = true;
++        });
++    const parsedJson = input.parsedJson === undefined
++        ? undefined
++        : sanitizeJson(input.parsedJson, 0, () => {
++            truncated = true;
++        });
++    const schemaIssues = (input.schemaIssues ?? []).slice(0, 20).map(
++        ({ path, code, message }) => ({
++            path: bound(sanitizeText(path), 256, () => {
++                truncated = true;
++            }),
++            code: bound(sanitizeText(code), 80, () => {
++                truncated = true;
++            }),
++            message: bound(sanitizeText(message), 500, () => {
++                truncated = true;
++            })
++        })
++    );
++    if ((input.schemaIssues?.length ?? 0) > schemaIssues.length) {
++        truncated = true;
++    }
++    return {
++        schemaVersion: 1,
++        modelRole: input.modelRole,
++        phase: input.phase,
++        failureType: input.failureType,
++        ...input.model ? { model: sanitizeText(input.model).slice(0, 200) } : {},
++        ...input.requestId
++            ? { requestId: sanitizeText(input.requestId).slice(0, 200) }
++            : {},
++        ...rawOutputPreview === undefined ? {} : { rawOutputPreview },
++        ...input.rawOutput === undefined
++            ? {}
++            : {
++                rawSha256: createHash('sha256')
++                    .update(input.rawOutput)
++                    .digest('hex')
++            },
++        ...parsedJson === undefined ? {} : { parsedJson },
++        schemaIssues,
++        sanitized: true,
++        truncated
++    };
++}
++
++function sanitizeJson(
++    value: unknown,
++    depth: number,
++    markTruncated: () => void
++): JsonValue {
++    if (depth > MAX_DEPTH) {
++        markTruncated();
++        return '[TRUNCATED]';
++    }
++    if (value === null || typeof value === 'boolean') {
++        return value;
++    }
++    if (typeof value === 'number') {
++        return Number.isFinite(value) ? value : String(value);
++    }
++    if (typeof value === 'string') {
++        return bound(sanitizeText(value), MAX_STRING_LENGTH, markTruncated);
++    }
++    if (Array.isArray(value)) {
++        if (value.length > MAX_ARRAY_LENGTH) {
++            markTruncated();
++        }
++        return value.slice(0, MAX_ARRAY_LENGTH).map((item) =>
++            sanitizeJson(item, depth + 1, markTruncated));
++    }
++    if (typeof value !== 'object' || value === undefined) {
++        return String(value);
++    }
++    const entries = Object.entries(value as Record<string, unknown>);
++    if (entries.length > MAX_OBJECT_KEYS) {
++        markTruncated();
++    }
++    return Object.fromEntries(entries.slice(0, MAX_OBJECT_KEYS).map(
++        ([ key, item ]) => [
++            sanitizeText(key).slice(0, 200),
++            SENSITIVE_KEY.test(key)
++                ? '[REDACTED]'
++                : sanitizeJson(item, depth + 1, markTruncated)
++        ]
++    ));
++}
++
++function sanitizeText(value: string): string {
++    return value
++        .replace(RAW_SECRET, '$1[REDACTED]')
++        .replace(URL_PATTERN, (candidate) => sanitizeUrl(candidate));
++}
++
++function sanitizeUrl(candidate: string): string {
++    try {
++        const parsed = new URL(candidate);
++        return `${ parsed.origin }${ parsed.pathname }`;
++    } catch {
++        return '[REDACTED_URL]';
++    }
++}
++
++function bound(
++    value: string,
++    limit: number,
++    markTruncated: () => void
++): string {
++    if (value.length <= limit) {
++        return value;
++    }
++    markTruncated();
++    return `${ value.slice(0, limit) }…`;
++}
+diff --git a/server/test/server/adapters/browser/playwright_page_stability_adapter.test.ts b/server/test/server/adapters/browser/playwright_page_stability_adapter.test.ts
+index 1af1e54b00d5acf3e561f9e45b38b8f829ad6591..dda954b852136a151587904f0e310871fc2c8782 100644
+--- a/server/test/server/adapters/browser/playwright_page_stability_adapter.test.ts
++++ b/server/test/server/adapters/browser/playwright_page_stability_adapter.test.ts
+@@ -11,11 +11,11 @@ import type {
+ } from '../../../../src/adapters/browser';
+ 
+ describe('PlaywrightPageStabilityAdapter', () => {
+-    it('忽略随机数字变化并保留结构与 transient 信号', async () => {
++    it('忽略倒计时与长随机标识变化并保留 transient 信号', async () => {
+         const provider = new FakePageProvider([
+-            state('倒计时 9 秒 / 订单 123456', false),
+-            state('倒计时 8 秒 / 订单 987654', false),
+-            state('倒计时 8 秒 / 订单 987654', true)
++            state('倒计时 9 秒 / 请求 123456789012', false),
++            state('倒计时 8 秒 / 请求 987654321098', false),
++            state('倒计时 8 秒 / 请求 987654321098', true)
+         ]);
+         const adapter = new PlaywrightPageStabilityAdapter(provider);
+         const signal = new AbortController().signal;
+@@ -28,6 +28,20 @@ describe('PlaywrightPageStabilityAdapter', () => {
+         assert.deepEqual(transient.transientSignals, [ 'loading-text' ]);
+     });
+ 
++    it('保留搜索结果数量等普通业务短整数', async () => {
++        const provider = new FakePageProvider([
++            state('搜索结果 0 条', false),
++            state('搜索结果 1 条', false)
++        ]);
++        const adapter = new PlaywrightPageStabilityAdapter(provider);
++        const signal = new AbortController().signal;
++
++        assert.notEqual(
++            (await adapter.sample(SESSION, signal)).fingerprint,
++            (await adapter.sample(SESSION, signal)).fingerprint
++        );
++    });
++
+     it('text-only async 业务状态变化必须改变 fingerprint', async () => {
+         const provider = new FakePageProvider([
+             state('固定按钮', false, [ '搜索中...' ]),
+diff --git a/server/test/server/adapters/model/codex_app_server_model_adapter.test.ts b/server/test/server/adapters/model/codex_app_server_model_adapter.test.ts
+index 63f071832c4ea3fc1670239d54d6e17ea09170e5..ee239e225e8dce2f3a82de1221077153e4398513 100644
+--- a/server/test/server/adapters/model/codex_app_server_model_adapter.test.ts
++++ b/server/test/server/adapters/model/codex_app_server_model_adapter.test.ts
+@@ -4,7 +4,9 @@ import type {
+     RuntimeSchema,
+ } from '@ai-web-test-engine/core';
+ import {
+-    CodexAppServerError,
++    ClassifiedModelFailure,
++} from '@ai-web-test-engine/core';
++import {
+     CodexAppServerModelAdapter,
+ } from '../../../../src/adapters/model';
+ import type {
+@@ -21,7 +23,9 @@ const request: ModelRequest = {
+     systemPrompt: '只返回 JSON。',
+     userPrompt: '检查状态',
+     timeoutMs: 1_000,
+-    maxOutputTokens: 100
++    maxOutputTokens: 100,
++    modelRole: 'recovery-planner',
++    protocolPhase: 'initial'
+ };
+ 
+ const statusSchema: RuntimeSchema<StatusResult> = {
+@@ -92,7 +96,7 @@ describe('CodexAppServerModelAdapter', () => {
+             model: 'gpt-5.6-sol',
+             threadId: 'thread-001',
+             turnId: 'turn-001',
+-            text: 'not-json'
++            text: 'token=secret-value https://example.test/path?q=secret not-json'
+         });
+ 
+         await assert.rejects(
+@@ -101,7 +105,19 @@ describe('CodexAppServerModelAdapter', () => {
+                 statusSchema,
+                 new AbortController().signal
+             ),
+-            hasCodexErrorCode('INVALID_RESPONSE')
++            hasClassifiedFailure('invalid-json', (error) => {
++                assert.equal(error.diagnostic.modelRole, 'recovery-planner');
++                assert.equal(error.diagnostic.phase, 'initial');
++                assert.equal(
++                    error.diagnostic.rawOutputPreview?.includes('secret-value'),
++                    false
++                );
++                assert.equal(
++                    error.diagnostic.rawOutputPreview?.includes('?q='),
++                    false
++                );
++                assert.equal(error.diagnostic.rawSha256?.length, 64);
++            })
+         );
+     });
+ 
+@@ -119,7 +135,10 @@ describe('CodexAppServerModelAdapter', () => {
+                 statusSchema,
+                 new AbortController().signal
+             ),
+-            hasCodexErrorCode('SCHEMA_VALIDATION_FAILED')
++            hasClassifiedFailure('schema-invalid', (error) => {
++                assert.deepEqual(error.diagnostic.parsedJson, { status: 123 });
++                assert.equal(error.diagnostic.schemaIssues[0]?.path, '$');
++            })
+         );
+     });
+ 
+@@ -136,7 +155,7 @@ describe('CodexAppServerModelAdapter', () => {
+                 statusSchema,
+                 new AbortController().signal
+             ),
+-            hasCodexErrorCode('TIMEOUT')
++            hasClassifiedFailure('model-timeout')
+         );
+     });
+ 
+@@ -172,11 +191,21 @@ function createAdapter(
+     }, client);
+ }
+ 
+-/** 为 assert.rejects 匹配 Codex 的稳定错误分类。 */
+-function hasCodexErrorCode(code: CodexAppServerError['code']) {
+-    return (error: unknown) =>
+-        error instanceof CodexAppServerError &&
+-        error.code === code;
++/** 为 assert.rejects 匹配 provider-neutral 的稳定模型错误分类。 */
++function hasClassifiedFailure(
++    failureType: ClassifiedModelFailure['failureType'],
++    inspect?: (error: ClassifiedModelFailure) => void
++) {
++    return (error: unknown) => {
++        if (
++            !(error instanceof ClassifiedModelFailure)
++            || error.failureType !== failureType
++        ) {
++            return false;
++        }
++        inspect?.(error);
++        return true;
++    };
+ }
+ 
+ /** 返回固定 App Server 回合，并记录适配器传入的参数。 */
+diff --git a/server/test/server/adapters/model/fine_one_model_adapter.test.ts b/server/test/server/adapters/model/fine_one_model_adapter.test.ts
+index 1c84fd8731376d6f395ec3f9727cb8dff9cfbb05..afd1eb8883846198d0642d7eb0dc2f752ca2ca4c 100644
+--- a/server/test/server/adapters/model/fine_one_model_adapter.test.ts
++++ b/server/test/server/adapters/model/fine_one_model_adapter.test.ts
+@@ -3,10 +3,12 @@ import type {
+     ModelRequest,
+     RuntimeSchema,
+ } from '@ai-web-test-engine/core';
++import {
++    ClassifiedModelFailure,
++} from '@ai-web-test-engine/core';
+ import {
+     FineOneApiProtocol,
+     FineOneModelAdapter,
+-    FineOneModelAdapterError,
+ } from '../../../../src/adapters/model';
+ 
+ interface StatusResult {
+@@ -243,7 +245,7 @@ describe('FineOneModelAdapter', () => {
+                 statusSchema,
+                 new AbortController().signal
+             ),
+-            hasFineOneErrorCode('SCHEMA_VALIDATION_FAILED')
++            hasClassifiedModelFailure('schema-invalid')
+         );
+     });
+ 
+@@ -260,7 +262,7 @@ describe('FineOneModelAdapter', () => {
+                 statusSchema,
+                 new AbortController().signal
+             ),
+-            hasFineOneErrorCode('MISSING_API_KEY')
++            hasClassifiedModelFailure('provider-unavailable')
+         );
+         assert.equal(fetchCalled, false);
+     });
+@@ -294,13 +296,13 @@ describe('FineOneModelAdapter', () => {
+     });
+ });
+ 
+-/** 为 assert.rejects 匹配 FineOne 的稳定错误分类。 */
+-function hasFineOneErrorCode(
+-    code: FineOneModelAdapterError['code']
++/** 为 assert.rejects 匹配跨 provider 的稳定模型失败分类。 */
++function hasClassifiedModelFailure(
++    type: ClassifiedModelFailure['failureType']
+ ) {
+     return (error: unknown) =>
+-        error instanceof FineOneModelAdapterError &&
+-        error.code === code;
++        error instanceof ClassifiedModelFailure &&
++        error.failureType === type;
+ }
+ 
+ /** 为 assert.rejects 匹配指定名称的 Error。 */

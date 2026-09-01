@@ -1,0 +1,229 @@
+diff --git a/modules/engine-core/src/grounding/composite_target_grounder.ts b/modules/engine-core/src/grounding/composite_target_grounder.ts
+index bebeaeb..c6eb520 100644
+--- a/modules/engine-core/src/grounding/composite_target_grounder.ts
++++ b/modules/engine-core/src/grounding/composite_target_grounder.ts
+@@ -165,14 +165,25 @@ export class CompositeTargetGrounder implements TargetGrounder {
+             { nodes: exactMatches, source: 'accessibility' },
+             signal
+         );
+-        if (
+-            mapping.status !== 'mapped' ||
+-            mapping.candidates.length !== 1 ||
+-            !mapping.candidates[0].actionCompatible ||
+-            mapping.candidates[0].candidateId === domDecision.target?.candidateId
+-        ) {
++        if (mapping.status === 'unmapped') {
+             return undefined;
+         }
++        const candidate = mapping.candidates.length === 1
++            ? mapping.candidates[0]
++            : undefined;
++        if (mapping.status === 'mapped') {
++            if (!candidate?.actionCompatible) {
++                return undefined;
++            }
++            if (candidate.candidateId === domDecision.target?.candidateId) {
++                return undefined;
++            }
++        }
++        const sourcesUsed = [
++            'dom',
++            'accessibility',
++            ...(mapping.candidates.length > 0 ? [ 'hit-test' as const ] : [])
++        ] as const;
+         return {
+             status: 'ambiguous',
+             confidence: 0,
+@@ -181,11 +192,15 @@ export class CompositeTargetGrounder implements TargetGrounder {
+                 ...domDecision.evidence,
+                 ...mapping.evidence,
+                 `DOM candidate=${ domDecision.target?.candidateId }`,
+-                `A11y candidate=${ mapping.candidates[0].candidateId }`
++                ...candidate
++                    ? [ `A11y candidate=${ candidate.candidateId }` ]
++                    : [ `A11y mapping=${ mapping.status }` ]
+             ],
+-            summary: 'DOM 与强 exact accessibility 证据指向不同目标。',
++            summary: mapping.status === 'ambiguous'
++                ? '强 exact accessibility 证据映射到多个目标。'
++                : 'DOM 与强 exact accessibility 证据指向不同目标。',
+             usage: {
+-                sourcesUsed: [ 'dom', 'accessibility', 'hit-test' ],
++                sourcesUsed: [ ...sourcesUsed ],
+                 visualModelCalls: 0
+             }
+         };
+diff --git a/modules/engine-core/test/composite_target_grounder.test.ts b/modules/engine-core/test/composite_target_grounder.test.ts
+index 3332109..6951775 100644
+--- a/modules/engine-core/test/composite_target_grounder.test.ts
++++ b/modules/engine-core/test/composite_target_grounder.test.ts
+@@ -82,6 +82,39 @@ describe('CompositeTargetGrounder 多模态顺序', () => {
+         ]);
+     });
+ 
++});
++
++describe('CompositeTargetGrounder 跨模态冲突', () => {
++    it('强 exact A11y 映射 ambiguous 时阻止 DOM fast path', async () => {
++        const mapper = new FakeCandidateMapper(undefined, 'ambiguous');
++        const visual = new FakeVisualGrounder();
++        const request = createRequest(
++            [ createElement('e1', '收藏') ],
++            createAction('收藏')
++        );
++        request.perception.accessibility.nodes.push({
++            id: 'ax-node-1',
++            ancestors: [{ name: '应用 11', role: 'group' }],
++            name: '收藏',
++            role: 'button'
++        });
++
++        const decision = await new CompositeTargetGrounder(
++            mapper,
++            visual
++        ).ground(request, signal());
++
++        assert.equal(decision.status, 'ambiguous');
++        assert.equal(decision.target, undefined);
++        assert.equal(visual.callCount, 0);
++        assert.deepEqual(decision.usage?.sourcesUsed, [
++            'dom', 'accessibility'
++        ]);
++    });
++
++});
++
++describe('CompositeTargetGrounder A11y fallback', () => {
+     it('DOM 不足时使用 bounded A11y 证据映射到 live candidate', async () => {
+         const mapper = new FakeCandidateMapper('ax-1');
+         const visual = new FakeVisualGrounder();
+@@ -205,7 +238,9 @@ class FakeCandidateMapper implements CandidateMappingPort {
+     ) => {
+         this.calls.push(evidence);
+         return Promise.resolve({
+-            status: this.candidateId ? this.status : 'unmapped',
++            status: this.status === 'ambiguous'
++                ? 'ambiguous'
++                : this.candidateId ? this.status : 'unmapped',
+             candidates: this.candidateId ? [{
+                 actionCompatible: true,
+                 candidateId: this.candidateId,
+diff --git a/server/src/adapters/browser/interactive_element_script.ts b/server/src/adapters/browser/interactive_element_script.ts
+index 02e0bde..fd257d8 100644
+--- a/server/src/adapters/browser/interactive_element_script.ts
++++ b/server/src/adapters/browser/interactive_element_script.ts
+@@ -112,7 +112,10 @@ export const INTERACTIVE_ELEMENT_SCRIPT = String.raw`(() => {
+             return false;
+         }
+         const parent = element.parentElement;
+-        return !parent || window.getComputedStyle(parent).cursor !== 'pointer';
++        if (parent && window.getComputedStyle(parent).cursor === 'pointer') {
++            return false;
++        }
++        return !parent?.closest(selector);
+     };
+     const inferRole = (element, likelyInteractive) => {
+         const explicitRole = element.getAttribute('role');
+diff --git a/server/src/adapters/browser/playwright_candidate_mapping_adapter.ts b/server/src/adapters/browser/playwright_candidate_mapping_adapter.ts
+index 82671be..7c0f418 100644
+--- a/server/src/adapters/browser/playwright_candidate_mapping_adapter.ts
++++ b/server/src/adapters/browser/playwright_candidate_mapping_adapter.ts
+@@ -72,22 +72,29 @@ const VISUAL_MAPPING_SCRIPT = String.raw`(input) => {
+             element.hasAttribute('onclick') ||
+             element.hasAttribute('aria-haspopup');
+     };
+-    const pointerOwner = (element) => input.actionType === 'CLICK' &&
+-        visible(element) &&
+-        !['svg', 'path', 'use'].includes(element.tagName.toLowerCase()) &&
+-        window.getComputedStyle(element).cursor === 'pointer';
++    const pointerOwner = (element) => {
++        if (
++            input.actionType !== 'CLICK' || !visible(element) ||
++            ['svg', 'path', 'use'].includes(element.tagName.toLowerCase()) ||
++            window.getComputedStyle(element).cursor !== 'pointer'
++        ) {
++            return false;
++        }
++        const parent = element.parentElement;
++        return !parent || window.getComputedStyle(parent).cursor !== 'pointer';
++    };
+     const candidates = [];
+     for (const hit of hits) {
+         let current = hit;
+         let pointerCandidate;
+         for (let depth = 0; current && depth < 7; depth += 1) {
+-            if (strongOwner(current)) {
+-                candidates.push(current);
+-                break;
+-            }
+             if (!pointerCandidate && pointerOwner(current)) {
+                 pointerCandidate = current;
+             }
++            if (strongOwner(current)) {
++                candidates.push(pointerCandidate || current);
++                break;
++            }
+             current = current.parentElement;
+         }
+         if (!current && pointerCandidate) {
+diff --git a/server/test/server/adapters/browser/playwright_candidate_mapping_adapter.test.ts b/server/test/server/adapters/browser/playwright_candidate_mapping_adapter.test.ts
+index 2475de7..c8d252c 100644
+--- a/server/test/server/adapters/browser/playwright_candidate_mapping_adapter.test.ts
++++ b/server/test/server/adapters/browser/playwright_candidate_mapping_adapter.test.ts
+@@ -173,6 +173,56 @@ describe('PlaywrightCandidateMappingAdapter', () => {
+         }
+     }).timeout(15_000);
+ 
++    it('视觉命中 SVG 时优先绑定更具体的 pointer owner', async () => {
++        const browser = new PlaywrightBrowserAdapter();
++        const session = await browser.start(START_OPTIONS);
++        try {
++            const page = browser.getPage(session);
++            await page.setContent([
++                '<style>.favorite{cursor:pointer}</style>',
++                '<div id="card" role="button" aria-label="应用 11 卡片" ',
++                'style="width:200px;height:100px">应用 11',
++                '<div id="favorite" class="favorite" ',
++                'style="width:40px;height:40px">',
++                '<svg viewBox="0 0 40 40" width="40" height="40">',
++                '<path d="M20 2L25 14L38 15L28 24L31 38L20 30',
++                'L9 38L12 24L2 15L15 14Z"></path></svg></div></div>'
++            ].join(''));
++            const observation = await browser.observe(session);
++            const cardId = observation.interactiveElements.find(
++                ({ attributes }) => attributes.id === 'card'
++            )?.candidateId;
++            assert.ok(cardId);
++            assert.equal(observation.interactiveElements.some(
++                ({ attributes }) => attributes.id === 'favorite'
++            ), false);
++            const box = await page.locator('#favorite svg').boundingBox();
++            assert.ok(box);
++
++            const result = await new PlaywrightCandidateMappingAdapter(
++                browser
++            ).map(
++                session,
++                createPerception(observation),
++                createClickAction(),
++                { source: 'visual', regions: [ createRegion(box) ] },
++                new AbortController().signal
++            );
++
++            assert.equal(result.status, 'mapped', result.summary);
++            assert.match(result.candidates[0].candidateId, /^visual-/u);
++            assert.notEqual(result.candidates[0].candidateId, cardId);
++            assert.equal(await page.locator('#favorite').getAttribute(
++                'data-ai-web-test-candidate'
++            ), result.candidates[0].candidateId);
++            assert.equal(await page.locator('svg').getAttribute(
++                'data-ai-web-test-candidate'
++            ), null);
++        } finally {
++            await browser.close(session);
++        }
++    }).timeout(15_000);
++
+     it('真实 ariaSnapshot 经 ax-* transient target 完成浏览器执行', async () => {
+         const browser = new PlaywrightBrowserAdapter();
+         const session = await browser.start(START_OPTIONS);

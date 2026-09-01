@@ -1,0 +1,165 @@
+From 132983dd46c79b6af324e2f7c1181db7cdd53752 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ethan=2EKuang-=E5=86=B5=E4=BD=B3=E6=AC=A3?=
+ <Ethan.Kuang@fanruan.com>
+Date: Tue, 1 Sep 2026 09:45:39 +0800
+Subject: [PATCH] fix(recovery): require goal-related progress evidence
+
+---
+ .../src/run/semantic_step_controller.ts       | 12 +++---
+ .../run/semantic_step_progress_evaluator.ts   | 15 +++++--
+ .../test/semantic_step_controller.test.ts     | 43 +++++++++++++++++++
+ .../semantic_step_progress_evaluator.test.ts  |  5 ++-
+ 4 files changed, 65 insertions(+), 10 deletions(-)
+
+diff --git a/modules/engine-core/src/run/semantic_step_controller.ts b/modules/engine-core/src/run/semantic_step_controller.ts
+index 3038124..2ed1af2 100644
+--- a/modules/engine-core/src/run/semantic_step_controller.ts
++++ b/modules/engine-core/src/run/semantic_step_controller.ts
+@@ -16,9 +16,6 @@ import type {
+     SemanticStepProgress,
+     TestIntent,
+ } from '../contracts';
+-import {
+-    hasMeaningfulPerceptionDelta,
+-} from '../contracts';
+ import type {
+     SemanticStepProgressEvaluator,
+ } from './semantic_step_progress_evaluator';
+@@ -686,6 +683,12 @@ function classifyRecoveryProgress<TRecord>(
+     ) {
+         return 'wrong-state';
+     }
++    if (
++        execution?.restorative
++        && execution.effect.status === 'confirmed'
++    ) {
++        return 'progress';
++    }
+     if (after.status === 'grounded' && before.status !== 'grounded') {
+         return 'progress';
+     }
+@@ -695,9 +698,6 @@ function classifyRecoveryProgress<TRecord>(
+     if (overlayImproved(afterPerception.delta)) {
+         return 'progress';
+     }
+-    if (hasMeaningfulPerceptionDelta(afterPerception.delta)) {
+-        return 'progress';
+-    }
+     return 'no-progress';
+ }
+ 
+diff --git a/modules/engine-core/src/run/semantic_step_progress_evaluator.ts b/modules/engine-core/src/run/semantic_step_progress_evaluator.ts
+index 6861acd..afc27eb 100644
+--- a/modules/engine-core/src/run/semantic_step_progress_evaluator.ts
++++ b/modules/engine-core/src/run/semantic_step_progress_evaluator.ts
+@@ -129,6 +129,7 @@ export class SemanticStepProgressEvaluator {
+                 && input.after.delta?.urlChanged
+                 && hasExplicitTargetPageEvidence(
+                     input.step.expectedEffect,
++                    input.before,
+                     input.after
+                 )
+             ) {
+@@ -156,14 +157,22 @@ export class SemanticStepProgressEvaluator {
+ 
+ function hasExplicitTargetPageEvidence(
+     expectedEffect: string | undefined,
++    before: PagePerception,
+     after: PagePerception
+ ): boolean {
+     if (!expectedEffect) {
+         return false;
+     }
+-    return [ after.dom.page.title, ...after.dom.visibleText ].some((text) => (
+-        text.trim().length >= 3 && expectedEffect.includes(text.trim())
+-    ));
++    const title = after.dom.page.title.trim();
++    const changedTitleMatches = before.dom.page.title !== after.dom.page.title
++        && title.length >= 3
++        && expectedEffect.includes(title);
++    const addedTextMatches = (after.delta?.visibleText.added ?? [])
++        .some((text) => {
++            const normalized = text.trim();
++            return normalized.length >= 3 && expectedEffect.includes(normalized);
++        });
++    return changedTitleMatches || addedTextMatches;
+ }
+ 
+ function isDeterministicControlAction(type: string): boolean {
+diff --git a/modules/engine-core/test/semantic_step_controller.test.ts b/modules/engine-core/test/semantic_step_controller.test.ts
+index 0de9c90..4aa2afa 100644
+--- a/modules/engine-core/test/semantic_step_controller.test.ts
++++ b/modules/engine-core/test/semantic_step_controller.test.ts
+@@ -284,6 +284,49 @@ describe('SemanticStepController', () => {
+         );
+     });
+ 
++    it('无关 visibleText/candidate delta 不构成 primary progress', async () => {
++        const initial = perception('initial');
++        const unrelatedDelta = emptyDelta();
++        unrelatedDelta.visibleText.added = [ '后台任务已经完成' ];
++        unrelatedDelta.candidates.added = [ 'toast-close' ];
++        const changed = perception('changed', {
++            previous: initial,
++            delta: unrelatedDelta,
++            visibleText: [ '后台任务已经完成' ]
++        });
++        const model = new SequenceRecoveryPlanner([{
++            kind: 'recover',
++            action: {
++                type: 'CLICK',
++                target: { description: '关闭菜单' },
++                reasonSummary: '关闭临时菜单'
++            }
++        }]);
++        const runtime = new FakeRuntime(
++            initial,
++            (action, current) => action.target?.description === '关闭菜单'
++                ? grounded('close', current, '关闭菜单')
++                : decision('not-found'),
++            () => changed
++        );
++
++        const result = await controller(
++            runtime,
++            new SemanticStepProgressEvaluator(),
++            model
++        ).execute(step({
++            type: 'CLICK',
++            target: { description: '新建应用' },
++            reasonSummary: '创建应用'
++        }), intent, signal());
++
++        assert.equal(result.executions[0]?.recoveryOutcome, 'no-progress');
++        assert.equal(
++            result.executions[0]?.compilationContribution,
++            'non-productive'
++        );
++    });
++
+     it('非导航 wrong-state 不会授权 BACK', () => {
+         const policy = new DeterministicRecoverySafetyPolicy();
+         const common = {
+diff --git a/modules/engine-core/test/semantic_step_progress_evaluator.test.ts b/modules/engine-core/test/semantic_step_progress_evaluator.test.ts
+index 13df190..00ac01f 100644
+--- a/modules/engine-core/test/semantic_step_progress_evaluator.test.ts
++++ b/modules/engine-core/test/semantic_step_progress_evaluator.test.ts
+@@ -84,11 +84,14 @@ describe('SemanticStepProgressEvaluator', () => {
+ });
+ 
+ describe('SemanticStepProgressEvaluator correctness', () => {
+-    it('CLICK New App 实际进入 settings 时不能直接判 complete', async () => {
++    it('CLICK 错跳 settings 时不能复用跳转前已有目标文本', async () => {
+         const before = createPerception('before');
+         const after = createPerception('after', before);
++        before.dom.visibleText = [ '工作台', '新建应用' ];
+         after.dom.page.url = 'https://example.test/settings';
++        after.dom.visibleText = [ '工作台', '新建应用' ];
+         after.delta!.urlChanged = true;
++        after.delta!.visibleText.added = [];
+         let modelCalls = 0;
+         const evaluator = new SemanticStepProgressEvaluator({
+             modelFallback: {
+-- 
+2.55.0.windows.2
+

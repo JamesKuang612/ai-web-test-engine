@@ -1,0 +1,2418 @@
+diff --git a/modules/engine-core/resources/engine-contracts.schema.json b/modules/engine-core/resources/engine-contracts.schema.json
+index 060df9f8de10d37717f81e592d3d84ea2f0c61b9..7611f7616b93daab8e2fd77181c85d50ae685310 100644
+--- a/modules/engine-core/resources/engine-contracts.schema.json
++++ b/modules/engine-core/resources/engine-contracts.schema.json
+@@ -2,6 +2,96 @@
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "additionalProperties": false,
+     "definitions": {
++        "AccessibilityAncestor": {
++            "additionalProperties": false,
++            "description": "Accessibility 节点的紧凑祖先语义。",
++            "properties": {
++                "name": {
++                    "type": "string"
++                },
++                "role": {
++                    "type": "string"
++                }
++            },
++            "type": "object"
++        },
++        "AccessibilityNode": {
++            "additionalProperties": false,
++            "description": "浏览器原生 Accessibility 表示中的 bounded 节点。",
++            "properties": {
++                "ancestors": {
++                    "items": {
++                        "$ref": "#/definitions/AccessibilityAncestor"
++                    },
++                    "type": "array"
++                },
++                "boundingBox": {
++                    "$ref": "#/definitions/BoundingBox"
++                },
++                "checked": {
++                    "enum": [
++                        false,
++                        "mixed",
++                        true
++                    ]
++                },
++                "description": {
++                    "type": "string"
++                },
++                "disabled": {
++                    "type": "boolean"
++                },
++                "domCandidateId": {
++                    "description": "已安全映射并注册到当前 observation 的物理候选。",
++                    "type": "string"
++                },
++                "expanded": {
++                    "type": "boolean"
++                },
++                "id": {
++                    "type": "string"
++                },
++                "name": {
++                    "type": "string"
++                },
++                "role": {
++                    "type": "string"
++                },
++                "selected": {
++                    "type": "boolean"
++                }
++            },
++            "required": [
++                "ancestors",
++                "id"
++            ],
++            "type": "object"
++        },
++        "AccessibilitySnapshot": {
++            "additionalProperties": false,
++            "description": "不保存原始完整树，只保存 Grounding 所需的有限节点。",
++            "properties": {
++                "nodes": {
++                    "items": {
++                        "$ref": "#/definitions/AccessibilityNode"
++                    },
++                    "type": "array"
++                },
++                "source": {
++                    "const": "playwright-aria-snapshot",
++                    "type": "string"
++                },
++                "truncated": {
++                    "type": "boolean"
++                }
++            },
++            "required": [
++                "nodes",
++                "source",
++                "truncated"
++            ],
++            "type": "object"
++        },
+         "ActionCommand": {
+             "additionalProperties": false,
+             "description": "Planner 每轮只能返回的一个受控动作或终止建议。",
+@@ -1029,6 +1119,247 @@
+             ],
+             "type": "object"
+         },
++        "PagePerception": {
++            "additionalProperties": false,
++            "description": "DOM、Accessibility、交互状态和视觉证据的统一感知快照。",
++            "properties": {
++                "accessibility": {
++                    "$ref": "#/definitions/AccessibilitySnapshot"
++                },
++                "capturedAt": {
++                    "type": "string"
++                },
++                "delta": {
++                    "$ref": "#/definitions/PerceptionDelta"
++                },
++                "dom": {
++                    "$ref": "#/definitions/PageObservation"
++                },
++                "interactionStates": {
++                    "$ref": "#/definitions/Record<string,ElementInteractionState>"
++                },
++                "perceptionId": {
++                    "type": "string"
++                },
++                "stability": {
++                    "$ref": "#/definitions/PerceptionStability",
++                    "description": "缺失表示 legacy artifact，读取时必须按 unknown 处理。"
++                },
++                "visual": {
++                    "additionalProperties": false,
++                    "properties": {
++                        "regions": {
++                            "items": {
++                                "$ref": "#/definitions/VisualRegion"
++                            },
++                            "type": "array"
++                        },
++                        "screenshotRef": {
++                            "type": "string"
++                        }
++                    },
++                    "required": [
++                        "regions"
++                    ],
++                    "type": "object"
++                }
++            },
++            "required": [
++                "accessibility",
++                "capturedAt",
++                "dom",
++                "interactionStates",
++                "perceptionId"
++            ],
++            "type": "object"
++        },
++        "PageTransientSignal": {
++            "description": "页面中可以低成本识别的异步过渡信号。",
++            "enum": [
++                "aria-busy",
++                "document-loading",
++                "loading-text",
++                "progressbar",
++                "spinner"
++            ],
++            "type": "string"
++        },
++        "PerceptionDelta": {
++            "additionalProperties": false,
++            "description": "两次感知之间可确定、低成本计算的状态变化。",
++            "properties": {
++                "accessibility": {
++                    "additionalProperties": false,
++                    "properties": {
++                        "added": {
++                            "items": {
++                                "type": "string"
++                            },
++                            "type": "array"
++                        },
++                        "changed": {
++                            "items": {
++                                "type": "string"
++                            },
++                            "type": "array"
++                        },
++                        "removed": {
++                            "items": {
++                                "type": "string"
++                            },
++                            "type": "array"
++                        },
++                        "truncated": {
++                            "type": "boolean"
++                        }
++                    },
++                    "required": [
++                        "added",
++                        "changed",
++                        "removed",
++                        "truncated"
++                    ],
++                    "type": "object"
++                },
++                "candidates": {
++                    "additionalProperties": false,
++                    "properties": {
++                        "added": {
++                            "items": {
++                                "type": "string"
++                            },
++                            "type": "array"
++                        },
++                        "removed": {
++                            "items": {
++                                "type": "string"
++                            },
++                            "type": "array"
++                        },
++                        "truncated": {
++                            "type": "boolean"
++                        }
++                    },
++                    "required": [
++                        "added",
++                        "removed",
++                        "truncated"
++                    ],
++                    "type": "object"
++                },
++                "overlayState": {
++                    "additionalProperties": false,
++                    "properties": {
++                        "after": {
++                            "enum": [
++                                "blocked",
++                                "clear",
++                                "unknown"
++                            ],
++                            "type": "string"
++                        },
++                        "before": {
++                            "enum": [
++                                "blocked",
++                                "clear",
++                                "unknown"
++                            ],
++                            "type": "string"
++                        },
++                        "changed": {
++                            "type": "boolean"
++                        }
++                    },
++                    "required": [
++                        "after",
++                        "before",
++                        "changed"
++                    ],
++                    "type": "object"
++                },
++                "titleChanged": {
++                    "type": "boolean"
++                },
++                "urlChanged": {
++                    "type": "boolean"
++                },
++                "visibleText": {
++                    "additionalProperties": false,
++                    "properties": {
++                        "added": {
++                            "items": {
++                                "type": "string"
++                            },
++                            "type": "array"
++                        },
++                        "removed": {
++                            "items": {
++                                "type": "string"
++                            },
++                            "type": "array"
++                        },
++                        "truncated": {
++                            "type": "boolean"
++                        }
++                    },
++                    "required": [
++                        "added",
++                        "removed",
++                        "truncated"
++                    ],
++                    "type": "object"
++                }
++            },
++            "required": [
++                "accessibility",
++                "candidates",
++                "overlayState",
++                "titleChanged",
++                "urlChanged",
++                "visibleText"
++            ],
++            "type": "object"
++        },
++        "PerceptionStability": {
++            "additionalProperties": false,
++            "description": "一次完整 Perception capture window 的一致性结论。",
++            "properties": {
++                "afterFingerprint": {
++                    "type": "string"
++                },
++                "beforeFingerprint": {
++                    "type": "string"
++                },
++                "consistency": {
++                    "enum": [
++                        "consistent",
++                        "inconsistent",
++                        "unknown"
++                    ],
++                    "type": "string"
++                },
++                "state": {
++                    "enum": [
++                        "stable",
++                        "transient",
++                        "unknown"
++                    ],
++                    "type": "string"
++                },
++                "transientSignals": {
++                    "items": {
++                        "$ref": "#/definitions/PageTransientSignal"
++                    },
++                    "type": "array"
++                }
++            },
++            "required": [
++                "consistency",
++                "state",
++                "transientSignals"
++            ],
++            "type": "object"
++        },
+         "ProjectContext": {
+             "additionalProperties": false,
+             "description": "项目规则、业务术语和执行保护组成的运行上下文。",
+@@ -1053,6 +1384,10 @@
+             ],
+             "type": "object"
+         },
++        "Record<string,ElementInteractionState>": {
++            "additionalProperties": false,
++            "type": "object"
++        },
+         "Record<string,EnvironmentVariable>": {
+             "additionalProperties": false,
+             "type": "object"
+@@ -2063,6 +2398,9 @@
+         "pageObservation": {
+             "$ref": "#/definitions/PageObservation"
+         },
++        "pagePerception": {
++            "$ref": "#/definitions/PagePerception"
++        },
+         "runEvent": {
+             "$ref": "#/definitions/RunEvent"
+         },
+@@ -2097,6 +2435,7 @@
+         "environmentDefinition",
+         "groundingDecision",
+         "pageObservation",
++        "pagePerception",
+         "runEvent",
+         "runResult",
+         "runSnapshot",
+diff --git a/modules/engine-core/src/contracts/perception.ts b/modules/engine-core/src/contracts/perception.ts
+index 89b60352db379bfe3037b169ad2c777fd6eb9df3..124aeb2624c05cb0239c90557e04fa35514cc8c9 100644
+--- a/modules/engine-core/src/contracts/perception.ts
++++ b/modules/engine-core/src/contracts/perception.ts
+@@ -62,6 +62,31 @@ export interface VisualRegion {
+     description: string;
+ }
+ 
++/** 页面中可以低成本识别的异步过渡信号。 */
++export type PageTransientSignal =
++    | 'aria-busy'
++    | 'document-loading'
++    | 'loading-text'
++    | 'progressbar'
++    | 'spinner';
++
++/** 不包含完整页面文本或瞬时物理 id 的低波动稳定性采样。 */
++export interface PageStabilitySample {
++    capturedAt: string;
++    fingerprint: string;
++    loading: boolean;
++    transientSignals: PageTransientSignal[];
++}
++
++/** 一次完整 Perception capture window 的一致性结论。 */
++export interface PerceptionStability {
++    consistency: 'consistent' | 'inconsistent' | 'unknown';
++    state: 'stable' | 'transient' | 'unknown';
++    afterFingerprint?: string;
++    beforeFingerprint?: string;
++    transientSignals: PageTransientSignal[];
++}
++
+ /** 两次感知之间可确定、低成本计算的状态变化。 */
+ export interface PerceptionDelta {
+     accessibility: {
+@@ -97,6 +122,8 @@ export interface PagePerception {
+     delta?: PerceptionDelta;
+     dom: PageObservation;
+     interactionStates: Record<string, ElementInteractionState>;
++    /** 缺失表示 legacy artifact，读取时必须按 unknown 处理。 */
++    stability?: PerceptionStability;
+     visual?: {
+         regions: VisualRegion[],
+         screenshotRef?: string
+diff --git a/modules/engine-core/src/contracts/schema.ts b/modules/engine-core/src/contracts/schema.ts
+index cb0195f50335b241b96fe56ce87d79b0f2e22fcb..dec1e9f1b9300fce64d2eefca9d9b25716d76c01 100644
+--- a/modules/engine-core/src/contracts/schema.ts
++++ b/modules/engine-core/src/contracts/schema.ts
+@@ -16,6 +16,9 @@ import type {
+ import type {
+     PageObservation,
+ } from './observation';
++import type {
++    PagePerception,
++} from './perception';
+ import type {
+     RunResult,
+     RunSnapshot,
+@@ -44,6 +47,7 @@ export interface EngineContracts {
+     environmentDefinition: EnvironmentDefinition;
+     groundingDecision: GroundingDecision;
+     pageObservation: PageObservation;
++    pagePerception: PagePerception;
+     runEvent: RunEvent;
+     runResult: RunResult;
+     runSnapshot: RunSnapshot;
+diff --git a/modules/engine-core/src/intent/exact_text_assertion.ts b/modules/engine-core/src/intent/exact_text_assertion.ts
+index 947c3cef0c46bb914b260bef4a64517a0a633670..d4fc1fc46c751fa61b28a5c6801b043686c9d892 100644
+--- a/modules/engine-core/src/intent/exact_text_assertion.ts
++++ b/modules/engine-core/src/intent/exact_text_assertion.ts
+@@ -10,8 +10,13 @@ export interface ExtractedExactTextAssertions {
+     successCriteria: SuccessCriterion[];
+ }
+ 
+-const ASSERTION_LANGUAGE_PATTERN =
+-    /验证|断言|校验|确认|逐字|精确文本|必须显示|应当显示|应该显示/iu;
++const TEXT_ASSERTION_ANCHOR_PATTERN = new RegExp([
++    '(?:必须显示|应当显示|应该显示)',
++    '(?:(?:验证|断言|校验|确认|逐字|精确文本)' +
++        '[^。！？；;\\n]{0,80}?(?:显示|出现|文本|文案|内容|提示))'
++].join('|'), 'giu');
++const NEXT_ACTION_BOUNDARY_PATTERN =
++    /[，,](?=\s*(?:如果|若|否则|然后|随后|再|完成后|搜索|输入|填写|点击|选择|创建|打开))/iu;
+ const ORDER_LANGUAGE_PATTERN =
+     /顺序|依次|从上到下|从左到右/iu;
+ const QUOTED_TEXT_PATTERN =
+@@ -32,11 +37,7 @@ export function extractExactTextAssertions(
+     const groups = action
+         .split(/[。！？；;\n]+/u)
+         .map((segment) => segment.trim())
+-        .filter((segment) => ASSERTION_LANGUAGE_PATTERN.test(segment))
+-        .map((segment) => ({
+-            ordered: ORDER_LANGUAGE_PATTERN.test(segment),
+-            values: extractQuotedTexts(segment)
+-        }))
++        .flatMap(extractAssertionGroups)
+         .filter((group) => group.values.length > 0);
+ 
+     const assertions: ExactTextAssertion[] = [];
+@@ -86,6 +87,30 @@ export function extractExactTextAssertions(
+     };
+ }
+ 
++/** 只关联明确文本验证锚点之后的引号，并在下一业务动作前结束 scope。 */
++function extractAssertionGroups(segment: string): Array<{
++    ordered: boolean,
++    values: string[]
++}> {
++    const anchors = [ ...segment.matchAll(TEXT_ASSERTION_ANCHOR_PATTERN) ];
++    return anchors.map((anchor, index) => {
++        const start = anchor.index;
++        const nextAnchor = anchors[index + 1]?.index ?? segment.length;
++        const candidate = segment.slice(start, nextAnchor);
++        const actionBoundary = candidate.search(NEXT_ACTION_BOUNDARY_PATTERN);
++        const assertionClause = actionBoundary >= 0
++            ? candidate.slice(0, actionBoundary)
++            : candidate;
++        return {
++            ordered: ORDER_LANGUAGE_PATTERN.test([
++                segment.slice(0, start),
++                assertionClause
++            ].join(' ')),
++            values: extractQuotedTexts(assertionClause)
++        };
++    });
++}
++
+ /** 提取同一断言分句中的中英文引号内容，并保持原始顺序和文字。 */
+ function extractQuotedTexts(segment: string): string[] {
+     return [...segment.matchAll(QUOTED_TEXT_PATTERN)]
+diff --git a/modules/engine-core/src/perception/perception_service.ts b/modules/engine-core/src/perception/perception_service.ts
+index 248377f808a114b3f35404b76e9acf20570faba8..80fb9f393a8ea96bf5b0b31bad144ee1d51e1f52 100644
+--- a/modules/engine-core/src/perception/perception_service.ts
++++ b/modules/engine-core/src/perception/perception_service.ts
+@@ -4,7 +4,9 @@ import type {
+     AccessibilityNode,
+     PageObservation,
+     PagePerception,
++    PageStabilitySample,
+     PerceptionDelta,
++    PerceptionStability,
+ } from '../contracts';
+ import type {
+     BrowserSession,
+@@ -21,7 +23,11 @@ export class PerceptionService {
+         session: BrowserSession,
+         observation: PageObservation,
+         previous: PagePerception | undefined,
+-        signal: AbortSignal
++        signal: AbortSignal,
++        consistencyWindow?: {
++            after: PageStabilitySample,
++            before: PageStabilitySample
++        }
+     ): Promise<PagePerception> {
+         signal.throwIfAborted();
+         const signals = await this.perceptionPort.capture(
+@@ -36,6 +42,7 @@ export class PerceptionService {
+             accessibility: signals.accessibility,
+             dom: observation,
+             interactionStates: signals.interactionStates,
++            stability: createPerceptionStability(consistencyWindow),
+             visual: {
+                 regions: [],
+                 ...observation.screenshotRef
+@@ -51,6 +58,38 @@ export class PerceptionService {
+             : perception;
+     }
+ }
++
++/** legacy capture 没有 consistency window 时返回正式 unknown，而非假定稳定。 */
++export function createPerceptionStability(
++    window: {
++        after: PageStabilitySample,
++        before: PageStabilitySample
++    } | undefined
++): PerceptionStability {
++    if (!window) {
++        return {
++            consistency: 'unknown',
++            state: 'unknown',
++            transientSignals: []
++        };
++    }
++    const transientSignals = [ ...new Set([
++        ...window.before.transientSignals,
++        ...window.after.transientSignals
++    ]) ];
++    const transient = window.before.loading
++        || window.after.loading
++        || transientSignals.length > 0;
++    return {
++        consistency: window.before.fingerprint === window.after.fingerprint
++            ? 'consistent'
++            : 'inconsistent',
++        state: transient ? 'transient' : 'stable',
++        beforeFingerprint: window.before.fingerprint,
++        afterFingerprint: window.after.fingerprint,
++        transientSignals
++    };
++}
+ /** 只比较已采集的紧凑数据，不调用模型或浏览器。 */
+ export function createPerceptionDelta(
+     before: PagePerception,
+diff --git a/modules/engine-core/src/ports/page_perception_port.ts b/modules/engine-core/src/ports/page_perception_port.ts
+index 365927e9ddb3ddc6be1cd12752e13c611d219bb9..d244a129aec90c1ce2f2a1742c4eabdce8184244 100644
+--- a/modules/engine-core/src/ports/page_perception_port.ts
++++ b/modules/engine-core/src/ports/page_perception_port.ts
+@@ -2,6 +2,7 @@ import type {
+     AccessibilitySnapshot,
+     ElementInteractionState,
+     PageObservation,
++    PageStabilitySample,
+ } from '../contracts';
+ import type {
+     BrowserSession,
+@@ -20,3 +21,11 @@ export interface PagePerceptionPort {
+         signal: AbortSignal
+     ) => Promise<CapturedPerceptionSignals>;
+ }
++
++/** 只采集低波动页面骨架，供 capture consistency 与 bounded settling 使用。 */
++export interface PageStabilityPort {
++    sample: (
++        session: BrowserSession,
++        signal: AbortSignal
++    ) => Promise<PageStabilitySample>;
++}
+diff --git a/modules/engine-core/src/run/deterministic_recovery_planner.ts b/modules/engine-core/src/run/deterministic_recovery_planner.ts
+index 598373d2775380981c84a05e1d47e076c6609403..9180790a88bccb072298c2455518deb9f3d1bb15 100644
+--- a/modules/engine-core/src/run/deterministic_recovery_planner.ts
++++ b/modules/engine-core/src/run/deterministic_recovery_planner.ts
+@@ -5,6 +5,9 @@ import type {
+ import type {
+     RecoveryPlannerPort,
+ } from './recovery_ports';
++import {
++    isSpecificRecoveryTarget,
++} from './recovery_target_quality_policy';
+ 
+ /** 只提出当前感知能够明确证明安全且通用的 transient 恢复。 */
+ export class DeterministicRecoveryPlanner implements RecoveryPlannerPort {
+@@ -34,13 +37,14 @@ export class DeterministicRecoveryPlanner implements RecoveryPlannerPort {
+             && !matchesPrimaryTarget(element, input)
+         ));
+         if (filledSearch.length === 1) {
+-            return recover({
+-                type: 'CLEAR',
+-                target: {
+-                    description: elementDescription(filledSearch[0])
+-                },
+-                reasonSummary: '清除当前唯一生效的搜索或筛选条件'
+-            });
++            const target = recoveryTarget(filledSearch[0]);
++            if (target) {
++                return recover({
++                    type: 'CLEAR',
++                    target,
++                    reasonSummary: '清除当前唯一生效的搜索或筛选条件'
++                });
++            }
+         }
+         if (
+             input.failure.grounding?.status === 'not-found'
+@@ -51,11 +55,14 @@ export class DeterministicRecoveryPlanner implements RecoveryPlannerPort {
+                 element.visible && elementText(element).includes(scope)
+             ));
+             if (scopeMatches.length === 1) {
+-                return recover({
+-                    type: 'HOVER',
+-                    target: { description: elementDescription(scopeMatches[0]) },
+-                    reasonSummary: '悬浮原始目标所属区域以暴露隐藏控件'
+-                });
++                const target = recoveryTarget(scopeMatches[0]);
++                if (target) {
++                    return recover({
++                        type: 'HOVER',
++                        target,
++                        reasonSummary: '悬浮原始目标所属区域以暴露隐藏控件'
++                    });
++                }
+             }
+         }
+         if (input.failure.grounding?.status === 'not-visible') {
+@@ -74,11 +81,14 @@ export class DeterministicRecoveryPlanner implements RecoveryPlannerPort {
+                 element.visible && isDismissElement(element)
+             ));
+             if (dismiss.length === 1) {
+-                return recover({
+-                    type: 'CLICK',
+-                    target: { description: elementDescription(dismiss[0]) },
+-                    reasonSummary: '关闭当前阻挡操作的临时浮层'
+-                });
++                const target = recoveryTarget(dismiss[0]);
++                if (target) {
++                    return recover({
++                        type: 'CLICK',
++                        target,
++                        reasonSummary: '关闭当前阻挡操作的临时浮层'
++                    });
++                }
+             }
+         }
+         return {
+@@ -109,11 +119,19 @@ function matchesPrimaryTarget(
+     return Boolean(description && elementText(element).includes(description));
+ }
+ 
+-function elementDescription(
++function recoveryTarget(
+     element: RecoveryPlannerInput['view']['elements'][number]
+-): string {
+-    return element.name ?? element.label ?? element.placeholder ??
+-        element.text ?? element.visualDescription ?? element.role ?? '页面元素';
++): {description: string} | undefined {
++    const description = [
++        element.name,
++        element.label,
++        element.placeholder,
++        element.text,
++        element.visualDescription
++    ].find((value) => value && isSpecificRecoveryTarget({
++        description: value
++    }));
++    return description ? { description } : undefined;
+ }
+ 
+ function elementText(
+diff --git a/modules/engine-core/src/run/index.ts b/modules/engine-core/src/run/index.ts
+index 78d61890e33895fe27f76284adfc28e19fd445cf..c208098ef89d2531175739deeba8fbe3207b239b 100644
+--- a/modules/engine-core/src/run/index.ts
++++ b/modules/engine-core/src/run/index.ts
+@@ -5,7 +5,9 @@ export * from './deterministic_recovery_safety_policy';
+ export * from './primary_retry_policy';
+ export * from './model_recovery_planner';
+ export * from './model_step_progress_evaluator';
++export * from './page_settler';
+ export * from './recovery_ports';
++export * from './recovery_target_quality_policy';
+ export * from './run_coordinator';
+ export * from './run_context';
+ export * from './run_lifecycle';
+diff --git a/modules/engine-core/src/run/page_settler.ts b/modules/engine-core/src/run/page_settler.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..bfaf0c09e04dd9b61145bbf0e141cf2697794985
+--- /dev/null
++++ b/modules/engine-core/src/run/page_settler.ts
+@@ -0,0 +1,132 @@
++import type {
++    PagePerception,
++    PageStabilitySample,
++    PerceptionStability,
++} from '../contracts';
++
++export type StablePerceptionStability = PerceptionStability & {
++    consistency: 'consistent',
++    state: 'stable'
++};
++
++export type StablePagePerception = PagePerception & {
++    stability: StablePerceptionStability
++};
++
++/** 非 stable 分支刻意只暴露 diagnosticPerception，形成显式 narrowing 边界。 */
++export type PageSettlingResult = {
++    status: 'stable',
++    perception: StablePagePerception,
++    samples: PageStabilitySample[]
++} | {
++    status: 'budget-exhausted' | 'timed-out',
++    diagnosticPerception: PagePerception,
++    reason: string,
++    samples: PageStabilitySample[]
++};
++
++export interface PageSettlerRuntime {
++    canContinue: () => boolean;
++    pause: (milliseconds: number, signal: AbortSignal) => Promise<void>;
++    recapture: (
++        previous: PagePerception,
++        signal: AbortSignal
++    ) => Promise<PagePerception>;
++    sample: (signal: AbortSignal) => Promise<PageStabilitySample>;
++}
++
++export interface PageSettlerOptions {
++    maxPerceptionRecaptures: number;
++    maxStabilitySamples: number;
++    pollIntervalsMs: number[];
++    requiredConsecutiveStableSamples: number;
++}
++
++const DEFAULT_OPTIONS: PageSettlerOptions = {
++    maxPerceptionRecaptures: 3,
++    maxStabilitySamples: 6,
++    pollIntervalsMs: [ 100, 200, 400, 500 ],
++    requiredConsecutiveStableSamples: 2
++};
++
++/** 用低成本采样等待页面稳定，再以完整、带一致性 guard 的 capture 收口。 */
++export class PageSettler {
++    constructor(
++        private readonly runtime: PageSettlerRuntime,
++        private readonly options: PageSettlerOptions = DEFAULT_OPTIONS
++    ) {}
++
++    public async settle(
++        initial: PagePerception,
++        signal: AbortSignal
++    ): Promise<PageSettlingResult> {
++        if (isStablePagePerception(initial)) {
++            return { status: 'stable', perception: initial, samples: [] };
++        }
++        const samples: PageStabilitySample[] = [];
++        let diagnostic = initial;
++        let previousFingerprint: string | undefined;
++        let consecutiveStable = 0;
++        let recaptures = 0;
++        for (let index = 0; index < this.options.maxStabilitySamples; index += 1) {
++            signal.throwIfAborted();
++            if (!this.runtime.canContinue()) {
++                return {
++                    status: 'budget-exhausted',
++                    diagnosticPerception: diagnostic,
++                    reason: '页面稳定性等待期间全局时间预算已经耗尽。',
++                    samples
++                };
++            }
++            if (index > 0) {
++                await this.runtime.pause(this.pollInterval(index - 1), signal);
++            }
++            const sample = await this.runtime.sample(signal);
++            samples.push(sample);
++            const quiet = !sample.loading && sample.transientSignals.length === 0;
++            consecutiveStable = quiet && sample.fingerprint === previousFingerprint
++                ? consecutiveStable + 1
++                : quiet ? 1 : 0;
++            previousFingerprint = sample.fingerprint;
++            if (
++                consecutiveStable <
++                    this.options.requiredConsecutiveStableSamples
++                || recaptures >= this.options.maxPerceptionRecaptures
++            ) {
++                continue;
++            }
++            recaptures += 1;
++            diagnostic = await this.runtime.recapture(diagnostic, signal);
++            if (isStablePagePerception(diagnostic)) {
++                return {
++                    status: 'stable',
++                    perception: diagnostic,
++                    samples
++                };
++            }
++            consecutiveStable = 0;
++            previousFingerprint = undefined;
++        }
++        return {
++            status: 'timed-out',
++            diagnosticPerception: diagnostic,
++            reason: '页面在 bounded stability window 内没有形成一致稳定快照。',
++            samples
++        };
++    }
++
++    private pollInterval(index: number): number {
++        return this.options.pollIntervalsMs[Math.min(
++            index,
++            this.options.pollIntervalsMs.length - 1
++        )] ?? 0;
++    }
++}
++
++/** legacy 缺失 stability 与 unknown 都不能越过 stable narrowing boundary。 */
++export function isStablePagePerception(
++    perception: PagePerception
++): perception is StablePagePerception {
++    return perception.stability?.consistency === 'consistent'
++        && perception.stability.state === 'stable';
++}
+diff --git a/modules/engine-core/src/run/recovery_target_quality_policy.ts b/modules/engine-core/src/run/recovery_target_quality_policy.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..865d47d0740c42a84c95f9d8260dffa5c2e46cd4
+--- /dev/null
++++ b/modules/engine-core/src/run/recovery_target_quality_policy.ts
+@@ -0,0 +1,31 @@
++import type {
++    RecoveryAction,
++    SemanticTarget,
++} from '../contracts';
++
++export interface RecoveryTargetQualityDecision {
++    allowed: boolean;
++    reason: string;
++}
++
++const GENERIC_TARGET_PATTERN = /^(?:button|link|textbox|element|icon|input|div|span|按钮|链接|输入框|元素|页面元素|图标)$/iu;
++
++/** Recovery proposal 必须描述具体语义目标，role/tag 本身不是身份。 */
++export class RecoveryTargetQualityPolicy {
++    public evaluate(action: RecoveryAction): RecoveryTargetQualityDecision {
++        if (!('target' in action)) {
++            return { allowed: true, reason: '该 RecoveryAction 不需要目标。' };
++        }
++        return isSpecificRecoveryTarget(action.target)
++            ? { allowed: true, reason: 'RecoveryTarget 具有具体语义身份。' }
++            : {
++                allowed: false,
++                reason: 'RecoveryTarget 只有泛化 role/tag，无法形成安全定位。'
++            };
++    }
++}
++
++export function isSpecificRecoveryTarget(target: SemanticTarget): boolean {
++    const description = target.description.trim().replace(/\s+/gu, ' ');
++    return description.length >= 2 && !GENERIC_TARGET_PATTERN.test(description);
++}
+diff --git a/modules/engine-core/src/run/run_coordinator.ts b/modules/engine-core/src/run/run_coordinator.ts
+index b748b95fcb009c6314d41edae7bbae2f4a279f6d..1a0b8764941a2c85efc1b7ecaf95ef96f55e8589 100644
+--- a/modules/engine-core/src/run/run_coordinator.ts
++++ b/modules/engine-core/src/run/run_coordinator.ts
+@@ -42,6 +42,7 @@ import type {
+     IntentBuilder,
+ } from '../intent';
+ import {
++    createPerceptionStability,
+     PerceptionService,
+ } from '../perception';
+ import type {
+@@ -50,6 +51,7 @@ import type {
+     BrowserSession,
+     BrowserStartOptions,
+     EnvironmentValueResolver,
++    PageStabilityPort,
+     RunEventPublisher,
+ } from '../ports';
+ import type {
+@@ -88,6 +90,9 @@ import {
+     normalizeRecoveryCommand,
+     SemanticStepController,
+ } from './semantic_step_controller';
++import {
++    PageSettler,
++} from './page_settler';
+ import type {
+     SemanticStepActionExecution,
+ } from './semantic_step_controller';
+@@ -116,6 +121,7 @@ export interface RunCoordinatorOptions {
+ /** RunCoordinator 使用的规划与独立判定能力。 */
+ export interface RunCoordinatorDecisionServices {
+     actionPlanner: ActionPlanner;
++    pageStabilityPort?: PageStabilityPort;
+     perceptionService?: PerceptionService;
+     recoveryPlanner?: RecoveryPlannerPort;
+     stepProgressEvaluator?: SemanticStepProgressEvaluator;
+@@ -135,6 +141,7 @@ interface RunExecutionContext {
+     modelCallCount: number;
+     groundingSequence: number;
+     perceptionSequence: number;
++    settlingSequence: number;
+     repeatedStateActionCount: number;
+     runCreated: boolean;
+     runId: string;
+@@ -219,6 +226,7 @@ const DEFAULT_OPTIONS: RunCoordinatorOptions = {
+ export class RunCoordinator implements ExecutionEngine {
+     private readonly actionEffectVerifier = new ActionEffectVerifier();
+     private readonly groundedActionBuilder = new GroundedActionBuilder();
++    private readonly pageStabilityPort?: PageStabilityPort;
+     private readonly perceptionService: PerceptionService;
+     private readonly stepProgressEvaluator: SemanticStepProgressEvaluator;
+     private readonly targetGrounder: TargetGrounder;
+@@ -235,6 +243,7 @@ export class RunCoordinator implements ExecutionEngine {
+     ) {
+         this.targetGrounder = decisionServices.targetGrounder
+             ?? new DeterministicTargetGrounder();
++        this.pageStabilityPort = decisionServices.pageStabilityPort;
+         this.perceptionService = decisionServices.perceptionService ??
+             new PerceptionService({
+                 capture: async () => ({
+@@ -373,6 +382,7 @@ export class RunCoordinator implements ExecutionEngine {
+             modelCallCount: 0,
+             groundingSequence: 0,
+             perceptionSequence: 0,
++            settlingSequence: 0,
+             repeatedStateActionCount: 0,
+             runCreated: false,
+             runId,
+@@ -679,10 +689,32 @@ export class RunCoordinator implements ExecutionEngine {
+     }
+ 
+     /** 将当前 Planner 动作交给保持原目标不变的 bounded Step Controller。 */
++    // Runtime adapter wiring stays together so budget/evidence boundaries
++    // cannot drift between callbacks.
++    // eslint-disable-next-line max-lines-per-function
+     private createSemanticStepController(
+         context: RunExecutionContext,
+         runtime: RunContext
+     ): SemanticStepController<PlannedActionExecution> {
++        const settler = new PageSettler({
++            canContinue: () => this.getRemainingBudgets(context)
++                .maxDurationMs > 0,
++            pause: abortableDelay,
++            recapture: async (previous, signal) => {
++                const before = await this.samplePageStability(runtime, signal);
++                await this.refreshRuntimeObservation(context, runtime);
++                return await this.captureRuntimePerception(
++                    context,
++                    runtime,
++                    previous,
++                    before
++                );
++            },
++            sample: async (signal) => await this.samplePageStability(
++                runtime,
++                signal
++            )
++        });
+         return new SemanticStepController<PlannedActionExecution>({
+             canExecuteAction: () => {
+                 const remaining = this.getRemainingBudgets(context);
+@@ -695,7 +727,17 @@ export class RunCoordinator implements ExecutionEngine {
+                     return runtime.latestPerception;
+                 }
+                 if (previous) {
++                    const before = await this.samplePageStability(
++                        runtime,
++                        signal
++                    );
+                     await this.refreshRuntimeObservation(context, runtime);
++                    return await this.captureRuntimePerception(
++                        context,
++                        runtime,
++                        previous,
++                        before
++                    );
+                 }
+                 return await this.captureRuntimePerception(
+                     context,
+@@ -703,6 +745,11 @@ export class RunCoordinator implements ExecutionEngine {
+                     previous ?? runtime.latestPerception
+                 );
+             },
++            settle: async (perception, signal) => {
++                const result = await settler.settle(perception, signal);
++                await this.recordPageSettling(context, result);
++                return result;
++            },
+             ground: async (action, perception, visualAllowed, signal) => {
+                 return await this.groundWithPerception(
+                     context,
+@@ -761,6 +808,27 @@ export class RunCoordinator implements ExecutionEngine {
+                     compilationContribution: 'non-productive'
+                 };
+             },
++            reverifyEffectAfterSettling: async (
++                execution,
++                settled,
++                signal
++            ) => {
++                signal.throwIfAborted();
++                if ([ 'TYPE', 'CHECK', 'SELECT' ].includes(
++                    execution.semanticAction.type
++                )) {
++                    return execution.effect;
++                }
++                const effect = this.actionEffectVerifier.verify({
++                    command: execution.record.command,
++                    result: execution.actionResult,
++                    before: execution.before.dom,
++                    after: settled.dom,
++                    evidence: execution.record.effect.evidence
++                });
++                execution.record.effect = effect;
++                return effect;
++            },
+             recordReobserve: async (perception, attempt, signal) => {
+                 await this.recordRecoveryReobserve(
+                     context,
+@@ -808,7 +876,8 @@ export class RunCoordinator implements ExecutionEngine {
+     private async captureRuntimePerception(
+         context: RunExecutionContext,
+         runtime: RunContext,
+-        previous: PagePerception | undefined
++        previous: PagePerception | undefined,
++        beforeStability?: Awaited<ReturnType<PageStabilityPort['sample']>>
+     ): Promise<PagePerception> {
+         const observation = runtime.latestObservation;
+         if (!observation) {
+@@ -820,6 +889,16 @@ export class RunCoordinator implements ExecutionEngine {
+             previous,
+             context.signal
+         );
++        if (beforeStability) {
++            const afterStability = await this.samplePageStability(
++                runtime,
++                context.signal
++            );
++            perception.stability = createPerceptionStability({
++                before: beforeStability,
++                after: afterStability
++            });
++        }
+         runtime.latestPerception = perception;
+         const reference = await this.artifactStore.saveJson(
+             context.runId,
+@@ -830,6 +909,51 @@ export class RunCoordinator implements ExecutionEngine {
+         return perception;
+     }
+ 
++    private async samplePageStability(
++        runtime: RunContext,
++        signal: AbortSignal
++    ) {
++        if (this.pageStabilityPort) {
++            return await this.pageStabilityPort.sample(
++                runtime.browserSession,
++                signal
++            );
++        }
++        signal.throwIfAborted();
++        const observation = runtime.latestObservation;
++        return {
++            capturedAt: new Date().toISOString(),
++            fingerprint: observation?.stateFingerprint ?? 'no-observation',
++            loading: observation?.page.loading ?? true,
++            transientSignals: observation?.page.loading
++                ? [ 'document-loading' as const ]
++                : []
++        };
++    }
++
++    private async recordPageSettling(
++        context: RunExecutionContext,
++        result: Awaited<ReturnType<PageSettler['settle']>>
++    ): Promise<void> {
++        if (result.status === 'stable' && result.samples.length === 0) {
++            return;
++        }
++        const perception = result.status === 'stable'
++            ? result.perception
++            : result.diagnosticPerception;
++        const reference = await this.artifactStore.saveJson(
++            context.runId,
++            `page-settling-${ ++context.settlingSequence }`,
++            toJsonValue({
++                status: result.status,
++                perceptionId: perception.perceptionId,
++                samples: result.samples,
++                ...result.status === 'stable' ? {} : { reason: result.reason }
++            })
++        );
++        context.evidence.push(reference);
++    }
++
+     /** REOBSERVE 只刷新观察和产物，不创建 Browser ActionResult/Trace。 */
+     private async refreshRuntimeObservation(
+         context: RunExecutionContext,
+@@ -838,8 +962,8 @@ export class RunCoordinator implements ExecutionEngine {
+         const evidence = await this.captureObservationEvidence(
+             context,
+             runtime.browserSession,
+-            `observation-reobserve-${ runtime.history.length }`,
+-            `screenshot-reobserve-${ runtime.history.length }.png`
++            `observation-reobserve-${ context.perceptionSequence + 1 }`,
++            `screenshot-reobserve-${ context.perceptionSequence + 1 }.png`
+         );
+         runtime.latestObservation = evidence.observation;
+         runtime.latestObservationReference = evidence.observationReference;
+@@ -2417,3 +2541,21 @@ function toJsonValue(value: unknown): JsonValue {
+     }
+     throw new Error(`无法转换为 JSON 的值类型：${ typeof value }`);
+ }
++
++function abortableDelay(
++    milliseconds: number,
++    signal: AbortSignal
++): Promise<void> {
++    signal.throwIfAborted();
++    return new Promise((resolve, reject) => {
++        const timeout = setTimeout(() => {
++            signal.removeEventListener('abort', onAbort);
++            resolve();
++        }, milliseconds);
++        const onAbort = () => {
++            clearTimeout(timeout);
++            reject(signal.reason);
++        };
++        signal.addEventListener('abort', onAbort, { once: true });
++    });
++}
+diff --git a/modules/engine-core/src/run/semantic_step_controller.ts b/modules/engine-core/src/run/semantic_step_controller.ts
+index 2ed1af2f1921e87b4f72dee4f30d642a3b739d9b..bd273473167e7225bf93dd01e905ee04b6c4dd1e 100644
+--- a/modules/engine-core/src/run/semantic_step_controller.ts
++++ b/modules/engine-core/src/run/semantic_step_controller.ts
+@@ -16,9 +16,15 @@ import type {
+     SemanticStepProgress,
+     TestIntent,
+ } from '../contracts';
++import type {
++    PageSettlingResult,
++} from './page_settler';
+ import type {
+     SemanticStepProgressEvaluator,
+ } from './semantic_step_progress_evaluator';
++import {
++    createPerceptionDelta,
++} from '../perception';
+ import {
+     createRecoveryPlanningView as buildRecoveryPlanningView,
+ } from './semantic_step_progress_evaluator';
+@@ -32,6 +38,9 @@ import type {
+     RecoveryPlannerPort,
+     RecoverySafetyPolicy,
+ } from './recovery_ports';
++import {
++    RecoveryTargetQualityPolicy,
++} from './recovery_target_quality_policy';
+ 
+ export interface SemanticStepActionExecution<TRecord> {
+     record: TRecord;
+@@ -58,6 +67,11 @@ export interface SemanticStepRuntimePort<TRecord> {
+         previous: PagePerception | undefined,
+         signal: AbortSignal
+     ) => Promise<PagePerception>;
++    /** 非 stable 结果只能作为诊断数据，Controller 不得继续 Ground/Evaluate。 */
++    settle: (
++        perception: PagePerception,
++        signal: AbortSignal
++    ) => Promise<PageSettlingResult>;
+     ground: (
+         action: SemanticAction,
+         perception: PagePerception,
+@@ -72,6 +86,11 @@ export interface SemanticStepRuntimePort<TRecord> {
+         before: PagePerception,
+         signal: AbortSignal
+     }) => Promise<SemanticStepActionExecution<TRecord>>;
++    reverifyEffectAfterSettling: (
++        execution: SemanticStepActionExecution<TRecord>,
++        settled: PagePerception,
++        signal: AbortSignal
++    ) => Promise<EffectVerification>;
+     recordReobserve: (
+         perception: PagePerception,
+         attempt: number,
+@@ -113,6 +132,7 @@ const DEFAULT_OPTIONS: SemanticStepControllerOptions = {
+ export class SemanticStepController<TRecord> {
+     private readonly deterministicPlanner = new DeterministicRecoveryPlanner();
+     private readonly retryPolicy = new PrimaryRetryPolicy();
++    private readonly targetQualityPolicy = new RecoveryTargetQualityPolicy();
+ 
+     constructor(
+         private readonly runtime: SemanticStepRuntimePort<TRecord>,
+@@ -128,6 +148,20 @@ export class SemanticStepController<TRecord> {
+         signal: AbortSignal
+     ): Promise<SemanticStepControllerResult<TRecord>> {
+         const state = await this.createState(signal);
++        const initialSettling = await this.runtime.settle(
++            state.perception,
++            signal
++        );
++        if (initialSettling.status !== 'stable') {
++            state.perception = initialSettling.diagnosticPerception;
++            return this.result(state, {
++                status: initialSettling.status === 'budget-exhausted'
++                    ? 'budget-exhausted'
++                    : 'exhausted',
++                reason: initialSettling.reason
++            });
++        }
++        state.perception = initialSettling.perception;
+         state.primaryGrounding = await this.ground(
+             step.primaryAction,
+             state.perception,
+@@ -184,6 +218,7 @@ export class SemanticStepController<TRecord> {
+                 });
+             }
+             const beforeGrounding = state.primaryGrounding;
++            const beforeRecoveryPerception = state.perception;
+             const recovery = await this.executeRecovery(
+                 step,
+                 testIntent,
+@@ -195,7 +230,34 @@ export class SemanticStepController<TRecord> {
+             if ('outcome' in recovery) {
+                 return this.result(state, recovery.outcome);
+             }
+-            state.perception = recovery.after;
++            const recoverySettling = await this.runtime.settle(
++                recovery.after,
++                signal
++            );
++            if (recoverySettling.status !== 'stable') {
++                state.perception = recoverySettling.diagnosticPerception;
++                return this.result(state, {
++                    status: recoverySettling.status === 'budget-exhausted'
++                        ? 'budget-exhausted'
++                        : 'exhausted',
++                    reason: recoverySettling.reason
++                });
++            }
++            state.perception = recoverySettling.perception;
++            recovery.after = recoverySettling.perception;
++            recovery.after.delta = createPerceptionDelta(
++                recovery.execution?.before ?? beforeRecoveryPerception,
++                recoverySettling.perception
++            );
++            if (recovery.execution) {
++                recovery.execution.after = recoverySettling.perception;
++                recovery.execution.effect =
++                    await this.runtime.reverifyEffectAfterSettling(
++                        recovery.execution,
++                        recoverySettling.perception,
++                        signal
++                    );
++            }
+             state.primaryGrounding = await this.ground(
+                 step.primaryAction,
+                 state.perception,
+@@ -301,10 +363,26 @@ export class SemanticStepController<TRecord> {
+         });
+         state.executions.push(execution);
+         state.primaryExecuted = execution.actionResult.status === 'executed';
++        const settling = await this.runtime.settle(execution.after, signal);
++        if (settling.status !== 'stable') {
++            state.perception = settling.diagnosticPerception;
++            execution.after = settling.diagnosticPerception;
++            return settlingFailureOutcome(settling);
++        }
++        execution.after = settling.perception;
++        execution.after.delta = createPerceptionDelta(
++            execution.before,
++            settling.perception
++        );
++        execution.effect = await this.runtime.reverifyEffectAfterSettling(
++            execution,
++            settling.perception,
++            signal
++        );
+         state.primaryEffect = execution.effect;
+         state.primaryActionResult = execution.actionResult;
+         state.primaryBefore = execution.before;
+-        state.perception = execution.after;
++        state.perception = settling.perception;
+         const groundingAfter = shouldRegroundAfterPrimary(step.primaryAction)
+             ? await this.ground(
+                 step.primaryAction,
+@@ -503,7 +581,12 @@ export class SemanticStepController<TRecord> {
+         };
+         const deterministic = await this.deterministicPlanner.plan(input);
+         if (deterministic.kind === 'recover') {
+-            return deterministic;
++            return this.hasSpecificRecoveryTarget(deterministic)
++                ? deterministic
++                : {
++                    kind: 'stop',
++                    reason: '确定性 RecoveryTarget 缺少具体语义身份。'
++                };
+         }
+         if (
+             !this.modelRecoveryPlanner
+@@ -515,7 +598,21 @@ export class SemanticStepController<TRecord> {
+         }
+         state.recoveryPlannerCalls += 1;
+         this.runtime.consumeModelCalls(1, 'recovery-planner');
+-        return await this.modelRecoveryPlanner.plan(input, signal);
++        const modeled = await this.modelRecoveryPlanner.plan(input, signal);
++        return modeled.kind === 'recover' && !this.hasSpecificRecoveryTarget(
++            modeled
++        )
++            ? {
++                kind: 'stop',
++                reason: '模型 RecoveryTarget 缺少具体语义身份，已拒绝执行。'
++            }
++            : modeled;
++    }
++
++    private hasSpecificRecoveryTarget(
++        decision: Extract<RecoveryDecision, {kind: 'recover'}>
++    ): boolean {
++        return this.targetQualityPolicy.evaluate(decision.action).allowed;
+     }
+ 
+     private async ground(
+@@ -798,6 +895,17 @@ function shouldRegroundAfterPrimary(action: SemanticAction): boolean {
+     return action.type === 'CLICK' || action.type === 'HOVER';
+ }
+ 
++function settlingFailureOutcome(
++    result: Exclude<PageSettlingResult, {status: 'stable'}>
++): SemanticStepExecutionOutcome {
++    return {
++        status: result.status === 'budget-exhausted'
++            ? 'budget-exhausted'
++            : 'exhausted',
++        reason: result.reason
++    };
++}
++
+ /** Recovery-only 动作在进入 Browser 前仍会被标准化成现有物理命令。 */
+ export function normalizeRecoveryCommand(
+     action: RecoveryAction,
+diff --git a/modules/engine-core/src/run/semantic_step_progress_evaluator.ts b/modules/engine-core/src/run/semantic_step_progress_evaluator.ts
+index afc27eb5196bdb78f91118ec216704b4002371b0..32ab9c34309057f3ce3958a2ddcc8c0a26a32ea6 100644
+--- a/modules/engine-core/src/run/semantic_step_progress_evaluator.ts
++++ b/modules/engine-core/src/run/semantic_step_progress_evaluator.ts
+@@ -52,12 +52,15 @@ export class SemanticStepProgressEvaluator {
+         allowModelFallback = false
+     ): Promise<SemanticStepProgress> {
+         const deterministic = this.evaluateDeterministically(input);
++        const modelEligible = input.attemptedAction.type === 'CLICK'
++            || input.attemptedAction.type === 'HOVER'
++            || input.attemptedAction.type === 'WAIT'
++                && Boolean(input.step.expectedEffect);
+         if (
+             deterministic.status !== 'unknown'
+             || !allowModelFallback
+             || !this.options.modelFallback
+-            || input.attemptedAction.type !== 'CLICK' &&
+-                input.attemptedAction.type !== 'HOVER'
++            || !modelEligible
+         ) {
+             return deterministic;
+         }
+@@ -103,12 +106,28 @@ export class SemanticStepProgressEvaluator {
+         const groundingImproved = isGroundingImproved(input);
+         const changed = hasMeaningfulPerceptionDelta(input.after.delta);
+         if (input.attemptedAction.type === 'WAIT') {
+-            if (input.effect?.status === 'confirmed') {
+-                return progress('complete', '明确的等待动作已经完成。', evidence);
++            if (!input.step.expectedEffect) {
++                return input.effect?.status === 'confirmed'
++                    ? progress('complete', '纯时间等待已经完成。', evidence)
++                    : progress('no-progress', '浏览器没有完成等待动作。', evidence);
++            }
++            if (isTransientPerception(input.after)) {
++                return progress(
++                    'no-progress',
++                    '等待后页面仍处于加载或搜索中的过渡状态。',
++                    evidence
++                );
++            }
++            if (hasBusinessWaitEvidence(input.step.expectedEffect, input.after)) {
++                return progress(
++                    'complete',
++                    '等待后的稳定页面已出现 expectedEffect 对应业务状态。',
++                    evidence
++                );
+             }
+             return changed || groundingImproved
+                 ? progress('progress', '等待后页面出现了有意义变化。', evidence)
+-                : progress('no-progress', '等待后页面没有有意义变化。', evidence);
++                : progress('unknown', '等待已完成，但业务终态证据不足。', evidence);
+         }
+         if (
+             input.attemptedAction.type === 'CLICK'
+@@ -155,6 +174,36 @@ export class SemanticStepProgressEvaluator {
+     }
+ }
+ 
++function isTransientPerception(perception: PagePerception): boolean {
++    return perception.dom.page.loading
++        || perception.stability?.consistency !== 'consistent'
++        || perception.stability.state !== 'stable'
++        || perception.dom.visibleText.some((text) => (
++            /搜索中|加载中|正在加载|请稍候|loading|searching/iu.test(text)
++        ));
++}
++
++function hasBusinessWaitEvidence(
++    expectedEffect: string,
++    perception: PagePerception
++): boolean {
++    if (/稳定|加载完成|渲染完成/iu.test(expectedEffect)) {
++        return true;
++    }
++    const visible = perception.dom.visibleText.join(' ');
++    if (
++        /搜索结果|无结果|搜索完成/iu.test(expectedEffect)
++        && /搜索结果|没有.*结果|未找到|暂无.*(?:数据|内容)|共\s*\d+\s*条/iu
++            .test(visible)
++    ) {
++        return true;
++    }
++    const quoted = [ ...expectedEffect.matchAll(/[“"]([^”"]+)[”"]/gu) ]
++        .map((match) => match[1].trim())
++        .filter((text) => text.length >= 2);
++    return quoted.length > 0 && quoted.every((text) => visible.includes(text));
++}
++
+ function hasExplicitTargetPageEvidence(
+     expectedEffect: string | undefined,
+     before: PagePerception,
+diff --git a/modules/engine-core/test/deterministic_recovery_planner.test.ts b/modules/engine-core/test/deterministic_recovery_planner.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..05b58504c246584d59ba866172ef0afb55b047f0
+--- /dev/null
++++ b/modules/engine-core/test/deterministic_recovery_planner.test.ts
+@@ -0,0 +1,101 @@
++import assert from 'node:assert/strict';
++
++import type {
++    RecoveryPlannerInput,
++} from '../src';
++import {
++    DeterministicRecoveryPlanner,
++    RecoveryTargetQualityPolicy,
++} from '../src';
++
++describe('RecoveryTargetQualityPolicy', () => {
++    it('匿名 button + nearbyText 不生成 HOVER "button"', async () => {
++        const input = recoveryInput();
++        input.view.elements = [{
++            role: 'button',
++            disabled: false,
++            visible: true,
++            inViewport: true,
++            nearbyText: [ '应用 11' ]
++        }];
++        const decision = await new DeterministicRecoveryPlanner().plan(input);
++
++        assert.equal(decision.kind, 'stop');
++        assert.equal(JSON.stringify(decision).includes('"button"'), false);
++    });
++
++    it('保留具有具体 name 的 hover reveal proposal', async () => {
++        const input = recoveryInput();
++        input.view.elements = [{
++            role: 'button',
++            name: '应用 11 卡片',
++            disabled: false,
++            visible: true,
++            inViewport: true,
++            nearbyText: [ '应用 11' ]
++        }];
++        const decision = await new DeterministicRecoveryPlanner().plan(input);
++
++        assert.equal(decision.kind, 'recover');
++        if (decision.kind === 'recover') {
++            assert.equal(decision.action.type, 'HOVER');
++            assert.deepEqual('target' in decision.action
++                ? decision.action.target
++                : undefined, { description: '应用 11 卡片' });
++        }
++    });
++
++    it('模型层泛化描述同样不能越过 proposal boundary', () => {
++        const quality = new RecoveryTargetQualityPolicy();
++
++        assert.equal(quality.evaluate({
++            type: 'HOVER',
++            target: { description: 'button' },
++            reasonSummary: '尝试显示隐藏控件'
++        }).allowed, false);
++    });
++});
++
++function recoveryInput(): RecoveryPlannerInput {
++    return {
++        step: {
++            id: 'step-1',
++            primaryAction: {
++                type: 'CLICK',
++                target: {
++                    description: '收藏星标',
++                    scope: '应用 11'
++                },
++                reasonSummary: '收藏应用 11'
++            }
++        },
++        testIntent: {
++            schemaVersion: 1,
++            objective: '收藏应用 11',
++            preconditions: [],
++            successCriteria: [],
++            failureCriteria: [],
++            constraints: [],
++            allowedHosts: [ 'example.test' ],
++            dataPolicy: { generatedValues: {} }
++        },
++        failure: {
++            grounding: {
++                status: 'not-found',
++                confidence: 0,
++                summary: '未找到收藏星标',
++                sourcesUsed: [ 'dom' ]
++            }
++        },
++        view: {
++            page: { loading: false, title: '工作台', urlChanged: false },
++            visibleText: [ '应用 11' ],
++            notices: [],
++            elements: [],
++            accessibility: [],
++            overlayState: 'clear'
++        },
++        recentAttempts: [],
++        allowedCapabilities: [ 'HOVER' ]
++    };
++}
+diff --git a/modules/engine-core/test/model_intent_builder.test.ts b/modules/engine-core/test/model_intent_builder.test.ts
+index ebfef4db244b4b654881402a49b22565e529c550..5cf54cdbfe19b4b3e810b2f319398eba6cfe345f 100644
+--- a/modules/engine-core/test/model_intent_builder.test.ts
++++ b/modules/engine-core/test/model_intent_builder.test.ts
+@@ -259,6 +259,60 @@ describe('ModelIntentBuilder exact text assertions', () => {
+             '我的待办'
+         ]);
+     });
++
++    it('搜索词和实体名不会被句尾业务验证升级成 exact-text', async () => {
++        const builder = new ModelIntentBuilder(
++            new FakeModelAdapter(modelIntent),
++            testIntentSchema
++        );
++        const intent = await builder.build({
++            ...buildInput,
++            test: {
++                ...buildInput.test,
++                action: '搜索“jdy”应用，如果搜索不到则新建该应用，' +
++                    '新建完成后验证是否创建成功'
++            }
++        }, new AbortController().signal);
++
++        assert.equal(intent.exactTextAssertions, undefined);
++        assert.equal(JSON.stringify(intent).includes('engine-exact-text'), false);
++    });
++
++    it('只提取同一 assertion-local clause 中的 expected text', async () => {
++        const builder = new ModelIntentBuilder(
++            new FakeModelAdapter(modelIntent),
++            testIntentSchema
++        );
++        const intent = await builder.build({
++            ...buildInput,
++            test: {
++                ...buildInput.test,
++                action: '输入“jdy”，验证页面显示“创建成功”，然后点击“返回”'
++            }
++        }, new AbortController().signal);
++
++        assert.deepEqual(intent.exactTextAssertions?.[0]?.values, [
++            '创建成功'
++        ]);
++    });
++
++    it('明确验证页面显示“创建成功”仍生成 exact-text', async () => {
++        const builder = new ModelIntentBuilder(
++            new FakeModelAdapter(modelIntent),
++            testIntentSchema
++        );
++        const intent = await builder.build({
++            ...buildInput,
++            test: {
++                ...buildInput.test,
++                action: '验证页面显示“创建成功”'
++            }
++        }, new AbortController().signal);
++
++        assert.deepEqual(intent.exactTextAssertions?.[0]?.values, [
++            '创建成功'
++        ]);
++    });
+ });
+ 
+ /** 使用预设输出代替真实模型，供意图构建单元测试使用。 */
+diff --git a/modules/engine-core/test/page_settler.test.ts b/modules/engine-core/test/page_settler.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..c5bb9458bddb49e91e49ad99511e0668f7f7d165
+--- /dev/null
++++ b/modules/engine-core/test/page_settler.test.ts
+@@ -0,0 +1,135 @@
++import assert from 'node:assert/strict';
++
++import type {
++    PagePerception,
++    PageStabilitySample,
++} from '../src';
++import {
++    PageSettler,
++} from '../src';
++
++describe('PageSettler', () => {
++    it('等待连续低成本稳定采样并以一致完整 recapture 收口', async () => {
++        const runtime = new FakeSettlerRuntime([
++            sample('changing', [ 'loading-text' ]),
++            sample('ready'),
++            sample('ready')
++        ], stablePerception('ready'));
++        const result = await new PageSettler(runtime, {
++            maxPerceptionRecaptures: 2,
++            maxStabilitySamples: 4,
++            pollIntervalsMs: [ 0 ],
++            requiredConsecutiveStableSamples: 2
++        }).settle(unknownPerception('searching'), signal());
++
++        assert.equal(result.status, 'stable');
++        assert.equal(runtime.recaptureCount, 1);
++        assert.equal(runtime.pauseCount, 2);
++    });
++
++    it('bounded window 耗尽时只返回 diagnosticPerception', async () => {
++        const initial = unknownPerception('searching');
++        const runtime = new FakeSettlerRuntime([
++            sample('a'), sample('b'), sample('c')
++        ], stablePerception('unused'));
++        const result = await new PageSettler(runtime, {
++            maxPerceptionRecaptures: 1,
++            maxStabilitySamples: 3,
++            pollIntervalsMs: [ 0 ],
++            requiredConsecutiveStableSamples: 2
++        }).settle(initial, signal());
++
++        assert.equal(result.status, 'timed-out');
++        if (result.status === 'stable') {
++            assert.fail('不稳定结果不得通过 stable narrowing boundary。');
++        }
++        assert.equal(result.diagnosticPerception, initial);
++        assert.equal('perception' in result, false);
++    });
++
++    it('legacy unknown 不会被直接当成 stable', async () => {
++        const runtime = new FakeSettlerRuntime([], stablePerception('unused'));
++        runtime.canContinue = () => false;
++        const result = await new PageSettler(runtime)
++            .settle(unknownPerception('legacy'), signal());
++
++        assert.equal(result.status, 'budget-exhausted');
++        assert.equal(runtime.recaptureCount, 0);
++    });
++});
++
++class FakeSettlerRuntime {
++    public pauseCount = 0;
++    public recaptureCount = 0;
++    public canContinue = () => true;
++    constructor(
++        private readonly samples: PageStabilitySample[],
++        private readonly recaptured: PagePerception
++    ) {}
++    public pause = async () => { this.pauseCount += 1; };
++    public recapture = async () => {
++        this.recaptureCount += 1;
++        return this.recaptured;
++    };
++    public sample = async () => this.samples.shift() ?? sample('changing');
++}
++
++function sample(
++    fingerprint: string,
++    transientSignals: PageStabilitySample['transientSignals'] = []
++): PageStabilitySample {
++    return {
++        capturedAt: '2026-09-01T00:00:00.000Z',
++        fingerprint,
++        loading: false,
++        transientSignals
++    };
++}
++
++function unknownPerception(id: string): PagePerception {
++    return perception(id, {
++        consistency: 'unknown', state: 'unknown', transientSignals: []
++    });
++}
++
++function stablePerception(id: string): PagePerception {
++    return perception(id, {
++        consistency: 'consistent', state: 'stable', transientSignals: []
++    });
++}
++
++function perception(
++    id: string,
++    stability: NonNullable<PagePerception['stability']>
++): PagePerception {
++    return {
++        perceptionId: `p-${ id }`,
++        capturedAt: '2026-09-01T00:00:00.000Z',
++        stability,
++        dom: {
++            schemaVersion: 1,
++            observationId: `o-${ id }`,
++            capturedAt: '2026-09-01T00:00:00.000Z',
++            page: {
++                loading: false,
++                title: id,
++                url: 'https://example.test/workbench',
++                viewport: { width: 1280, height: 720 }
++            },
++            visibleText: [ id ],
++            interactiveElements: [],
++            notices: [],
++            tabs: [],
++            stateFingerprint: id,
++            truncated: false
++        },
++        accessibility: {
++            source: 'playwright-aria-snapshot', nodes: [], truncated: false
++        },
++        interactionStates: {}
++    };
++}
++
++function signal(): AbortSignal {
++    return new AbortController().signal;
++}
+diff --git a/modules/engine-core/test/perception_service.test.ts b/modules/engine-core/test/perception_service.test.ts
+index 5844e6fbdad44cb6ab684ffda0bc6737da5eeab5..ff04e1a3035700a96438c734394c5c2bfef6fd21 100644
+--- a/modules/engine-core/test/perception_service.test.ts
++++ b/modules/engine-core/test/perception_service.test.ts
+@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
+ import type {
+     PageObservation,
+     PagePerceptionPort,
++    PageStabilitySample,
+ } from '../src';
+ import {
+     PerceptionService,
+@@ -22,6 +23,37 @@ describe('PerceptionService', () => {
+         assert.equal(perception.accessibility.nodes[0].name, '创建应用');
+         assert.equal(perception.visual?.screenshotRef, 'artifact://screen-1');
+         assert.deepEqual(perception.visual?.regions, []);
++        assert.deepEqual(perception.stability, {
++            consistency: 'unknown',
++            state: 'unknown',
++            transientSignals: []
++        });
++    });
++
++    it('使用 capture window 标记 consistent、inconsistent 与 transient', async () => {
++        const service = new PerceptionService(new FakePerceptionPort());
++        const stable = await service.capture(
++            { sessionId: 'session-1' },
++            createObservation('stable'),
++            undefined,
++            new AbortController().signal,
++            window(sample('same'), sample('same'))
++        );
++        const changing = await service.capture(
++            { sessionId: 'session-1' },
++            createObservation('changing'),
++            stable,
++            new AbortController().signal,
++            window(sample('before'), sample('after', [ 'loading-text' ]))
++        );
++
++        assert.equal(stable.stability?.consistency, 'consistent');
++        assert.equal(stable.stability?.state, 'stable');
++        assert.equal(changing.stability?.consistency, 'inconsistent');
++        assert.equal(changing.stability?.state, 'transient');
++        assert.deepEqual(changing.stability?.transientSignals, [
++            'loading-text'
++        ]);
+     });
+ 
+     it('计算 URL、标题、候选、文本、A11y 和 overlay 的低成本差异', async () => {
+@@ -69,6 +101,22 @@ class FakePerceptionPort implements PagePerceptionPort {
+         interactionStates: {}
+     });
+ }
++
++function sample(
++    fingerprint: string,
++    transientSignals: PageStabilitySample['transientSignals'] = []
++): PageStabilitySample {
++    return {
++        capturedAt: '2026-09-01T00:00:00.000Z',
++        fingerprint,
++        loading: false,
++        transientSignals
++    };
++}
++
++function window(before: PageStabilitySample, after: PageStabilitySample) {
++    return { before, after };
++}
+ function createObservation(observationId: string): PageObservation {
+     return {
+         schemaVersion: 1,
+diff --git a/modules/engine-core/test/run_coordinator.test.ts b/modules/engine-core/test/run_coordinator.test.ts
+index 7c28c043463251505b7ab2184dc16be5420b4173..fb5c34f08f15de2a8e7a241fb77f2cf50817e0be 100644
+--- a/modules/engine-core/test/run_coordinator.test.ts
++++ b/modules/engine-core/test/run_coordinator.test.ts
+@@ -287,7 +287,13 @@ describe('RunCoordinator 最终观察', () => {
+         const browserAdapter = new FakeBrowserAdapter(
+             false,
+             false,
+-            [ undefined, undefined, retryObservation ]
++            [
++                undefined,
++                undefined,
++                undefined,
++                retryObservation,
++                retryObservation
++            ]
+         );
+         const actionPlanner = new FakeActionPlanner([
+             plannedClickCommand,
+@@ -510,35 +516,15 @@ function assertCompletedAiRun(state: CompletedRunState): void {
+         environment: startInput.environment,
+         projectContext: startInput.projectContext
+     });
+-    assert.deepEqual(
+-        artifactStore.savedJson.map(({ name }) => name),
+-        [
+-            'intent',
+-            'observation-before-navigation',
+-            'observation-after-navigation',
+-            'page-perception-1',
+-            'grounding-decision-1',
+-            'observation-after-action-2',
+-            'page-perception-2',
+-            'grounding-decision-2',
+-            'observation-after-action-3',
+-            'page-perception-3',
+-            'grounding-decision-3',
+-            'observation-after-action-4',
+-            'page-perception-4',
+-            'grounding-decision-4',
+-            'verdict',
+-            'plan-compilation-source'
+-        ]
+-    );
++    assertCompletedArtifactNames(artifactStore);
+     assert.equal(artifactStore.updatedSnapshots.at(-1)?.lifecycle, 'COMPLETED');
+     assert.equal(browserAdapter.startCount, 1);
+     assert.equal(browserAdapter.executeCount, 4);
+-    assert.equal(browserAdapter.observeCount, 5);
+-    assert.equal(browserAdapter.captureScreenshotCount, 4);
++    assert.equal(browserAdapter.observeCount, 9);
++    assert.equal(browserAdapter.captureScreenshotCount, 8);
+     assert.equal(browserAdapter.closeCount, 1);
+     assert.equal(artifactStore.traces.length, 4);
+-    assert.equal(artifactStore.savedArtifacts.length, 4);
++    assert.equal(artifactStore.savedArtifacts.length, 8);
+     assertObservationEventsIncludeScreenshot(eventPublisher.events);
+     assert.equal(actionPlanner.callCount, 4);
+     assert.deepEqual(
+@@ -584,6 +570,39 @@ function assertCompletedAiRun(state: CompletedRunState): void {
+     assert.equal(eventPublisher.events.at(-1)?.type, 'run.completed');
+ }
+ 
++function assertCompletedArtifactNames(artifactStore: FakeArtifactStore): void {
++    assert.deepEqual(artifactStore.savedJson.map(({ name }) => name), [
++        'intent',
++        'observation-before-navigation',
++        'observation-after-navigation',
++        'page-perception-1',
++        'observation-reobserve-2',
++        'page-perception-2',
++        'page-settling-1',
++        'grounding-decision-1',
++        'observation-after-action-2',
++        'page-perception-3',
++        'observation-reobserve-4',
++        'page-perception-4',
++        'page-settling-2',
++        'grounding-decision-2',
++        'observation-after-action-3',
++        'page-perception-5',
++        'observation-reobserve-6',
++        'page-perception-6',
++        'page-settling-3',
++        'grounding-decision-3',
++        'observation-after-action-4',
++        'page-perception-7',
++        'observation-reobserve-8',
++        'page-perception-8',
++        'page-settling-4',
++        'grounding-decision-4',
++        'verdict',
++        'plan-compilation-source'
++    ]);
++}
++
+ function assertGroundingEvidencePersisted(
+     artifactStore: FakeArtifactStore
+ ): void {
+diff --git a/modules/engine-core/test/semantic_step_controller.test.ts b/modules/engine-core/test/semantic_step_controller.test.ts
+index 4aa2afa45325f41b7b98061bd52ffb582fccde30..96c916c49522369ea97f709730d90bb86e96d446 100644
+--- a/modules/engine-core/test/semantic_step_controller.test.ts
++++ b/modules/engine-core/test/semantic_step_controller.test.ts
+@@ -19,6 +19,57 @@ import {
+ 
+ // eslint-disable-next-line max-lines-per-function
+ describe('SemanticStepController', () => {
++    it('async search: CLEAR → internal settle → original action succeeds', async () => {
++        const initial = perception('initial', {
++            elements: [ element('search', '搜索', 'filled') ]
++        });
++        const searching = perception('searching', {
++            previous: initial,
++            elements: [ element('search', '搜索', 'empty') ],
++            visibleText: [ '搜索中...' ],
++            stability: 'transient'
++        });
++        const ready = perception('ready', {
++            previous: searching,
++            elements: [
++                element('search', '搜索', 'empty'),
++                element('new-app', '新建应用')
++            ]
++        });
++        const done = perception('done', {
++            previous: ready,
++            url: 'https://example.test/new-app',
++            title: '新建应用页面'
++        });
++        const runtime = new FakeRuntime(initial, (action, current) => {
++            if (action.type === 'TYPE') {
++                return grounded('search', current, '搜索');
++            }
++            return current.dom.stateFingerprint === 'ready'
++                || current.dom.stateFingerprint === 'done'
++                ? grounded('new-app', current, '新建应用')
++                : decision('blocked');
++        }, (action) => action.type === 'TYPE' ? searching : done,
++        (current) => current.dom.stateFingerprint === 'searching'
++            ? ready
++            : current);
++
++        const result = await controller(runtime).execute(step({
++            type: 'CLICK',
++            target: { description: '新建应用' },
++            expectedEffect: '进入新建应用页面',
++            reasonSummary: '创建应用'
++        }), intent, signal());
++
++        assert.equal(result.outcome.status, 'completed');
++        assert.deepEqual(runtime.executedTypes, [ 'TYPE', 'CLICK' ]);
++        assert.equal(result.recoveryAttempts.length, 1);
++        assert.equal(runtime.settleCalls, 3);
++        assert.deepEqual(result.executions.map(
++            ({ compilationContribution }) => compilationContribution
++        ), [ 'productive', 'productive' ]);
++    });
++
+     it('search overlay: blocked → CLEAR → original action succeeds', async () => {
+         const initial = perception('initial', {
+             elements: [ element('search', '搜索', 'filled') ]
+@@ -380,6 +431,7 @@ const intent: TestIntent = {
+ class FakeRuntime implements SemanticStepRuntimePort<string> {
+     public executedTypes: string[] = [];
+     public modelPurposes: string[] = [];
++    public settleCalls = 0;
+     private current: PagePerception;
+ 
+     constructor(
+@@ -391,7 +443,10 @@ class FakeRuntime implements SemanticStepRuntimePort<string> {
+         private readonly transition: (
+             action: SemanticAction,
+             perception: PagePerception
+-        ) => PagePerception
++        ) => PagePerception,
++        private readonly settleTransition: (
++            perception: PagePerception
++        ) => PagePerception = (perception) => perception
+     ) {
+         this.current = initial;
+     }
+@@ -404,6 +459,19 @@ class FakeRuntime implements SemanticStepRuntimePort<string> {
+         action,
+         current
+     ) => this.grounder(action, current);
++    public settle: SemanticStepRuntimePort<string>['settle'] = async (
++        current
++    ) => {
++        this.settleCalls += 1;
++        const settled = this.settleTransition(current);
++        return { status: 'stable', perception: settled as PagePerception & {
++        stability: {
++            consistency: 'consistent',
++            state: 'stable',
++            transientSignals: []
++        }
++        }, samples: [] };
++    };
+     public execute: SemanticStepRuntimePort<string>['execute'] = async (input) => {
+         this.executedTypes.push(input.action.type);
+         const after = this.transition(input.action, this.current);
+@@ -444,6 +512,10 @@ class FakeRuntime implements SemanticStepRuntimePort<string> {
+         return execution;
+     };
+     public recordReobserve = async () => {};
++    public reverifyEffectAfterSettling:
++    SemanticStepRuntimePort<string>['reverifyEffectAfterSettling'] = async (
++        execution
++    ) => execution.effect;
+     public consumeModelCalls: SemanticStepRuntimePort<string>['consumeModelCalls'] =
+         (_count, purpose) => this.modelPurposes.push(purpose);
+ }
+@@ -529,7 +601,8 @@ function perception(id: string, options: {
+     title?: string,
+     url?: string,
+     loading?: boolean,
+-    blocked?: boolean
++    blocked?: boolean,
++    stability?: 'stable' | 'transient'
+ } = {}): PagePerception {
+     const elements = options.elements ?? [];
+     return {
+@@ -567,6 +640,13 @@ function perception(id: string, options: {
+                 visible: true
+             }
+         ])),
++        stability: {
++            consistency: 'consistent',
++            state: options.stability ?? 'stable',
++            transientSignals: options.stability === 'transient'
++                ? [ 'loading-text' ]
++                : []
++        },
+         ...options.delta
+             ? { delta: options.delta }
+             : options.previous
+diff --git a/modules/engine-core/test/semantic_step_progress_evaluator.test.ts b/modules/engine-core/test/semantic_step_progress_evaluator.test.ts
+index 00ac01f183874498c3daca9ea4190818fa4c500a..28c83962da3359c5fb8305cd17ed84a44fb87920 100644
+--- a/modules/engine-core/test/semantic_step_progress_evaluator.test.ts
++++ b/modules/engine-core/test/semantic_step_progress_evaluator.test.ts
+@@ -83,6 +83,43 @@ describe('SemanticStepProgressEvaluator', () => {
+     });
+ });
+ 
++describe('SemanticStepProgressEvaluator WAIT', () => {
++    it('纯时间 WAIT 完成，但业务 WAIT 在“搜索中”时不得 complete', async () => {
++        const before = createPerception('before');
++        const searching = createPerception('searching', before);
++        searching.dom.visibleText = [ '搜索中...' ];
++        searching.stability = {
++            consistency: 'consistent',
++            state: 'transient',
++            transientSignals: [ 'loading-text' ]
++        };
++        const evaluator = new SemanticStepProgressEvaluator();
++        const pure = await evaluator.evaluate(waitInput(before, before),
++            new AbortController().signal);
++        const business = await evaluator.evaluate(waitInput(
++            before,
++            searching,
++            '搜索结果或无结果状态显示'
++        ), new AbortController().signal);
++
++        assert.equal(pure.status, 'complete');
++        assert.notEqual(business.status, 'complete');
++        assert.equal(business.status, 'no-progress');
++    });
++
++    it('business WAIT 仅在稳定页面出现业务终态时 complete', async () => {
++        const before = createPerception('before');
++        const after = createPerception('after', before);
++        after.dom.visibleText = [ '没有搜索到相关结果' ];
++        const progress = await new SemanticStepProgressEvaluator().evaluate(
++            waitInput(before, after, '搜索结果或无结果状态显示'),
++            new AbortController().signal
++        );
++
++        assert.equal(progress.status, 'complete');
++    });
++});
++
+ describe('SemanticStepProgressEvaluator correctness', () => {
+     it('CLICK 错跳 settings 时不能复用跳转前已有目标文本', async () => {
+         const before = createPerception('before');
+@@ -196,6 +233,11 @@ function createPerception(
+                 visible: true
+             }
+         },
++        stability: {
++            consistency: 'consistent',
++            state: 'stable',
++            transientSignals: []
++        },
+         ...previous
+             ? {
+                 delta: {
+@@ -219,6 +261,41 @@ function createPerception(
+     };
+ }
+ 
++function waitInput(
++    before: PagePerception,
++    after: PagePerception,
++    expectedEffect?: string
++): SemanticStepProgressInput {
++    return {
++        step: {
++            id: 'wait-step',
++            primaryAction: {
++                type: 'WAIT',
++                value: { source: 'literal', value: 200 },
++                ...expectedEffect ? { expectedEffect } : {},
++                reasonSummary: '等待页面状态'
++            },
++            ...expectedEffect ? { expectedEffect } : {},
++            source: 'runtime-wrapper'
++        },
++        attemptedAction: {
++            type: 'WAIT',
++            value: { source: 'literal', value: 200 },
++            ...expectedEffect ? { expectedEffect } : {},
++            reasonSummary: '等待页面状态'
++        },
++        before,
++        after,
++        actionResult: executedResult(),
++        effect: {
++            status: 'confirmed',
++            expectedEffect: expectedEffect ?? '等待 200ms',
++            evidence: [],
++            summary: '等待动作已执行。'
++        }
++    };
++}
++
+ function createObservation(id: string): PageObservation {
+     return {
+         schemaVersion: 1,
+diff --git a/server/src/adapters/browser/index.ts b/server/src/adapters/browser/index.ts
+index e2fdece60d13fab5ae9c852e7cff109e42209b6a..73aa7e9dcd1e10759d61da5e5b5a04066c7c1531 100644
+--- a/server/src/adapters/browser/index.ts
++++ b/server/src/adapters/browser/index.ts
+@@ -4,3 +4,4 @@ export * from './playwright_candidate_mapping_adapter';
+ export * from './playwright_element_evidence';
+ export * from './playwright_page_perception_adapter';
+ export * from './playwright_page_provider';
++export * from './playwright_page_stability_adapter';
+diff --git a/server/src/adapters/browser/playwright_page_stability_adapter.ts b/server/src/adapters/browser/playwright_page_stability_adapter.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..2ff1104eae8cde31069080163e97217b1ec78fd3
+--- /dev/null
++++ b/server/src/adapters/browser/playwright_page_stability_adapter.ts
+@@ -0,0 +1,122 @@
++import { createHash } from 'node:crypto';
++
++import type {
++    BrowserSession,
++    PageStabilityPort,
++    PageStabilitySample,
++    PageTransientSignal,
++} from '@ai-web-test-engine/core';
++
++import type { PlaywrightPageProvider } from './playwright_page_provider';
++
++const MAX_SEMANTIC_CONTROLS = 80;
++const DYNAMIC_TOKEN_PATTERN = /\b(?:\d+(?:[.:/-]\d+)*|[a-f\d]{8,})\b/giu;
++
++interface LightweightPageState {
++    busy: boolean;
++    controls: string[];
++    loadingText: boolean;
++    pathname: string;
++    progressbar: boolean;
++    readyState: string;
++    spinner: boolean;
++    title: string;
++}
++
++const STABILITY_CAPTURE_SCRIPT = String.raw`function(maxControls) {
++    const visible = (element) => {
++        const style = window.getComputedStyle(element);
++        const rect = element.getBoundingClientRect();
++        return style.display !== 'none'
++            && style.visibility !== 'hidden'
++            && rect.width > 0
++            && rect.height > 0;
++    };
++    const semanticName = (element) => (
++        element.getAttribute('aria-label')
++        || element.getAttribute('placeholder')
++        || element.getAttribute('title')
++        || element.textContent
++        || ''
++    ).trim().replace(/\s+/gu, ' ').slice(0, 120);
++    const controls = Array.from(document.querySelectorAll([
++        'button', 'a[href]', 'input', 'select', 'textarea',
++        '[role="button"]', '[role="link"]', '[role="textbox"]',
++        '[role="checkbox"]', '[role="tab"]', '[role="menuitem"]'
++    ].join(','))).filter(visible).slice(0, maxControls).map((element) => [
++        element.tagName.toLowerCase(),
++        element.getAttribute('role') || '',
++        semanticName(element),
++        element.getAttribute('aria-disabled') || '',
++        element.hasAttribute('disabled') ? 'disabled' : ''
++    ].join('|'));
++    const bodyText = document.body?.innerText || '';
++    return {
++        busy: Array.from(document.querySelectorAll('[aria-busy="true"]'))
++            .some(visible),
++        controls,
++        loadingText: /搜索中|加载中|正在加载|请稍候|loading|searching/iu
++            .test(bodyText),
++        pathname: location.origin + location.pathname,
++        progressbar: Array.from(document.querySelectorAll(
++            '[role="progressbar"],progress'
++        )).some(visible),
++        readyState: document.readyState,
++        spinner: Array.from(document.querySelectorAll([
++            '[class*="spinner" i]', '[class*="loading" i]',
++            '[data-loading="true"]'
++        ].join(','))).some(visible),
++        title: document.title
++    };
++}`;
++
++/** 采集不包含完整 visibleText、candidateId 和 geometry 的页面稳定性骨架。 */
++export class PlaywrightPageStabilityAdapter implements PageStabilityPort {
++    constructor(private readonly pageProvider: PlaywrightPageProvider) {}
++
++    public sample = async (
++        session: BrowserSession,
++        signal: AbortSignal
++    ): Promise<PageStabilitySample> => {
++        signal.throwIfAborted();
++        const page = this.pageProvider.getPage(session);
++        const state = await page.evaluate(
++            `(${ STABILITY_CAPTURE_SCRIPT })(${ MAX_SEMANTIC_CONTROLS })`
++        ) as LightweightPageState;
++        signal.throwIfAborted();
++        const transientSignals = transientSignalsFor(state);
++        const normalized = {
++            controls: state.controls.map(normalizeVolatileTokens).sort(),
++            loading: state.readyState === 'loading',
++            pathname: state.pathname,
++            title: normalizeVolatileTokens(state.title),
++            transientSignals
++        };
++        return {
++            capturedAt: new Date().toISOString(),
++            fingerprint: createHash('sha256')
++                .update(JSON.stringify(normalized))
++                .digest('hex'),
++            loading: state.readyState === 'loading',
++            transientSignals
++        };
++    };
++}
++
++function normalizeVolatileTokens(value: string): string {
++    return value.trim().replace(/\s+/gu, ' ')
++        .replace(DYNAMIC_TOKEN_PATTERN, '#')
++        .slice(0, 160);
++}
++
++function transientSignalsFor(state: LightweightPageState): PageTransientSignal[] {
++    return [
++        ...state.readyState === 'loading'
++            ? [ 'document-loading' as const ]
++            : [],
++        ...state.busy ? [ 'aria-busy' as const ] : [],
++        ...state.progressbar ? [ 'progressbar' as const ] : [],
++        ...state.spinner ? [ 'spinner' as const ] : [],
++        ...state.loadingText ? [ 'loading-text' as const ] : []
++    ];
++}
+diff --git a/server/src/services/run_debug.service.ts b/server/src/services/run_debug.service.ts
+index 391ecf9f9191897c3af30e701d80431dae545196..32d02aceff5d6d3e4c32a43734bd72f95dace75b 100644
+--- a/server/src/services/run_debug.service.ts
++++ b/server/src/services/run_debug.service.ts
+@@ -23,6 +23,7 @@ import {
+     PlaywrightBrowserAdapter,
+     PlaywrightCandidateMappingAdapter,
+     PlaywrightPagePerceptionAdapter,
++    PlaywrightPageStabilityAdapter,
+ } from '../adapters/browser';
+ import { resolveArtifactRootDirectories } from '../adapters/storage/artifact_root';
+ import { LocalEnvironmentValueResolver } from '../adapters/environment';
+@@ -118,6 +119,9 @@ function createConfiguredExecutionEngine(
+                     timeoutMs: 300_000
+                 }
+             ),
++            pageStabilityPort: new PlaywrightPageStabilityAdapter(
++                baseBrowserAdapter
++            ),
+             perceptionService,
+             recoveryPlanner: new ModelRecoveryPlanner(modelAdapter, {
+                 maxOutputTokens: 800,
+diff --git a/server/test/server/adapters/browser/playwright_page_stability_adapter.test.ts b/server/test/server/adapters/browser/playwright_page_stability_adapter.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..a07737cff63f6e1813c936a4543a38db5385224c
+--- /dev/null
++++ b/server/test/server/adapters/browser/playwright_page_stability_adapter.test.ts
+@@ -0,0 +1,59 @@
++import assert from 'node:assert/strict';
++
++import type { BrowserSession } from '@ai-web-test-engine/core';
++import type { Page } from 'playwright';
++
++import {
++    PlaywrightPageStabilityAdapter,
++} from '../../../../src/adapters/browser';
++import type {
++    PlaywrightPageProvider,
++} from '../../../../src/adapters/browser';
++
++describe('PlaywrightPageStabilityAdapter', () => {
++    it('忽略随机数字变化并保留结构与 transient 信号', async () => {
++        const provider = new FakePageProvider([
++            state('倒计时 9 秒 / 订单 123456', false),
++            state('倒计时 8 秒 / 订单 987654', false),
++            state('倒计时 8 秒 / 订单 987654', true)
++        ]);
++        const adapter = new PlaywrightPageStabilityAdapter(provider);
++        const signal = new AbortController().signal;
++        const first = await adapter.sample(SESSION, signal);
++        const second = await adapter.sample(SESSION, signal);
++        const transient = await adapter.sample(SESSION, signal);
++
++        assert.equal(first.fingerprint, second.fingerprint);
++        assert.notEqual(second.fingerprint, transient.fingerprint);
++        assert.deepEqual(transient.transientSignals, [ 'loading-text' ]);
++    });
++});
++
++const SESSION = { sessionId: 'session-1' };
++
++class FakePageProvider implements PlaywrightPageProvider {
++    private index = 0;
++    constructor(private readonly states: unknown[]) {}
++    public getPage = () => ({
++        evaluate: async () => this.states[this.index++]
++    }) as unknown as Page;
++    public getCandidateLocator = () => undefined;
++    public getCandidateIds = () => [];
++    public getAccessibilityRef = () => undefined;
++    public isObservationCurrent = () => true;
++    public registerTransientCandidate = () => undefined;
++    public registerAccessibilityRef = () => undefined;
++}
++
++function state(controlName: string, loadingText: boolean) {
++    return {
++        busy: false,
++        controls: [ `button|button|${ controlName }||` ],
++        loadingText,
++        pathname: 'https://example.test/workbench',
++        progressbar: false,
++        readyState: 'complete',
++        spinner: false,
++        title: '工作台'
++    };
++}

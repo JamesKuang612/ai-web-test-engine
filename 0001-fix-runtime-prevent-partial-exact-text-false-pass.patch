@@ -1,0 +1,721 @@
+From 87d394b7adaf48ccbdee95126cc41896da96316a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ethan=2EKuang-=E5=86=B5=E4=BD=B3=E6=AC=A3?=
+ <Ethan.Kuang@fanruan.com>
+Date: Tue, 1 Sep 2026 16:49:18 +0800
+Subject: [PATCH] fix(runtime): prevent partial exact-text false pass
+
+---
+ .../perception/exact_visible_text_matcher.ts  |  52 +++++
+ modules/engine-core/src/perception/index.ts   |   1 +
+ .../engine-core/src/run/run_coordinator.ts    |  22 +--
+ .../src/run/success_criteria_evaluator.ts     | 122 ++++++++----
+ .../src/verdict/model_verdict_evaluator.ts    |  51 +----
+ .../engine-core/test/run_coordinator.test.ts  |  99 +++++++++-
+ .../test/success_criteria_evaluator.test.ts   | 184 ++++++++++++++++++
+ 7 files changed, 436 insertions(+), 95 deletions(-)
+ create mode 100644 modules/engine-core/src/perception/exact_visible_text_matcher.ts
+ create mode 100644 modules/engine-core/test/success_criteria_evaluator.test.ts
+
+diff --git a/modules/engine-core/src/perception/exact_visible_text_matcher.ts b/modules/engine-core/src/perception/exact_visible_text_matcher.ts
+new file mode 100644
+index 0000000..9de2c7d
+--- /dev/null
++++ b/modules/engine-core/src/perception/exact_visible_text_matcher.ts
+@@ -0,0 +1,52 @@
++/** 精确文本匹配的确定性结果。 */
++export interface ExactVisibleTextMatch {
++    matched: boolean;
++    missing: string[];
++}
++
++/**
++ * 按 DOM 可见文本逐项完全相等匹配；ordered 模式额外要求出现顺序一致。
++ */
++export function matchExactVisibleText(
++    visibleText: string[],
++    expectedValues: string[],
++    ordered: boolean
++): ExactVisibleTextMatch {
++    const remainingText = [...visibleText];
++    const missing = expectedValues.filter((expected) => {
++        const index = remainingText.findIndex((actual) => actual === expected);
++        if (index < 0) {
++            return true;
++        }
++        remainingText.splice(index, 1);
++        return false;
++    });
++    if (missing.length > 0) {
++        return {
++            matched: false,
++            missing
++        };
++    }
++    if (!ordered) {
++        return {
++            matched: true,
++            missing: []
++        };
++    }
++
++    let cursor = 0;
++    const orderedMatch = expectedValues.every((expected) => {
++        const relativeIndex = visibleText
++            .slice(cursor)
++            .findIndex((actual) => actual === expected);
++        if (relativeIndex < 0) {
++            return false;
++        }
++        cursor += relativeIndex + 1;
++        return true;
++    });
++    return {
++        matched: orderedMatch,
++        missing: []
++    };
++}
+diff --git a/modules/engine-core/src/perception/index.ts b/modules/engine-core/src/perception/index.ts
+index 65689b1..827414b 100644
+--- a/modules/engine-core/src/perception/index.ts
++++ b/modules/engine-core/src/perception/index.ts
+@@ -1 +1,2 @@
++export * from './exact_visible_text_matcher';
+ export * from './perception_service';
+diff --git a/modules/engine-core/src/run/run_coordinator.ts b/modules/engine-core/src/run/run_coordinator.ts
+index 9e3f26d..ffe29fe 100644
+--- a/modules/engine-core/src/run/run_coordinator.ts
++++ b/modules/engine-core/src/run/run_coordinator.ts
+@@ -105,6 +105,9 @@ import {
+ import {
+     SuccessCriteriaEvaluator,
+ } from './success_criteria_evaluator';
++import type {
++    SuccessCriteriaEvaluation,
++} from './success_criteria_evaluator';
+ 
+ const ANSI_ESCAPE_PATTERN = new RegExp(
+     `${ String.fromCharCode(27) }\\[[0-?]*[ -/]*[@-~]`,
+@@ -145,7 +148,7 @@ interface RunExecutionContext {
+     lastImmediateObservation?: PageObservation;
+     lastImmediateObservationReference?: EvidenceRef;
+     currentStablePerception?: CurrentStablePerception;
+-    deterministicSuccess?: boolean;
++    deterministicSuccess?: SuccessCriteriaEvaluation;
+     settlingFailureReason?: string;
+     modelCallCount: number;
+     groundingSequence: number;
+@@ -682,7 +685,7 @@ export class RunCoordinator implements ExecutionEngine {
+         if (success.status !== 'satisfied') {
+             return undefined;
+         }
+-        context.deterministicSuccess = true;
++        context.deterministicSuccess = success;
+         return {
+             navigation,
+             plannedActions,
+@@ -2392,20 +2395,13 @@ export class RunCoordinator implements ExecutionEngine {
+         testIntent: TestIntent,
+         execution: BrowserExecution
+     ): Promise<RunResult> {
+-        if (context.deterministicSuccess) {
++        const deterministicSuccess = context.deterministicSuccess;
++        if (deterministicSuccess) {
+             const decision: VerdictDecision = {
+                 result: 'PASS',
+                 summary: '稳定页面已满足全部精确文本成功条件。',
+-                successCriteria: testIntent.successCriteria.map((criterion) => ({
+-                    criterionId: criterion.id,
+-                    status: 'MATCHED',
+-                    summary: 'DOM 稳定页面逐字包含目标文本。'
+-                })),
+-                failureCriteria: testIntent.failureCriteria.map((criterion) => ({
+-                    criterionId: criterion.id,
+-                    status: 'NOT_MATCHED',
+-                    summary: '未发现失败证据。'
+-                }))
++                successCriteria: deterministicSuccess.successCriteria,
++                failureCriteria: deterministicSuccess.failureCriteria
+             };
+             const verdictReference = await this.artifactStore.saveJson(
+                 context.runId,
+diff --git a/modules/engine-core/src/run/success_criteria_evaluator.ts b/modules/engine-core/src/run/success_criteria_evaluator.ts
+index ad82c3f..19a992e 100644
+--- a/modules/engine-core/src/run/success_criteria_evaluator.ts
++++ b/modules/engine-core/src/run/success_criteria_evaluator.ts
+@@ -1,16 +1,22 @@
+ import type {
++    CriterionAssessment,
+     ExactTextAssertion,
+     PagePerception,
+     TestIntent,
+ } from '../contracts';
++import {
++    matchExactVisibleText,
++} from '../perception';
+ 
+ export interface SuccessCriteriaEvaluation {
+     status: 'satisfied' | 'incomplete' | 'not-applicable';
++    failureCriteria: CriterionAssessment[];
+     matched: ExactTextAssertion[];
+     missing: Array<{
+         assertion: ExactTextAssertion,
+         values: string[]
+     }>;
++    successCriteria: CriterionAssessment[];
+ }
+ 
+ /** 在调用 Planner 前对程序化精确文本条件做确定性判断。 */
+@@ -23,62 +29,112 @@ export class SuccessCriteriaEvaluator {
+         if (assertions.length === 0) {
+             return {
+                 status: 'not-applicable',
++                failureCriteria: testIntent.failureCriteria.map(
++                    (criterion) => unknownAssessment(criterion.id)
++                ),
+                 matched: [],
+-                missing: []
++                missing: [],
++                successCriteria: testIntent.successCriteria.map(
++                    (criterion) => unknownAssessment(criterion.id)
++                )
+             };
+         }
+         const matched: ExactTextAssertion[] = [];
+         const missing: SuccessCriteriaEvaluation['missing'] = [];
++        const matches = new Map<ExactTextAssertion, boolean>();
+         for (const assertion of assertions) {
+             const result = matchExactVisibleText(
+                 perception.dom.visibleText,
+                 assertion.values,
+                 assertion.ordered
+             );
++            matches.set(assertion, result.matched);
+             if (result.matched) {
+                 matched.push(assertion);
+             } else {
+                 missing.push({ assertion, values: result.missing });
+             }
+         }
++        const successCriteria = testIntent.successCriteria.map((criterion) => {
++            const evidence = assertions.filter(
++                ({ successCriterionId }) => successCriterionId === criterion.id
++            );
++            if (evidence.length === 0) {
++                return unknownAssessment(criterion.id);
++            }
++            return evidence.every((assertion) => matches.get(assertion))
++                ? matchedSuccessAssessment(criterion.id)
++                : unmatchedSuccessAssessment(criterion.id);
++        });
++        const failureCriteria = testIntent.failureCriteria.map((criterion) => {
++            const evidence = assertions.filter(
++                ({ failureCriterionId }) => failureCriterionId === criterion.id
++            );
++            if (evidence.length === 0) {
++                return unknownAssessment(criterion.id);
++            }
++            return evidence.every((assertion) => matches.get(assertion))
++                ? excludedFailureAssessment(criterion.id)
++                : matchedFailureAssessment(criterion.id);
++        });
++        const requiredSuccessCovered = testIntent.successCriteria
++            .filter(({ required }) => required)
++            .every((criterion) => assertions.some(
++                ({ successCriterionId }) => successCriterionId === criterion.id
++            ));
++        const allFailureCriteriaExcluded = failureCriteria.every(
++            ({ status }) => status === 'NOT_MATCHED'
++        );
+         return {
+-            status: missing.length === 0 ? 'satisfied' : 'incomplete',
++            status: missing.length === 0
++                && requiredSuccessCovered
++                && allFailureCriteriaExcluded
++                ? 'satisfied'
++                : 'incomplete',
++            failureCriteria,
+             matched,
+-            missing
++            missing,
++            successCriteria
+         };
+     }
+ }
+ 
+-function matchExactVisibleText(
+-    visibleText: string[],
+-    expectedValues: string[],
+-    ordered: boolean
+-): { matched: boolean, missing: string[] } {
+-    const remainingText = [...visibleText];
+-    const missing = expectedValues.filter((expected) => {
+-        const index = remainingText.findIndex((actual) => actual === expected);
+-        if (index < 0) {
+-            return true;
+-        }
+-        remainingText.splice(index, 1);
+-        return false;
+-    });
+-    if (missing.length > 0 || !ordered) {
+-        return { matched: missing.length === 0, missing };
+-    }
+-    let cursor = 0;
+-    const orderedMatch = expectedValues.every((expected) => {
+-        const relativeIndex = visibleText
+-            .slice(cursor)
+-            .findIndex((actual) => actual === expected);
+-        if (relativeIndex < 0) {
+-            return false;
+-        }
+-        cursor += relativeIndex + 1;
+-        return true;
+-    });
++function unknownAssessment(criterionId: string): CriterionAssessment {
++    return {
++        criterionId,
++        status: 'UNKNOWN',
++        summary: '当前确定性精确文本证据未覆盖此条件。'
++    };
++}
++
++function matchedSuccessAssessment(criterionId: string): CriterionAssessment {
++    return {
++        criterionId,
++        status: 'MATCHED',
++        summary: '稳定 DOM 页面逐字包含此条件要求的全部精确文本。'
++    };
++}
++
++function unmatchedSuccessAssessment(criterionId: string): CriterionAssessment {
++    return {
++        criterionId,
++        status: 'NOT_MATCHED',
++        summary: '稳定 DOM 页面未逐字满足此条件的精确文本要求。'
++    };
++}
++
++function excludedFailureAssessment(criterionId: string): CriterionAssessment {
++    return {
++        criterionId,
++        status: 'NOT_MATCHED',
++        summary: '稳定 DOM 页面不存在此精确文本不匹配条件。'
++    };
++}
++
++function matchedFailureAssessment(criterionId: string): CriterionAssessment {
+     return {
+-        matched: orderedMatch,
+-        missing: orderedMatch ? [] : expectedValues
++        criterionId,
++        status: 'MATCHED',
++        summary: '稳定 DOM 页面存在此精确文本不匹配条件。'
+     };
+ }
+diff --git a/modules/engine-core/src/verdict/model_verdict_evaluator.ts b/modules/engine-core/src/verdict/model_verdict_evaluator.ts
+index 354119f..2c11d99 100644
+--- a/modules/engine-core/src/verdict/model_verdict_evaluator.ts
++++ b/modules/engine-core/src/verdict/model_verdict_evaluator.ts
+@@ -4,6 +4,9 @@ import type {
+     JsonValue,
+     VerdictDecision,
+ } from '../contracts';
++import {
++    matchExactVisibleText,
++} from '../perception';
+ import type {
+     ModelAdapter,
+     RuntimeSchema,
+@@ -403,54 +406,6 @@ function requireSameCriterionIds(
+     }
+ }
+ 
+-/** 按 PageObservation 的 DOM 文本顺序进行完全相等匹配。 */
+-function matchExactVisibleText(
+-    visibleText: string[],
+-    expectedValues: string[],
+-    ordered: boolean
+-): {
+-    matched: boolean,
+-    missing: string[]
+-} {
+-    const remainingText = [...visibleText];
+-    const missing = expectedValues.filter((expected) => {
+-        const index = remainingText.findIndex((actual) => actual === expected);
+-        if (index < 0) {
+-            return true;
+-        }
+-        remainingText.splice(index, 1);
+-        return false;
+-    });
+-    if (missing.length > 0) {
+-        return {
+-            matched: false,
+-            missing
+-        };
+-    }
+-    if (!ordered) {
+-        return {
+-            matched: true,
+-            missing: []
+-        };
+-    }
+-
+-    let cursor = 0;
+-    const orderedMatch = expectedValues.every((expected) => {
+-        const relativeIndex = visibleText
+-            .slice(cursor)
+-            .findIndex((actual) => actual === expected);
+-        if (relativeIndex < 0) {
+-            return false;
+-        }
+-        cursor += relativeIndex + 1;
+-        return true;
+-    });
+-    return {
+-        matched: orderedMatch,
+-        missing: []
+-    };
+-}
+-
+ /** 在程序覆盖精确断言后重新计算最终业务结果。 */
+ function calculateResult(
+     successCriteria: CriterionAssessment[],
+diff --git a/modules/engine-core/test/run_coordinator.test.ts b/modules/engine-core/test/run_coordinator.test.ts
+index 4b042df..82b9f96 100644
+--- a/modules/engine-core/test/run_coordinator.test.ts
++++ b/modules/engine-core/test/run_coordinator.test.ts
+@@ -292,7 +292,10 @@ describe('RunCoordinator deterministic success criteria', () => {
+                 preferredEvidence: [ 'dom' ],
+                 required: true
+             })),
+-            failureCriteria: [],
++            failureCriteria: values.map((_value, index) => ({
++                id: `exact-failure-${ index }`,
++                description: '对应精确文本缺失或文字不同'
++            })),
+             exactTextAssertions: values.map((value, index) => ({
+                 successCriterionId: `exact-${ index }`,
+                 failureCriterionId: `exact-failure-${ index }`,
+@@ -313,6 +316,7 @@ describe('RunCoordinator deterministic success criteria', () => {
+             [ undefined, stable, stable, stable, stable ]
+         );
+         const actionPlanner = new FakeActionPlanner(plannedClickCommand);
++        const recoveryPlanner = new CountingRecoveryPlanner();
+         const artifactStore = new FakeArtifactStore();
+         const result = await new RunCoordinator(
+             artifactStore,
+@@ -321,6 +325,7 @@ describe('RunCoordinator deterministic success criteria', () => {
+             browserAdapter,
+             {
+                 actionPlanner,
++                recoveryPlanner,
+                 verdictEvaluator: new FakeVerdictEvaluator(passVerdict)
+             },
+             new FakeEnvironmentValueResolver()
+@@ -329,7 +334,9 @@ describe('RunCoordinator deterministic success criteria', () => {
+         assert.equal(result.result, 'PASS');
+         assert.equal(browserAdapter.executeCount, 1);
+         assert.equal(actionPlanner.callCount, 0);
++        assert.equal(recoveryPlanner.callCount, 0);
+         assert.equal(result.metrics.actionCount, 1);
++        assert.equal(result.metrics.modelCallCount, 1);
+         assert.deepEqual(browserAdapter.commands.map((command) => command.type), [
+             'NAVIGATE'
+         ]);
+@@ -340,6 +347,80 @@ describe('RunCoordinator deterministic success criteria', () => {
+             values.every((value) => stablePerception?.dom?.visibleText?.includes(value)),
+             true
+         );
++        const deterministicVerdict = artifactStore.savedJson.find(
++            ({ name }) => name === 'verdict'
++        )?.value as unknown as VerdictDecision;
++        assert.deepEqual(
++            deterministicVerdict.successCriteria.map(({ status }) => status),
++            values.map(() => 'MATCHED')
++        );
++        assert.deepEqual(
++            deterministicVerdict.failureCriteria.map(({ status }) => status),
++            values.map(() => 'NOT_MATCHED')
++        );
++    });
++});
++
++describe('RunCoordinator deterministic success coverage', () => {
++    it('exact text 只覆盖部分 required 条件时继续 Planner 而不短路 PASS', async () => {
++        const partialIntent: TestIntent = {
++            ...testIntent,
++            successCriteria: [{
++                id: 'exact-workspace',
++                description: '页面逐字显示工作台',
++                preferredEvidence: [ 'dom' ],
++                required: true
++            }, {
++                id: 'business-loaded',
++                description: '工作台业务数据已经加载完成',
++                preferredEvidence: [ 'dom', 'network' ],
++                required: true
++            }],
++            failureCriteria: [{
++                id: 'exact-workspace-failure',
++                description: '工作台文本缺失或文字不同'
++            }],
++            exactTextAssertions: [{
++                successCriterionId: 'exact-workspace',
++                failureCriterionId: 'exact-workspace-failure',
++                ordered: false,
++                values: [ '工作台' ]
++            }]
++        };
++        const stable = createObservation(
++            'https://test.jdydevelop.com/dashboard#/',
++            false,
++            false,
++            true
++        );
++        stable.visibleText = [ '工作台' ];
++        const browserAdapter = new FakeBrowserAdapter(
++            false,
++            false,
++            [ undefined, stable, stable, stable, stable ]
++        );
++        const actionPlanner = new FakeActionPlanner({
++            type: 'UNCERTAIN',
++            reasonSummary: '业务加载状态没有确定证据'
++        });
++        const result = await new RunCoordinator(
++            new FakeArtifactStore(),
++            new FakeRunEventPublisher(),
++            new FakeIntentBuilder(partialIntent),
++            browserAdapter,
++            {
++                actionPlanner,
++                verdictEvaluator: new FakeVerdictEvaluator(uncertainVerdict)
++            },
++            new FakeEnvironmentValueResolver()
++        ).start(startInput, new AbortController().signal);
++
++        assert.equal(result.result, 'UNCERTAIN');
++        assert.equal(actionPlanner.callCount, 1);
++        assert.deepEqual(
++            browserAdapter.commands.map(({ type }) => type),
++            [ 'NAVIGATE' ]
++        );
+     });
+ });
+ 
+@@ -1579,6 +1660,22 @@ class InvalidRecoveryPlanner implements RecoveryPlannerPort {
+     });
+ }
+ 
++/** 记录 deterministic PASS 是否错误进入 Recovery。 */
++class CountingRecoveryPlanner implements RecoveryPlannerPort {
++    public callCount = 0;
++
++    public plan: RecoveryPlannerPort['plan'] = () => {
++        this.callCount += 1;
++        return Promise.resolve({
++            status: 'decision',
++            decision: {
++                kind: 'stop',
++                reason: '测试不应调用 Recovery'
++            }
++        });
++    };
++}
++
+ function recoveryProtocolDiagnostic(phase: 'initial' | 'repair') {
+     return {
+         schemaVersion: 1 as const,
+diff --git a/modules/engine-core/test/success_criteria_evaluator.test.ts b/modules/engine-core/test/success_criteria_evaluator.test.ts
+new file mode 100644
+index 0000000..2030f4f
+--- /dev/null
++++ b/modules/engine-core/test/success_criteria_evaluator.test.ts
+@@ -0,0 +1,184 @@
++import assert from 'node:assert/strict';
++
++import type {
++    PagePerception,
++    TestIntent,
++} from '../src';
++import {
++    SuccessCriteriaEvaluator,
++} from '../src';
++
++describe('SuccessCriteriaEvaluator', () => {
++    it('完整 exact-text 证据覆盖整个 TestIntent 时才 satisfied', () => {
++        const intent = createExactIntent([ '我的待办', '我发起的' ]);
++        const result = new SuccessCriteriaEvaluator().evaluate(
++            intent,
++            createPerception([ '我的待办', '我发起的' ])
++        );
++
++        assert.equal(result.status, 'satisfied');
++        assert.deepEqual(
++            result.successCriteria.map(({ status }) => status),
++            [ 'MATCHED' ]
++        );
++        assert.deepEqual(
++            result.failureCriteria.map(({ status }) => status),
++            [ 'NOT_MATCHED' ]
++        );
++    });
++
++    it('required exact text 存在拼写差异时绝不 satisfied', () => {
++        const result = new SuccessCriteriaEvaluator().evaluate(
++            createExactIntent([ '管理后台E' ]),
++            createPerception([ '管理后台' ])
++        );
++
++        assert.equal(result.status, 'incomplete');
++        assert.equal(result.successCriteria[0]?.status, 'NOT_MATCHED');
++        assert.equal(result.failureCriteria[0]?.status, 'MATCHED');
++    });
++
++    it('存在未被 exact-text 覆盖的 required success criterion 时不 satisfied', () => {
++        const intent = createExactIntent([ '我的待办' ]);
++        intent.successCriteria.push({
++            id: 'business-state',
++            description: '待办数据已经完成业务加载',
++            preferredEvidence: [ 'dom' ],
++            required: true
++        });
++        const result = new SuccessCriteriaEvaluator().evaluate(
++            intent,
++            createPerception([ '我的待办' ])
++        );
++
++        assert.equal(result.status, 'incomplete');
++        assert.equal(
++            result.successCriteria.find(
++                ({ criterionId }) => criterionId === 'business-state'
++            )?.status,
++            'UNKNOWN'
++        );
++    });
++
++    it('存在无法由 exact-text 排除的独立 failure criterion 时不 satisfied', () => {
++        const intent = createExactIntent([ '我的待办' ]);
++        intent.failureCriteria.push({
++            id: 'independent-error',
++            description: '页面出现服务端业务错误'
++        });
++        const result = new SuccessCriteriaEvaluator().evaluate(
++            intent,
++            createPerception([ '我的待办' ])
++        );
++
++        assert.equal(result.status, 'incomplete');
++        assert.equal(
++            result.failureCriteria.find(
++                ({ criterionId }) => criterionId === 'independent-error'
++            )?.status,
++            'UNKNOWN'
++        );
++    });
++
++    it('ordered assertion 文本齐全但顺序错误时不 satisfied', () => {
++        const intent = createExactIntent([ '我的待办', '我发起的' ]);
++        if (intent.exactTextAssertions?.[0]) {
++            intent.exactTextAssertions[0].ordered = true;
++        }
++        const result = new SuccessCriteriaEvaluator().evaluate(
++            intent,
++            createPerception([ '我发起的', '我的待办' ])
++        );
++
++        assert.equal(result.status, 'incomplete');
++        assert.equal(result.successCriteria[0]?.status, 'NOT_MATCHED');
++    });
++
++    it('未覆盖的 optional success criterion 保持 UNKNOWN 而非 blanket MATCHED', () => {
++        const intent = createExactIntent([ '我的待办' ]);
++        intent.successCriteria.push({
++            id: 'optional-polish',
++            description: '页面具有推荐视觉样式',
++            preferredEvidence: [ 'screenshot' ],
++            required: false
++        });
++        const result = new SuccessCriteriaEvaluator().evaluate(
++            intent,
++            createPerception([ '我的待办' ])
++        );
++
++        assert.equal(result.status, 'satisfied');
++        assert.equal(
++            result.successCriteria.find(
++                ({ criterionId }) => criterionId === 'optional-polish'
++            )?.status,
++            'UNKNOWN'
++        );
++    });
++});
++
++function createExactIntent(values: string[]): TestIntent {
++    return {
++        schemaVersion: 1,
++        objective: '验证页面精确文本',
++        preconditions: [],
++        successCriteria: [{
++            id: 'exact-success',
++            description: '页面逐字显示全部目标文本',
++            preferredEvidence: [ 'dom' ],
++            required: true
++        }],
++        failureCriteria: [{
++            id: 'exact-failure',
++            description: '任一目标文本缺失、文字不同或顺序不符'
++        }],
++        constraints: [],
++        allowedHosts: [ 'example.test' ],
++        dataPolicy: { generatedValues: {} },
++        exactTextAssertions: [{
++            successCriterionId: 'exact-success',
++            failureCriterionId: 'exact-failure',
++            ordered: false,
++            values
++        }]
++    };
++}
++
++function createPerception(visibleText: string[]): PagePerception {
++    return {
++        perceptionId: 'perception-1',
++        capturedAt: '2026-09-01T00:00:00.000Z',
++        accessibility: {
++            nodes: [],
++            source: 'playwright-aria-snapshot',
++            truncated: false
++        },
++        dom: {
++            schemaVersion: 1,
++            observationId: 'observation-1',
++            capturedAt: '2026-09-01T00:00:00.000Z',
++            page: {
++                loading: false,
++                title: '工作台',
++                url: 'https://example.test/dashboard',
++                viewport: { width: 1280, height: 720 }
++            },
++            visibleText,
++            interactiveElements: [],
++            notices: [],
++            tabs: [{
++                active: true,
++                title: '工作台',
++                url: 'https://example.test/dashboard'
++            }],
++            stateFingerprint: 'stable-workbench',
++            truncated: false
++        },
++        interactionStates: {},
++        stability: {
++            consistency: 'consistent',
++            state: 'stable',
++            transientSignals: []
++        }
++    };
++}
+-- 
+2.55.0.windows.2
+

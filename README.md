@@ -1,62 +1,237 @@
-# ai-web-test-engine
+# AI Web Test Engine
 
-新人第一次拉取项目时，请先阅读[新人快速上手](docs/getting-started.md)，按照文档完成环境准备、构建和第一条真实链路验证。
+一个本地运行、测试资产由 Git 管理的 AI Web 测试执行引擎研究原型。
 
-## 开发说明
+> **项目状态：已封版（2026-09-01）**
+> 本仓库保留 Phase 3.5 + P0 Runtime Correctness 的最终研究基线，后续新架构不在本目录继续开发。这里的代码适合复盘、实验对照和复用基础设施，不应视为已经达到生产可用稳定性的测试产品。
 
-#### 开发准备
+## 最终基线
 
-* 安装依赖
-
-  ```bash
-  npm install
-  npx playwright install chromium
-  ```
-
-* 编译
-
-  ```bash
-  npm run build
-  ```
-
-* 运行
-
-  ```bash
-  node ./server/dist/app.js --enable-source-maps
-  ```
-
-* 完整检查
-
-  ```bash
-  npm run build
-  npm run eslint
-  npm test
-  ```
-
-### 地基调试接口
-
-当前已经跑通登录 POC 的探索、判定、计划编译和确定性回放链路：
+项目从最初的“模型直接选择 DOM candidate”演进为职责分离的运行时：
 
 ```text
-自然语言 action
-  → ModelIntentBuilder
-  → RunCoordinator
-  → Playwright 页面观察与登录动作
-  → 独立 Verdict 判定
-  → CompiledPlan 编译
-  → 全新浏览器上下文确定性回放
-  → 本地 Run、Observation、Screenshot、Trace、Result
+TestDefinition
+  ↓
+IntentBuilder → TestIntent
+  ↓
+Environment Setup / Login Module
+  ↓
+PageSettler + PagePerception
+  ├─ DOM observation
+  ├─ bounded accessibility snapshot
+  ├─ interaction state / hit-test
+  ├─ visual regions
+  └─ PerceptionDelta
+  ↓
+ModelActionPlanner → SemanticAction
+  ↓
+CompositeTargetGrounder
+  ├─ deterministic DOM grounding
+  ├─ accessibility grounding
+  └─ visual discovery → DOM/transient candidate mapping
+  ↓
+ResolvedTarget
+  ↓
+BrowserAdapter / Playwright
+  ↓
+ActionResult
+  ↓
+EffectVerification
+  ↓
+SemanticStepProgress
+  ↓
+bounded Recovery → settle → re-ground original primary action
+  ↓
+Verdict + Trace + productive CompiledPlan
 ```
 
-通用交互目前支持 `NAVIGATE`、`TYPE`、`CLICK`、`SELECT`、`CHECK`
-和 100～5000 毫秒的受限 `WAIT`。这些动作均可进入成功轨迹并参与结构化回放；
-连续 `WAIT` 会被执行引擎主动终止，避免无效长时间等待。
+架构中几个必须保持分离的概念：
 
-服务启动后，可以在 PowerShell 中执行：
+- `SemanticAction` 表达“想做什么”，不包含 `candidateId`；
+- `Grounder` 是 semantic target 到物理目标的唯一绑定边界；
+- `ResolvedTarget` 保存瞬时 candidate 与 grounding snapshot；
+- Browser 只执行物理动作，不理解业务目标；
+- `ActionResult=executed` 不等于业务 Step 已完成；
+- Trace 忠实记录真实执行，CompiledPlan 只收录 productive path；
+- 页面未稳定时，不允许据此产生确定性 not-found、progress 或 PASS。
+
+## 已实现能力
+
+### 测试资产与前端
+
+- `tests/*.test.yaml` 作为 Git 管理的测试定义；
+- 支持中文用例名、创建、读取、更新、重命名和删除；
+- React/Vite 页面提供项目文件列表、用例编辑、运行状态和历史终态恢复；
+- 后端通过同步接口、异步 Run Session 和 SSE 提供运行能力；
+- 最近一次上下文、控制台和结果从本机 `test-results` 恢复。
+
+### Runtime V2 基线
+
+- Planner 输出 `SemanticAction`，不选择物理 candidate；
+- DOM、A11y、hit-test 和视觉区域组成统一 `PagePerception`；
+- VisualRegion 必须映射到真实 DOM/transient candidate，禁止任意坐标点击；
+- CLICK 与 HOVER 使用不同 actionability 规则；
+- `SemanticStepController` 保持原始 primary goal，执行 bounded recovery；
+- Recovery 仅允许受控、低风险、可逆的 transient state action；
+- Recovery model protocol failure 可诊断、有限修复并保守降级；
+- PageSettler 使用 bounded stability sampling，不以固定长 sleep 为唯一机制；
+- exact-text assertion 使用严格相等匹配，并且只有完整覆盖 TestIntent 时才能 deterministic PASS；
+- productive trajectory 可编译为 `CompiledPlan` 并执行 deterministic replay。
+
+### 模型与浏览器
+
+- `ModelAdapter` 当前是单轮结构化 JSON 边界；
+- 默认文本模型为 DeepSeek OpenAI-compatible Chat Completions；
+- 可切换到本机 Codex App Server，Codex 路径使用隔离、只读、无工具临时线程；
+- 视觉定位由 `@midscene/web` 调用 DeepSeek 多模态模型；
+- 浏览器执行由本地 Playwright Chromium 完成；
+- 简道云登录模块支持本机账号密码和本地 storage-state 缓存。
+
+## 未实现与已知限制
+
+封版时以下能力没有进入本仓库：
+
+- Global SemanticPlan / TaskPlanner；
+- MCP Client、Playwright MCP 或模型 function calling；
+- 任意 screenshot coordinate click；
+- replay healing、cache rewrite 和完整 self-heal；
+- 生产级并发隔离、远程浏览器集群和权限系统；
+- 跨设备同步 `test-results`、登录缓存和 CompiledPlan artifact。
+
+当前 `ModelAdapter` 只有 `generateStructured()`，即使底层 provider 支持 tools，本项目也没有实现 tool-call loop。真实页面中仍可能遇到：
+
+- provider 返回非严格 JSON 导致 Planner 不可用；
+- 自定义 spinner/loading 状态没有被稳定性采样识别；
+- 图标、canvas、复杂 iframe 或动态弹层无法可靠映射；
+- 页面状态已经改变，但 deterministic evidence 不足，只能返回 `UNCERTAIN`；
+- YAML 中保存了本机 `planRef`，换设备后缺少对应 `test-results` artifact。
+
+这些是封版时已知边界，不要通过放宽 schema、猜测成功、随机点击或直接坐标执行来掩盖。
+
+## 环境要求
+
+| 工具 | 版本/要求 |
+| --- | --- |
+| Node.js | `>= 22.19.0` 且 `< 23.0.0` |
+| npm | `>= 10.9.3` |
+| Chromium | 通过 Playwright 安装 |
+| DeepSeek API Key | 真实模型运行时需要 |
+| Codex CLI | 仅在切换到 `codex_app_server` 时需要 |
+
+安装依赖：
+
+```powershell
+npm install
+npx playwright install chromium
+```
+
+## 本机配置与凭据
+
+仓库默认配置位于 `conf.d/config.yml`，个人覆盖配置位于：
+
+```text
+%USERPROFILE%\.ai-web-test-engine\config.yml
+```
+
+默认文本与视觉模型：
+
+```yaml
+components:
+  llm:
+    provider: openai_compatible
+    base_url: https://api.deepseek.com
+    model: deepseek-v4-flash
+    protocol: chat_completions
+  visual_grounding:
+    enabled: true
+    provider: midscene
+    base_url: https://api.deepseek.com
+    model: deepseek-v4-flash-vision-exp
+    model_family: deepseek
+    reasoning_enabled: false
+```
+
+API Key 只允许写入本机覆盖配置，不要写入仓库配置、YAML 用例、patch 或运行日志。
+
+使用简道云登录模块时，在启动后端的同一个终端设置：
+
+```powershell
+$env:JIANDAOYUN_USERNAME = '<测试账号>'
+$env:JIANDAOYUN_PASSWORD = '<测试密码>'
+```
+
+本地登录缓存位于：
+
+```text
+test-results/.auth-cache/
+```
+
+该目录不进入 Git，也不会跨设备同步。
+
+## 构建与启动
+
+完整检查：
+
+```powershell
+npm run json-schema
+npm run eslint
+npm run build
+npm test
+```
+
+启动后端：
+
+```powershell
+npm run build
+npm start
+```
+
+后端默认地址：
+
+```text
+http://127.0.0.1:3000
+```
+
+另开终端启动前端：
+
+```powershell
+npm run dev:web
+```
+
+前端默认地址：
+
+```text
+http://127.0.0.1:5173/repository
+```
+
+Vite 会将 `/api` 代理到本机 3000 端口。
+
+## HTTP 接口
+
+```text
+POST   /api/debug/intent-preview
+POST   /api/debug/run
+POST   /api/debug/runs
+GET    /api/debug/runs/:sessionId
+GET    /api/debug/runs/:sessionId/events
+DELETE /api/debug/runs/:sessionId
+POST   /api/debug/runs/:runId/plan
+GET    /api/debug/tests/:testId/latest-run
+GET    /api/debug/artifact
+
+GET    /api/tests
+POST   /api/tests
+GET    /api/tests/:testId
+PUT    /api/tests/:testId
+DELETE /api/tests/:testId
+```
+
+同步调试示例：
 
 ```powershell
 $body = @{
-  action = '使用环境变量中的账号和密码登录简道云，并等待工作台加载完成。'
+  action = '登录后，验证工作台页面显示“我的待办”。'
+  setupModules = @('jiandaoyun-login')
 } | ConvertTo-Json
 
 Invoke-RestMethod `
@@ -66,132 +241,82 @@ Invoke-RestMethod `
   -Body $body
 ```
 
-成功完成探索和全新上下文回放时，接口会返回生命周期为 `COMPLETED`、业务结果为 `PASS` 的 `RunResult`，并附带可用于结构化回放的 `compiledPlanRef`。
+## 数据与持久化
 
-每次运行的产物默认保存在：
+测试定义：
+
+```text
+tests/*.test.yaml
+```
+
+运行产物：
 
 ```text
 test-results/<runId>/
 ├── run.json
 ├── result.json
+├── session.json
 ├── trace.jsonl
 ├── artifacts/
-│   ├── screenshot-after-*.png
-│   └── replay-screenshot-after-*.png
+│   └── screenshot-*.png
 └── json/
     ├── intent.json
     ├── observation-*.json
+    ├── page-perception-*.json
+    ├── page-settling-*.json
+    ├── grounding-decision-*.json
+    ├── recovery-*.json
     ├── verdict.json
-    ├── replay-validation.json
-    └── compiled-plan.json
+    ├── compiled-plan.json
+    └── replay-validation.json
 ```
 
-浏览器是否显示以及视口大小由 `components.browser` 控制。当前本地调试基线使用 `headless: false`，可直接观察探索和回放过程；后台或 CI 运行时应在部署配置中覆盖为 `true`。
+`test-results`、截图、Cookie、storage state、`.env` 和个人配置都被 Git 忽略。不要为了跨设备恢复历史而强制提交这些文件。
 
-建议新人优先在以下位置打断点理解链路：
+根目录中的 `phase-*.patch` 和 `0001-*.patch` 是封版前各阶段架构 Review 的历史增量，仅用于审查与复盘，不是运行依赖。
 
-1. `server/src/controllers/run_debug.controller.ts`
-2. `server/src/services/run_debug.service.ts`
-3. `modules/engine-core/src/run/run_coordinator.ts`
-4. `server/src/adapters/browser/playwright_browser_adapter.ts`
-5. `server/src/adapters/storage/local_artifact_store.ts`
-
-### 模型 Provider
-
-开发环境默认通过 OpenAI-compatible API 调用 DeepSeek。API Key 只写入本机的 `~/.ai-web-test-engine/config.yml`，不要提交到 Git：
-
-默认配置位于 `conf.d/config.yml`：
-
-```yaml
-components:
-  llm:
-    provider: openai_compatible
-    base_url: https://api.deepseek.com
-    model: deepseek-v4-flash
-    protocol: chat_completions
-```
-
-需要回退到本机 Codex 订阅时，将 `provider` 改为 `codex_app_server`，并配置 `model`、`reasoning_effort` 和 `codex_command`。Codex 适配器每次调用都会创建不持久化的临时线程，并禁用工具、网络和环境访问。
-
-视觉定位使用 `@midscene/web` 调用 DeepSeek 多模态模型：
-
-```yaml
-components:
-  visual_grounding:
-    enabled: true
-    provider: midscene
-    base_url: https://api.deepseek.com
-    model: deepseek-v4-flash-vision-exp
-    model_family: deepseek
-    reasoning_enabled: false
-    timeout_ms: 120000
-```
-
-该配置通过 Midscene Agent 的 `modelConfig` 注入，不修改全局环境变量。Planner 首次返回 `UNCERTAIN` 时，引擎立即重新采集一次 DOM 和截图；再次 `UNCERTAIN` 时，使用 Planner 提供的业务语义目标调用 Midscene。Midscene 返回的坐标会先通过 `document.elementsFromPoint()` 反查可见 DOM，再补充为 `PageObservation` 候选交回原 Planner 决策，不会绕过 DOM 直接按坐标点击。若坐标无法映射到 DOM，则保守结束为 `UNCERTAIN`。
-
-* 更新 JSON Schema
-
-  当工程内的实体对象结构定义 (`src/entities`) 发生修改后，需要手动更新 json-schema 结构描述文文件。
-
-  ```bash
-  npm run json-schema
-  ```
-
-### 工程目录结构
+## 工程结构
 
 ```text
 <project_root>
-├── ci/                         # CI 编排
-├── conf.d/                     # 配置文件目录
-├── server/                     # 服务端模块工程目录
-│   ├── resources/              # 服务端资源文件目录
-│   │   │── grpc/               # GRPC proto 结构定义文件
-│   │   └── i18n/               # 国际化资源文件
-│   ├── src/                    # 服务端源码
-│   │   ├── components/         # 框架基础组件
-│   │   │   ├── lib             # 组件配置定义
-│   │   │   │   ├── logger      # 日志收集模块配置
-│   │   │   │   └── monitor     # 监控模块配置
-│   │   │   └── before.ts       # 组件启动前置加载项管理
-│   │   ├── constants/          # 常量定义
-│   │   ├── entities/           # 实体对象结构定义
-│   │   ├── adapters/            # 外部模型和本地存储适配器
-│   │   ├── services/           # 业务方法
-│   │   ├── controllers/        # 请求处理方法
-│   │   ├── routes/             # Express 请求路由表
-│   │   │   └── middlewares/    # Express 中间件扩展
-│   │   ├── app.ts              # 应用主程序入口
-│   │   ├── config.ts           # 全局配置
-│   │   ├── context.ts          # 全局上下文定义
-│   │   └── schema.ts           # 结构约束定义 schema 装载入口
-│   ├── test/                   # 单元测试目录
-│   ├── tools/                  # 开发工具组件
-│   ├── tsconfig.build.json     # TypeScript 构建配置文件
-│   └── tsconfig.json           # TypeScript 开发配置文件 (IDE)
-├── modules/                    # 执行引擎领域模块
-│   └── engine-core/            # 核心契约、端口和运行协调逻辑
-├── web/                        # React/Vite 前端工程
-│   └── src/                    # 页面、组件和样式源码
-├── package.json                # 全局 npm 工作目录配置
-├── nx.json                     # nx 配置
-├── README.md                   # 工程说明文件
-└── LICENSE                     # 许可证文件
+├── conf.d/                    # 默认配置
+├── docs/                      # 历史上手与交接资料
+├── modules/engine-core/       # 领域契约、Grounding、Runtime、Verdict、Replay
+├── server/
+│   ├── src/adapters/          # Model、Playwright、Storage 外部适配器
+│   ├── src/controllers/       # HTTP Controller
+│   ├── src/services/          # Run/TestDefinition 服务装配
+│   └── test/                  # Server 测试
+├── tests/                     # Git 管理的 YAML 测试定义
+├── web/                       # React/Vite 前端
+├── test-results/              # 本机运行产物，Git ignored
+└── README.md
 ```
 
-### 打包构建
+建议从以下入口阅读最终代码：
 
-* 构建容器镜像
+1. `server/src/services/run_debug.service.ts`
+2. `modules/engine-core/src/run/run_coordinator.ts`
+3. `modules/engine-core/src/run/semantic_step_controller.ts`
+4. `modules/engine-core/src/perception/perception_service.ts`
+5. `modules/engine-core/src/grounding/composite_target_grounder.ts`
+6. `server/src/adapters/browser/playwright_browser_adapter.ts`
+7. `server/src/adapters/storage/local_artifact_store.ts`
+8. `web/src/views/TestEditorPage.tsx`
 
-  ```bash
-  make docker-build
-  ```
+`docs/getting-started.md` 和 `docs/codex-handoff-*.md` 记录了项目演进过程，其中部分默认模型、运行链路和待办已经过时；判断当前行为时以代码、本 README 和最终测试为准。
 
-* 单元测试
+## 封版验证
 
-  ```bash
-  make docker-test
-  ```
+封版前最后一次完整验证结果：
 
-----
+```text
+Core tests   144 passed
+Server tests 104 passed
+Web tests     15 passed
+ESLint        passed
+Build         passed
+JSON Schema   passed
+```
 
-Made on 🌍 with 💓.
+后续如果仅做历史复现，建议固定当前 commit、`package-lock.json` 和模型配置。新的 Agent-first / MCP 架构应在新的空目录和独立仓库中实现，不要继续向本基线叠加职责。

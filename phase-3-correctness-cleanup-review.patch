@@ -1,0 +1,820 @@
+From 2e02f7799a54ac79391c75a2c63cbf07c0d35f7e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ethan=2EKuang-=E5=86=B5=E4=BD=B3=E6=AC=A3?=
+ <Ethan.Kuang@fanruan.com>
+Date: Mon, 31 Aug 2026 21:13:25 +0800
+Subject: [PATCH] fix(recovery): tighten Phase 3 correctness boundaries
+
+---
+ modules/engine-core/src/contracts/recovery.ts |   7 +-
+ .../src/contracts/semantic_step.ts            |   1 -
+ .../src/replay/deterministic_plan_replayer.ts | 129 ++----------------
+ .../src/run/action_effect_verifier.ts         |   1 -
+ .../deterministic_recovery_safety_policy.ts   |  25 +++-
+ .../src/run/primary_retry_policy.ts           |   1 -
+ modules/engine-core/src/run/recovery_ports.ts |   1 -
+ .../src/run/semantic_step_controller.ts       |  69 +++++++++-
+ .../run/semantic_step_progress_evaluator.ts   |  22 ++-
+ .../test/deterministic_plan_replayer.test.ts  |  56 ++++++++
+ .../test/model_recovery_services.test.ts      |   4 +-
+ .../test/semantic_step_controller.test.ts     | 106 +++++++++++++-
+ .../semantic_step_progress_evaluator.test.ts  |  65 ++++++++-
+ 13 files changed, 340 insertions(+), 147 deletions(-)
+
+diff --git a/modules/engine-core/src/contracts/recovery.ts b/modules/engine-core/src/contracts/recovery.ts
+index cf8030c..b971e3b 100644
+--- a/modules/engine-core/src/contracts/recovery.ts
++++ b/modules/engine-core/src/contracts/recovery.ts
+@@ -71,7 +71,7 @@ export interface RecoveryPlanningView {
+     page: {
+         loading: boolean,
+         title: string,
+-        url: string
++        urlChanged: boolean
+     };
+     visibleText: string[];
+     notices: Array<{
+@@ -152,7 +152,10 @@ export interface RecoverySafetyInput {
+     testIntent: TestIntent;
+     recoveryIntent: string;
+     resolvedSnapshot?: ResolvedElementSnapshot;
+-    recoveryCausedNavigation: boolean;
++    recoveryNavigation?: {
++        fromUrl: string,
++        toUrl: string
++    };
+ }
+ 
+ export type RecoverySafetyDecision =
+diff --git a/modules/engine-core/src/contracts/semantic_step.ts b/modules/engine-core/src/contracts/semantic_step.ts
+index ac5d113..b8a9f6a 100644
+--- a/modules/engine-core/src/contracts/semantic_step.ts
++++ b/modules/engine-core/src/contracts/semantic_step.ts
+@@ -57,4 +57,3 @@ export type SemanticStepExecutionOutcome =
+         reason: string,
+         progress?: SemanticStepProgress
+     };
+-
+diff --git a/modules/engine-core/src/replay/deterministic_plan_replayer.ts b/modules/engine-core/src/replay/deterministic_plan_replayer.ts
+index 6d12391..fecce5e 100644
+--- a/modules/engine-core/src/replay/deterministic_plan_replayer.ts
++++ b/modules/engine-core/src/replay/deterministic_plan_replayer.ts
+@@ -14,6 +14,9 @@ import type {
+     BrowserStartOptions,
+     EnvironmentValueResolver,
+ } from '../ports';
++import {
++    ActionEffectVerifier,
++} from '../run/action_effect_verifier';
+ import {
+     CompiledTargetResolver,
+ } from './compiled_target_resolver';
+@@ -64,6 +67,8 @@ const DEFAULT_BROWSER_OPTIONS: BrowserStartOptions = {
+ 
+ /** 在全新浏览器会话中逐步解析和执行 CompiledPlan。 */
+ export class DeterministicPlanReplayer {
++    private readonly effectVerifier = new ActionEffectVerifier();
++
+     constructor(
+         private readonly browserAdapter: BrowserAdapter,
+         private readonly environmentValueResolver: EnvironmentValueResolver,
+@@ -281,58 +286,13 @@ export class DeterministicPlanReplayer {
+         if (command.type === 'NAVIGATE') {
+             return this.verifyNavigationEffect(plan, command, result, after);
+         }
+-        if (command.type === 'TYPE') {
+-            return this.verifyTypeEffect(command, result, after);
+-        }
+-        if (command.type === 'SELECT') {
+-            return this.verifySelectEffect(command, result, after);
+-        }
+-        if (command.type === 'CHECK') {
+-            return this.verifyCheckEffect(command, result, after);
+-        }
+-        if (command.type === 'WAIT') {
+-            return this.createEffect(
+-                command,
+-                result.status === 'executed',
+-                result.status,
+-                result.status === 'executed'
+-                    ? '等待动作已经按计划完成。'
+-                    : '等待动作未能正常完成。'
+-            );
+-        }
+-
+-        const unexpectedNavigation = command.type === 'CLICK'
+-            && result.browserSignals.urlChanged
+-            && !this.isNavigationExpected(command);
+-        const changed = result.browserSignals.urlChanged
+-            || before.stateFingerprint !== after.stateFingerprint;
+-        const pageReady = !after.page.loading;
+-        const confirmed = result.status === 'executed'
+-            && changed
+-            && pageReady
+-            && !unexpectedNavigation;
+-        return this.createEffect(
++        return this.effectVerifier.verify({
+             command,
+-            confirmed,
+-            result.status,
+-            unexpectedNavigation
+-                ? '点击意外改变了页面地址，与计划的非导航效果不一致。'
+-                : confirmed
+-                    ? command.type === 'HOVER'
+-                        ? '鼠标悬浮后页面出现了可观察变化。'
+-                        : '点击后页面状态发生了变化。'
+-                : !pageReady
+-                    ? '点击后页面未在等待窗口内渲染出可验证内容。'
+-                    : '点击后页面状态没有产生可观察变化。'
+-        );
+-    }
+-
+-    /** 判断结构化步骤是否明确预期发生页面导航。 */
+-    private isNavigationExpected(command: ActionCommand): boolean {
+-        return /跳转|页面进入|进入(?:.+页面|工作台|应用)|导航|打开(?:.+页面|工作台|应用)|返回(?:.+页面|工作台|首页|上一页)|登录(?:成功)?(?:后|进入|跳转|完成)|URL|地址/iu.test([
+-            command.expectedEffect ?? '',
+-            command.reasonSummary
+-        ].join(' '));
++            result,
++            before,
++            after,
++            evidence: []
++        });
+     }
+ 
+     private verifyNavigationEffect(
+@@ -362,73 +322,6 @@ export class DeterministicPlanReplayer {
+         );
+     }
+ 
+-    private verifyTypeEffect(
+-        command: ActionCommand,
+-        result: ActionResult,
+-        after: PageObservation
+-    ): EffectVerification {
+-        const valueState = after.interactiveElements.find(
+-            (element) => element.candidateId === command.target?.candidateId
+-        )?.valueState;
+-        const confirmed = result.status === 'executed'
+-            && (valueState === 'filled' || valueState === 'masked');
+-
+-        return this.createEffect(
+-            command,
+-            confirmed,
+-            result.status,
+-            confirmed
+-                ? '目标输入框已显示为填写状态。'
+-                : '输入后没有确认目标输入框的填写状态。'
+-        );
+-    }
+-
+-    private verifySelectEffect(
+-        command: ActionCommand,
+-        result: ActionResult,
+-        after: PageObservation
+-    ): EffectVerification {
+-        const valueState = after.interactiveElements.find(
+-            (element) => element.candidateId === command.target?.candidateId
+-        )?.valueState;
+-        const confirmed = result.status === 'executed'
+-            && valueState === 'filled';
+-
+-        return this.createEffect(
+-            command,
+-            confirmed,
+-            result.status,
+-            confirmed
+-                ? '目标下拉框已显示为选中状态。'
+-                : '选择后没有确认目标下拉框的选中状态。'
+-        );
+-    }
+-
+-    private verifyCheckEffect(
+-        command: ActionCommand,
+-        result: ActionResult,
+-        after: PageObservation
+-    ): EffectVerification {
+-        const checked = after.interactiveElements.find(
+-            (element) => element.candidateId === command.target?.candidateId
+-        )?.checked;
+-        const expected = command.value?.source === 'literal'
+-            ? command.value.value
+-            : undefined;
+-        const confirmed = result.status === 'executed'
+-            && typeof expected === 'boolean'
+-            && checked === expected;
+-
+-        return this.createEffect(
+-            command,
+-            confirmed,
+-            result.status,
+-            confirmed
+-                ? `目标复选框已${ expected ? '勾选' : '取消勾选' }。`
+-                : '操作后没有确认目标复选框的勾选状态。'
+-        );
+-    }
+-
+     private createEffect(
+         command: ActionCommand,
+         confirmed: boolean,
+diff --git a/modules/engine-core/src/run/action_effect_verifier.ts b/modules/engine-core/src/run/action_effect_verifier.ts
+index cd4eb3f..4544168 100644
+--- a/modules/engine-core/src/run/action_effect_verifier.ts
++++ b/modules/engine-core/src/run/action_effect_verifier.ts
+@@ -175,4 +175,3 @@ function isNavigationExpected(command: ActionCommand): boolean {
+         command.reasonSummary
+     ].join(' '));
+ }
+-
+diff --git a/modules/engine-core/src/run/deterministic_recovery_safety_policy.ts b/modules/engine-core/src/run/deterministic_recovery_safety_policy.ts
+index fe5a31c..2a24e1a 100644
+--- a/modules/engine-core/src/run/deterministic_recovery_safety_policy.ts
++++ b/modules/engine-core/src/run/deterministic_recovery_safety_policy.ts
+@@ -20,9 +20,9 @@ implements RecoverySafetyPolicy {
+             return allow('只改变可逆的页面展示状态。');
+         }
+         if (action.type === 'BACK') {
+-            return input.recoveryCausedNavigation
++            return isAllowedRecoveryNavigation(input)
+                 ? allow('只撤销 Recovery 自己造成的同源错误导航。')
+-                : deny('BACK 不能撤销用户原始业务动作。');
++                : deny('BACK 只允许立即撤销上一条 Recovery 造成的允许域内错误导航。');
+         }
+         const description = snapshotText(input);
+         if (FORBIDDEN_SIDE_EFFECT.test(description)) {
+@@ -49,6 +49,26 @@ implements RecoverySafetyPolicy {
+     }
+ }
+ 
++function isAllowedRecoveryNavigation(input: RecoverySafetyInput): boolean {
++    const navigation = input.recoveryNavigation;
++    if (!navigation) {
++        return false;
++    }
++    try {
++        const from = new URL(navigation.fromUrl);
++        const to = new URL(navigation.toUrl);
++        const allowedHosts = input.testIntent.allowedHosts.map(
++            (host) => host.toLowerCase()
++        );
++        return from.href !== to.href
++            && from.hostname.toLowerCase() === to.hostname.toLowerCase()
++            && allowedHosts.includes(from.hostname.toLowerCase())
++            && allowedHosts.includes(to.hostname.toLowerCase());
++    } catch {
++        return false;
++    }
++}
++
+ function snapshotText(input: RecoverySafetyInput): string {
+     const snapshot = input.resolvedSnapshot;
+     const target = 'target' in input.action ? input.action.target : undefined;
+@@ -80,4 +100,3 @@ function allow(reason: string): RecoverySafetyDecision {
+ function deny(reason: string): RecoverySafetyDecision {
+     return { allowed: false, reason };
+ }
+-
+diff --git a/modules/engine-core/src/run/primary_retry_policy.ts b/modules/engine-core/src/run/primary_retry_policy.ts
+index 7294580..a8774fa 100644
+--- a/modules/engine-core/src/run/primary_retry_policy.ts
++++ b/modules/engine-core/src/run/primary_retry_policy.ts
+@@ -38,4 +38,3 @@ function isIdempotent(action: SemanticAction): boolean {
+         || action.type === 'SELECT'
+         || action.type === 'TYPE';
+ }
+-
+diff --git a/modules/engine-core/src/run/recovery_ports.ts b/modules/engine-core/src/run/recovery_ports.ts
+index 62b98e6..56ee1e3 100644
+--- a/modules/engine-core/src/run/recovery_ports.ts
++++ b/modules/engine-core/src/run/recovery_ports.ts
+@@ -15,4 +15,3 @@ export interface RecoveryPlannerPort {
+ export interface RecoverySafetyPolicy {
+     evaluate: (input: RecoverySafetyInput) => RecoverySafetyDecision;
+ }
+-
+diff --git a/modules/engine-core/src/run/semantic_step_controller.ts b/modules/engine-core/src/run/semantic_step_controller.ts
+index 581385c..3038124 100644
+--- a/modules/engine-core/src/run/semantic_step_controller.ts
++++ b/modules/engine-core/src/run/semantic_step_controller.ts
+@@ -16,6 +16,9 @@ import type {
+     SemanticStepProgress,
+     TestIntent,
+ } from '../contracts';
++import {
++    hasMeaningfulPerceptionDelta,
++} from '../contracts';
+ import type {
+     SemanticStepProgressEvaluator,
+ } from './semantic_step_progress_evaluator';
+@@ -209,6 +212,7 @@ export class SemanticStepController<TRecord> {
+             const recoveryOutcome = classifyRecoveryProgress(
+                 beforeGrounding,
+                 state.primaryGrounding,
++                recovery.after,
+                 recovery.execution
+             );
+             if (recovery.execution) {
+@@ -223,6 +227,9 @@ export class SemanticStepController<TRecord> {
+                 summary: recovery.execution?.effect.summary ??
+                     '重新观察了当前页面。'
+             });
++            state.lastRecoveryNavigation = recoveryOutcome === 'wrong-state'
++                ? recoveryNavigationFrom(recovery.execution)
++                : undefined;
+             state.wrongStateActive = recoveryOutcome === 'wrong-state';
+             state.consecutiveNoProgress = recoveryOutcome === 'no-progress'
+                 ? state.consecutiveNoProgress + 1
+@@ -429,7 +436,9 @@ export class SemanticStepController<TRecord> {
+             testIntent,
+             recoveryIntent: action.reasonSummary,
+             ...target ? { resolvedSnapshot: target.elementSnapshot } : {},
+-            recoveryCausedNavigation: state.wrongStateActive
++            ...state.lastRecoveryNavigation
++                ? { recoveryNavigation: state.lastRecoveryNavigation }
++                : {}
+         });
+         if (!safety.allowed) {
+             state.attempts.push({
+@@ -604,6 +613,10 @@ interface ControllerState<TRecord> {
+     progressModelCalls: number;
+     consecutiveNoProgress: number;
+     wrongStateActive: boolean;
++    lastRecoveryNavigation?: {
++        fromUrl: string,
++        toUrl: string
++    };
+ }
+ 
+ function toRecoverySemanticAction(action: RecoveryAction): SemanticAction {
+@@ -655,6 +668,7 @@ function toRecoverySemanticAction(action: RecoveryAction): SemanticAction {
+ function classifyRecoveryProgress<TRecord>(
+     before: GroundingDecision,
+     after: GroundingDecision,
++    afterPerception: PagePerception,
+     execution: SemanticStepActionExecution<TRecord> | undefined
+ ): 'progress' | 'no-progress' | 'wrong-state' {
+     if (
+@@ -665,19 +679,62 @@ function classifyRecoveryProgress<TRecord>(
+     ) {
+         return 'wrong-state';
+     }
++    if (
++        afterPerception.delta?.overlayState.before === 'clear'
++        && afterPerception.delta.overlayState.after === 'blocked'
++        && !execution?.restorative
++    ) {
++        return 'wrong-state';
++    }
+     if (after.status === 'grounded' && before.status !== 'grounded') {
+         return 'progress';
+     }
+-    if (
+-        execution?.after.delta
+-        && JSON.stringify(execution.after.delta) !==
+-            JSON.stringify(execution.before.delta)
+-    ) {
++    if (groundingActionabilityImproved(before, after)) {
++        return 'progress';
++    }
++    if (overlayImproved(afterPerception.delta)) {
++        return 'progress';
++    }
++    if (hasMeaningfulPerceptionDelta(afterPerception.delta)) {
+         return 'progress';
+     }
+     return 'no-progress';
+ }
+ 
++function groundingActionabilityImproved(
++    before: GroundingDecision,
++    after: GroundingDecision
++): boolean {
++    return before.status === 'blocked' && after.status !== 'blocked'
++        || before.status === 'not-visible' &&
++            after.status !== 'not-visible' && after.status !== 'not-found'
++        || before.status === 'not-actionable' &&
++            after.target?.actionable === true
++        || before.target?.actionable === false && after.target?.actionable === true;
++}
++
++function overlayImproved(
++    delta: PagePerception['delta'] | undefined
++): boolean {
++    return delta?.overlayState.before === 'blocked'
++        && delta.overlayState.after === 'clear';
++}
++
++function recoveryNavigationFrom<TRecord>(
++    execution: SemanticStepActionExecution<TRecord> | undefined
++): {fromUrl: string, toUrl: string} | undefined {
++    if (
++        !execution?.actionResult.browserSignals.urlChanged
++        || execution.before.dom.page.url === execution.after.dom.page.url
++    ) {
++        return undefined;
++    }
++    return {
++        fromUrl: execution.before.dom.page.url,
++        toUrl: execution.after.dom.page.url
++    };
++}
++
+ function contributionForRecovery<TRecord>(
+     execution: SemanticStepActionExecution<TRecord>,
+     outcome: 'progress' | 'no-progress' | 'wrong-state'
+diff --git a/modules/engine-core/src/run/semantic_step_progress_evaluator.ts b/modules/engine-core/src/run/semantic_step_progress_evaluator.ts
+index 9618480..6861acd 100644
+--- a/modules/engine-core/src/run/semantic_step_progress_evaluator.ts
++++ b/modules/engine-core/src/run/semantic_step_progress_evaluator.ts
+@@ -127,11 +127,14 @@ export class SemanticStepProgressEvaluator {
+             if (
+                 input.attemptedAction.type === 'CLICK'
+                 && input.after.delta?.urlChanged
+-                && isNavigationEffect(input.step.expectedEffect)
++                && hasExplicitTargetPageEvidence(
++                    input.step.expectedEffect,
++                    input.after
++                )
+             ) {
+                 return progress(
+                     'complete',
+-                    '页面导航与明确的 expectedEffect 一致。',
++                    '页面内容明确匹配 expectedEffect 指定的目标页面。',
+                     evidence
+                 );
+             }
+@@ -151,9 +154,16 @@ export class SemanticStepProgressEvaluator {
+     }
+ }
+ 
+-function isNavigationEffect(expectedEffect: string | undefined): boolean {
+-    return Boolean(expectedEffect &&
+-        /跳转|进入|打开.+页面|返回|导航|URL|地址/iu.test(expectedEffect));
++function hasExplicitTargetPageEvidence(
++    expectedEffect: string | undefined,
++    after: PagePerception
++): boolean {
++    if (!expectedEffect) {
++        return false;
++    }
++    return [ after.dom.page.title, ...after.dom.visibleText ].some((text) => (
++        text.trim().length >= 3 && expectedEffect.includes(text.trim())
++    ));
+ }
+ 
+ function isDeterministicControlAction(type: string): boolean {
+@@ -171,7 +181,7 @@ export function createRecoveryPlanningView(
+         page: {
+             loading: perception.dom.page.loading,
+             title: perception.dom.page.title,
+-            url: perception.dom.page.url
++            urlChanged: perception.delta?.urlChanged ?? false
+         },
+         visibleText: [ ...perception.dom.visibleText ],
+         notices: structuredClone(perception.dom.notices),
+diff --git a/modules/engine-core/test/deterministic_plan_replayer.test.ts b/modules/engine-core/test/deterministic_plan_replayer.test.ts
+index f0c2b00..2a3ddf9 100644
+--- a/modules/engine-core/test/deterministic_plan_replayer.test.ts
++++ b/modules/engine-core/test/deterministic_plan_replayer.test.ts
+@@ -139,6 +139,51 @@ describe('DeterministicPlanReplayer literal inputs', () => {
+             value: '2026.8.27'
+         });
+     });
++
++    it('productive CLEAR 编译为 TYPE 空串后确认 empty 状态', async () => {
++        const browser = new FakeReplayBrowser([
++            createObservation('blank', 'about:blank', []),
++            createObservation('search-1', workspaceUrl, [
++                createSearchElement('search-current', 'filled')
++            ]),
++            createObservation('search-2', workspaceUrl, [
++                createSearchElement('search-current', 'filled')
++            ]),
++            createObservation('search-3', workspaceUrl, [
++                createSearchElement('search-current', 'empty')
++            ])
++        ]);
++        const plan = createPlan();
++        plan.steps = [ plan.steps[0], {
++            id: 'step-2',
++            sequence: 2,
++            type: 'TYPE',
++            target: {
++                description: '搜索框',
++                locatorHints: [{ strategy: 'label', value: '搜索' }],
++                identity: {
++                    tag: 'input',
++                    label: '搜索',
++                    inputType: 'text'
++                }
++            },
++            value: { source: 'literal', value: '' },
++            expectedEffect: '目标输入框被清空',
++            risk: 'reversible'
++        }];
++
++        const execution = await new DeterministicPlanReplayer(
++            browser,
++            new FakeValueResolver()
++        ).replay({
++            plan,
++            environment,
++            signal: new AbortController().signal
++        });
++
++        assert.equal(execution.steps[1]?.effect.status, 'confirmed');
++        assert.match(execution.steps[1]?.effect.summary ?? '', /为空/u);
++    });
+ });
+ 
+ describe('DeterministicPlanReplayer failures and advanced actions', () => {
+@@ -611,6 +656,17 @@ function createApplicationNameElement(
+     };
+ }
+ 
++function createSearchElement(
++    candidateId: string,
++    valueState: ObservedElement['valueState']
++): ObservedElement {
++    return {
++        ...createApplicationNameElement(candidateId, valueState),
++        label: '搜索',
++        locatorHints: [{ strategy: 'label', value: '搜索' }]
++    };
++}
++
+ class FakeValueResolver implements EnvironmentValueResolver {
+     public resolve: EnvironmentValueResolver['resolve'] = async (
+         logicalName
+diff --git a/modules/engine-core/test/model_recovery_services.test.ts b/modules/engine-core/test/model_recovery_services.test.ts
+index c624228..e5fc7a1 100644
+--- a/modules/engine-core/test/model_recovery_services.test.ts
++++ b/modules/engine-core/test/model_recovery_services.test.ts
+@@ -32,7 +32,7 @@ describe('Phase 3 model recovery services', () => {
+         assert.equal(decision.kind, 'recover');
+         [
+             'candidateId', 'domCandidateId', 'locatorHints', 'boundingBox',
+-            'coordinates', 'attributes', 'secret-value'
++            'coordinates', 'attributes', 'secret-value', 'https://'
+         ].forEach((field) => assert.equal(prompt.includes(field), false));
+     });
+ 
+@@ -95,7 +95,7 @@ function recoveryInput(): RecoveryPlannerInput {
+             page: {
+                 loading: false,
+                 title: '工作台',
+-                url: 'https://example.test/workbench'
++                urlChanged: false
+             },
+             visibleText: [ '应用 11' ],
+             notices: [],
+diff --git a/modules/engine-core/test/semantic_step_controller.test.ts b/modules/engine-core/test/semantic_step_controller.test.ts
+index c8a1df6..0de9c90 100644
+--- a/modules/engine-core/test/semantic_step_controller.test.ts
++++ b/modules/engine-core/test/semantic_step_controller.test.ts
+@@ -29,7 +29,8 @@ describe('SemanticStepController', () => {
+         });
+         const done = perception('done', {
+             previous: cleared,
+-            url: 'https://example.test/new-app'
++            url: 'https://example.test/new-app',
++            title: '新建应用页面'
+         });
+         const runtime = new FakeRuntime(initial, (action, current) => {
+             if (action.type === 'TYPE') {
+@@ -118,7 +119,8 @@ describe('SemanticStepController', () => {
+         });
+         const done = perception('done', {
+             previous: restored,
+-            url: 'https://example.test/new-app'
++            url: 'https://example.test/new-app',
++            title: '新建应用页面'
+         });
+         const model = new SequenceRecoveryPlanner([{
+             kind: 'recover',
+@@ -241,6 +243,79 @@ describe('SemanticStepController', () => {
+         assert.equal(runtime.executedTypes.every((type) => type === 'HOVER'), true);
+         assert.equal(result.executions[0]?.actionResult.status, 'executed');
+     });
++
++    it('历史 delta 存在但本次 recovery 无变化时判 no-progress', async () => {
++        const historical = perception('historical');
++        const initial = perception('initial', { previous: historical });
++        const unchanged = perception('unchanged', {
++            previous: initial,
++            delta: emptyDelta()
++        });
++        const model = new SequenceRecoveryPlanner([{
++            kind: 'recover',
++            action: {
++                type: 'CLICK',
++                target: { description: '关闭菜单' },
++                reasonSummary: '关闭临时菜单'
++            }
++        }]);
++        const runtime = new FakeRuntime(
++            initial,
++            (action, current) => action.target?.description === '关闭菜单'
++                ? grounded('close', current, '关闭菜单')
++                : decision('not-found'),
++            () => unchanged
++        );
++
++        const result = await controller(
++            runtime,
++            new SemanticStepProgressEvaluator(),
++            model
++        ).execute(step({
++            type: 'CLICK',
++            target: { description: '新建应用' },
++            reasonSummary: '创建应用'
++        }), intent, signal());
++
++        assert.equal(result.executions[0]?.recoveryOutcome, 'no-progress');
++        assert.equal(
++            result.executions[0]?.compilationContribution,
++            'non-productive'
++        );
++    });
++
++    it('非导航 wrong-state 不会授权 BACK', () => {
++        const policy = new DeterministicRecoverySafetyPolicy();
++        const common = {
++            action: {
++                type: 'BACK' as const,
++                reasonSummary: '撤销错误状态'
++            },
++            step: step({
++                type: 'CLICK',
++                target: { description: '新建应用' },
++                reasonSummary: '创建应用'
++            }),
++            testIntent: intent,
++            recoveryIntent: '撤销错误状态'
++        };
++
++        assert.equal(policy.evaluate(common).allowed, false);
++        assert.equal(policy.evaluate({
++            ...common,
++            recoveryNavigation: {
++                fromUrl: 'https://example.test/workbench',
++                toUrl: 'https://example.test/settings'
++            }
++        }).allowed, true);
++        assert.equal(policy.evaluate({
++            ...common,
++            recoveryNavigation: {
++                fromUrl: 'https://example.test/workbench',
++                toUrl: 'https://outside.test/settings'
++            }
++        }).allowed, false);
++    });
+ });
+ 
+ const intent: TestIntent = {
+@@ -405,8 +480,10 @@ function grounded(
+ 
+ function perception(id: string, options: {
+     previous?: PagePerception,
++    delta?: PagePerception['delta'],
+     elements?: ReturnType<typeof element>[],
+     visibleText?: string[],
++    title?: string,
+     url?: string,
+     loading?: boolean,
+     blocked?: boolean
+@@ -421,7 +498,7 @@ function perception(id: string, options: {
+             capturedAt: '2026-08-31T00:00:00.000Z',
+             page: {
+                 loading: options.loading ?? false,
+-                title: id,
++                title: options.title ?? id,
+                 url: options.url ?? 'https://example.test/workbench',
+                 viewport: { width: 1280, height: 720 }
+             },
+@@ -447,7 +524,9 @@ function perception(id: string, options: {
+                 visible: true
+             }
+         ])),
+-        ...options.previous
++        ...options.delta
++            ? { delta: options.delta }
++            : options.previous
+             ? {
+                 delta: {
+                     accessibility: {
+@@ -477,6 +556,25 @@ function perception(id: string, options: {
+     };
+ }
+ 
++function emptyDelta(): NonNullable<PagePerception['delta']> {
++    return {
++        accessibility: {
++            added: [], changed: [], removed: [], truncated: false
++        },
++        candidates: {
++            added: [], removed: [], truncated: false
++        },
++        overlayState: {
++            before: 'clear', after: 'clear', changed: false
++        },
++        titleChanged: false,
++        urlChanged: false,
++        visibleText: {
++            added: [], removed: [], truncated: false
++        }
++    };
++}
++
+ function element(
+     candidateId: string,
+     name: string,
+diff --git a/modules/engine-core/test/semantic_step_progress_evaluator.test.ts b/modules/engine-core/test/semantic_step_progress_evaluator.test.ts
+index d0be646..13df190 100644
+--- a/modules/engine-core/test/semantic_step_progress_evaluator.test.ts
++++ b/modules/engine-core/test/semantic_step_progress_evaluator.test.ts
+@@ -81,6 +81,67 @@ describe('SemanticStepProgressEvaluator', () => {
+ 
+         assert.equal(progress.status, 'complete');
+     });
++});
++
++describe('SemanticStepProgressEvaluator correctness', () => {
++    it('CLICK New App 实际进入 settings 时不能直接判 complete', async () => {
++        const before = createPerception('before');
++        const after = createPerception('after', before);
++        after.dom.page.url = 'https://example.test/settings';
++        after.delta!.urlChanged = true;
++        let modelCalls = 0;
++        const evaluator = new SemanticStepProgressEvaluator({
++            modelFallback: {
++                evaluate: async () => {
++                    modelCalls += 1;
++                    return {
++                        status: 'unknown',
++                        basis: 'model',
++                        summary: '没有目标页面匹配证据。',
++                        evidence: []
++                    };
++                }
++            }
++        });
++        const progress = await evaluator.evaluate({
++            step: {
++                id: 'step-1',
++                primaryAction: {
++                    type: 'CLICK',
++                    target: { description: '新建应用' },
++                    expectedEffect: '进入新建应用页面',
++                    reasonSummary: '创建应用'
++                },
++                expectedEffect: '进入新建应用页面',
++                source: 'runtime-wrapper'
++            },
++            attemptedAction: {
++                type: 'CLICK',
++                target: { description: '新建应用' },
++                expectedEffect: '进入新建应用页面',
++                reasonSummary: '创建应用'
++            },
++            before,
++            after,
++            actionResult: {
++                ...executedResult(),
++                browserSignals: {
++                    ...executedResult().browserSignals,
++                    urlChanged: true
++                }
++            },
++            effect: {
++                status: 'confirmed',
++                expectedEffect: '进入新建应用页面',
++                evidence: [],
++                summary: '页面地址发生变化。'
++            }
++        }, new AbortController().signal, true);
++
++        assert.notEqual(progress.status, 'complete');
++        assert.equal(progress.status, 'unknown');
++        assert.equal(modelCalls, 1);
++    });
+ 
+     it('模型安全视图不包含物理定位和输入真实值', () => {
+         const perception = createPerception('after');
+@@ -93,7 +154,8 @@ describe('SemanticStepProgressEvaluator', () => {
+             'attributes',
+             'boundingBox',
+             'coordinates',
+-            'secret-value'
++            'secret-value',
++            'https://'
+         ].forEach((forbidden) => assert.equal(
+             serialized.includes(forbidden),
+             false,
+@@ -200,4 +262,3 @@ function executedResult() {
+         }
+     };
+ }
+-
+-- 
+2.55.0.windows.2
+

@@ -1,0 +1,1991 @@
+diff --git a/modules/engine-core/resources/engine-contracts.schema.json b/modules/engine-core/resources/engine-contracts.schema.json
+index 71ff427..e4fc2ff 100644
+--- a/modules/engine-core/resources/engine-contracts.schema.json
++++ b/modules/engine-core/resources/engine-contracts.schema.json
+@@ -124,6 +124,31 @@
+             ],
+             "type": "string"
+         },
++        "BoundingBox": {
++            "additionalProperties": false,
++            "description": "统一使用 CSS viewport 坐标描述页面区域。",
++            "properties": {
++                "height": {
++                    "type": "number"
++                },
++                "width": {
++                    "type": "number"
++                },
++                "x": {
++                    "type": "number"
++                },
++                "y": {
++                    "type": "number"
++                }
++            },
++            "required": [
++                "height",
++                "width",
++                "x",
++                "y"
++            ],
++            "type": "object"
++        },
+         "CandidateResolvedTarget": {
+             "additionalProperties": false,
+             "description": "Phase 1 基于当前 Observation candidate 索引解析出的物理目标。",
+@@ -137,6 +162,14 @@
+                 "confidence": {
+                     "type": "number"
+                 },
++                "confidenceBasis": {
++                    "enum": [
++                        "deterministic",
++                        "engine-heuristic",
++                        "provider"
++                    ],
++                    "type": "string"
++                },
+                 "description": {
+                     "type": "string"
+                 },
+@@ -611,6 +644,14 @@
+                 "confidence": {
+                     "type": "number"
+                 },
++                "confidenceBasis": {
++                    "enum": [
++                        "deterministic",
++                        "engine-heuristic",
++                        "provider"
++                    ],
++                    "type": "string"
++                },
+                 "evidence": {
+                     "items": {
+                         "type": "string"
+@@ -659,6 +700,31 @@
+                         "visualModelCalls"
+                     ],
+                     "type": "object"
++                },
++                "visualEvidence": {
++                    "additionalProperties": false,
++                    "properties": {
++                        "mappedCandidateIds": {
++                            "items": {
++                                "type": "string"
++                            },
++                            "type": "array"
++                        },
++                        "regions": {
++                            "items": {
++                                "$ref": "#/definitions/VisualRegion"
++                            },
++                            "type": "array"
++                        },
++                        "screenshotRef": {
++                            "type": "string"
++                        }
++                    },
++                    "required": [
++                        "mappedCandidateIds",
++                        "regions"
++                    ],
++                    "type": "object"
+                 }
+             },
+             "required": [
+@@ -1750,6 +1816,37 @@
+                 "summary"
+             ],
+             "type": "object"
++        },
++        "VisualRegion": {
++            "additionalProperties": false,
++            "description": "视觉模型发现的页面区域；本身不具备执行权限。",
++            "properties": {
++                "boundingBox": {
++                    "$ref": "#/definitions/BoundingBox"
++                },
++                "confidence": {
++                    "type": "number"
++                },
++                "context": {
++                    "items": {
++                        "type": "string"
++                    },
++                    "type": "array"
++                },
++                "description": {
++                    "type": "string"
++                },
++                "id": {
++                    "type": "string"
++                }
++            },
++            "required": [
++                "boundingBox",
++                "context",
++                "description",
++                "id"
++            ],
++            "type": "object"
+         }
+     },
+     "description": "JSON Schema 生成入口。这里只聚合跨进程或持久化边界上的根对象。",
+diff --git a/modules/engine-core/src/contracts/grounding.ts b/modules/engine-core/src/contracts/grounding.ts
+index fe3bf16..59a9db3 100644
+--- a/modules/engine-core/src/contracts/grounding.ts
++++ b/modules/engine-core/src/contracts/grounding.ts
+@@ -1,6 +1,9 @@
+ import type {
+     ResolvedTarget,
+ } from './trace';
++import type {
++    VisualRegion,
++} from './perception';
+ 
+ /** Grounder 对一次语义目标绑定的确定性结论。 */
+ export interface GroundingDecision {
+@@ -8,8 +11,14 @@ export interface GroundingDecision {
+         'blocked' | 'not-actionable' | 'unmapped';
+     target?: ResolvedTarget;
+     confidence: number;
++    confidenceBasis?: 'deterministic' | 'engine-heuristic' | 'provider';
+     evidence: string[];
+     summary: string;
++    visualEvidence?: {
++        mappedCandidateIds: string[],
++        regions: VisualRegion[],
++        screenshotRef?: string
++    };
+     usage?: {
+         sourcesUsed: Array<
+         'accessibility' | 'dom' | 'hit-test' | 'visual'
+diff --git a/modules/engine-core/src/contracts/perception.ts b/modules/engine-core/src/contracts/perception.ts
+index 9bac24c..89b6035 100644
+--- a/modules/engine-core/src/contracts/perception.ts
++++ b/modules/engine-core/src/contracts/perception.ts
+@@ -60,7 +60,6 @@ export interface VisualRegion {
+     confidence?: number;
+     context: string[];
+     description: string;
+-    mappedCandidateId?: string;
+ }
+ 
+ /** 两次感知之间可确定、低成本计算的状态变化。 */
+diff --git a/modules/engine-core/src/contracts/trace.ts b/modules/engine-core/src/contracts/trace.ts
+index 6358e64..6c31d01 100644
+--- a/modules/engine-core/src/contracts/trace.ts
++++ b/modules/engine-core/src/contracts/trace.ts
+@@ -25,6 +25,7 @@ export interface CandidateResolvedTarget {
+     strategy: 'candidate-id';
+     locatorData: Record<string, JsonValue>;
+     confidence: number;
++    confidenceBasis?: 'deterministic' | 'engine-heuristic' | 'provider';
+     unique: boolean;
+     actionable: boolean;
+     evidence: string[];
+diff --git a/modules/engine-core/src/grounding/accessibility_target_grounder.ts b/modules/engine-core/src/grounding/accessibility_target_grounder.ts
+index 330ecb6..d02d21b 100644
+--- a/modules/engine-core/src/grounding/accessibility_target_grounder.ts
++++ b/modules/engine-core/src/grounding/accessibility_target_grounder.ts
+@@ -25,6 +25,18 @@ export class AccessibilityTargetGrounder {
+             ].some((value) => matches(target.scope!, value));
+         });
+     }
++
++    /** 只返回主语义完全相同的节点，用于检测跨模态强冲突。 */
++    public findExactMatches(
++        target: SemanticTarget,
++        nodes: AccessibilityNode[]
++    ): AccessibilityNode[] {
++        return this.findMatches(target, nodes).filter((node) =>
++            [ node.name, node.description ].some((value) =>
++                normalize(target.description) === normalize(value)
++            )
++        );
++    }
+ }
+ 
+ function matches(expected: string, actual: string | undefined): boolean {
+diff --git a/modules/engine-core/src/grounding/composite_target_grounder.ts b/modules/engine-core/src/grounding/composite_target_grounder.ts
+index 7252078..bebeaeb 100644
+--- a/modules/engine-core/src/grounding/composite_target_grounder.ts
++++ b/modules/engine-core/src/grounding/composite_target_grounder.ts
+@@ -1,6 +1,8 @@
+ import type {
++    AccessibilityNode,
+     GroundingDecision,
+     ResolvedTarget,
++    VisualRegion,
+ } from '../contracts';
+ import type {
+     CandidateMappingPort,
+@@ -29,10 +31,23 @@ export class CompositeTargetGrounder implements TargetGrounder {
+         signal: AbortSignal
+     ): Promise<GroundingDecision> {
+         signal.throwIfAborted();
+-        const domDecision = validateDomInteraction(
+-            await this.domGrounder.ground(request, signal),
+-            request
++        const rawDomDecision = await this.domGrounder.ground(request, signal);
++        const domUsedHitTest = rawDomDecision.target && Boolean(
++            request.perception.interactionStates[
++                rawDomDecision.target.candidateId
++            ]
+         );
++        const domDecision = validateDomInteraction(rawDomDecision, request);
++        if (domDecision.status === 'grounded' && request.action.target) {
++            const conflict = await this.findDomAccessibilityConflict(
++                request,
++                domDecision,
++                signal
++            );
++            if (conflict) {
++                return conflict;
++            }
++        }
+         if (
+             domDecision.status === 'grounded' ||
+             domDecision.status === 'blocked' ||
+@@ -40,7 +55,13 @@ export class CompositeTargetGrounder implements TargetGrounder {
+             domDecision.status === 'not-actionable' ||
+             !request.action.target
+         ) {
+-            return withUsage(domDecision, [ 'dom' ], 0);
++            return withUsage(
++                domDecision,
++                domUsedHitTest
++                    ? [ 'dom', 'hit-test' ]
++                    : [ 'dom' ],
++                0
++            );
+         }
+ 
+         const a11yMatches = this.accessibilityGrounder.findMatches(
+@@ -70,22 +91,34 @@ export class CompositeTargetGrounder implements TargetGrounder {
+             }
+         }
+ 
++        return await this.groundWithVisual(
++            request,
++            a11yMatches,
++            a11yDecision,
++            domDecision,
++            signal
++        );
++    }
++
++    private async groundWithVisual(
++        request: GroundingRequest,
++        a11yMatches: AccessibilityNode[],
++        a11yDecision: GroundingDecision | undefined,
++        domDecision: GroundingDecision,
++        signal: AbortSignal
++    ): Promise<GroundingDecision> {
+         if (!request.visualAllowed) {
+             return a11yDecision ?? withUsage(domDecision, [ 'dom' ], 0);
+         }
+-
+         const visual = await this.visualGrounding.locate(
+             request.session,
+-            request.action.target,
++            request.action.target!,
+             request.perception,
+             signal
+         );
+         if (visual.status !== 'located' || visual.regions.length === 0) {
+             return withUsage(
+-                a11yDecision ?? {
+-                    ...domDecision,
+-                    summary: visual.summary
+-                },
++                a11yDecision ?? { ...domDecision, summary: visual.summary },
+                 [
+                     'dom',
+                     ...a11yMatches.length > 0
+@@ -96,24 +129,67 @@ export class CompositeTargetGrounder implements TargetGrounder {
+                 visual.modelCalls
+             );
+         }
+-        const visualMapping = await this.candidateMapper.map(
++        const mapping = await this.candidateMapper.map(
+             request.session,
+             request.perception,
+             request.action,
+-            {
+-                regions: visual.regions,
+-                source: 'visual'
+-            },
++            { regions: visual.regions, source: 'visual' },
+             signal
+         );
+         return fromMapping(
+             request,
+-            visualMapping,
++            mapping,
+             'visual',
+             0.85,
+-            visual.modelCalls
++            visual.modelCalls,
++            visual.regions
+         );
+     }
++
++    private async findDomAccessibilityConflict(
++        request: GroundingRequest,
++        domDecision: GroundingDecision,
++        signal: AbortSignal
++    ): Promise<GroundingDecision | undefined> {
++        const exactMatches = this.accessibilityGrounder.findExactMatches(
++            request.action.target!,
++            request.perception.accessibility.nodes
++        );
++        if (exactMatches.length === 0) {
++            return undefined;
++        }
++        const mapping = await this.candidateMapper.map(
++            request.session,
++            request.perception,
++            request.action,
++            { nodes: exactMatches, source: 'accessibility' },
++            signal
++        );
++        if (
++            mapping.status !== 'mapped' ||
++            mapping.candidates.length !== 1 ||
++            !mapping.candidates[0].actionCompatible ||
++            mapping.candidates[0].candidateId === domDecision.target?.candidateId
++        ) {
++            return undefined;
++        }
++        return {
++            status: 'ambiguous',
++            confidence: 0,
++            confidenceBasis: 'deterministic',
++            evidence: [
++                ...domDecision.evidence,
++                ...mapping.evidence,
++                `DOM candidate=${ domDecision.target?.candidateId }`,
++                `A11y candidate=${ mapping.candidates[0].candidateId }`
++            ],
++            summary: 'DOM 与强 exact accessibility 证据指向不同目标。',
++            usage: {
++                sourcesUsed: [ 'dom', 'accessibility', 'hit-test' ],
++                visualModelCalls: 0
++            }
++        };
++    }
+ }
+ 
+ function validateDomInteraction(
+@@ -133,6 +209,7 @@ function validateDomInteraction(
+         return {
+             status: 'not-visible',
+             confidence: 1,
++            confidenceBasis: 'deterministic',
+             evidence: decision.evidence,
+             summary: 'DOM 目标存在，但当前不可见或不在视口内。'
+         };
+@@ -141,6 +218,7 @@ function validateDomInteraction(
+         return {
+             status: 'not-actionable',
+             confidence: 1,
++            confidenceBasis: 'deterministic',
+             evidence: decision.evidence,
+             summary: 'DOM 目标存在，但当前不可执行。'
+         };
+@@ -149,6 +227,7 @@ function validateDomInteraction(
+         ? {
+             status: 'blocked',
+             confidence: 1,
++            confidenceBasis: 'deterministic',
+             evidence: [
+                 ...decision.evidence,
+                 '所有有效 hit-test 采样点均被无关元素阻挡'
+@@ -163,15 +242,28 @@ function fromMapping(
+     mapping: CandidateMappingResult,
+     source: 'accessibility' | 'visual',
+     confidence: number,
+-    visualModelCalls = 0
++    visualModelCalls = 0,
++    visualRegions: VisualRegion[] = []
+ ): GroundingDecision {
+-    const sources = [ 'dom', source ] as const;
++    const sources = [
++        'dom',
++        source,
++        ...(mapping.candidates.length > 0 ? [ 'hit-test' as const ] : [])
++    ] as const;
++    const visualEvidence = createVisualEvidence(
++        request,
++        mapping,
++        source,
++        visualRegions
++    );
+     if (mapping.status !== 'mapped' || mapping.candidates.length !== 1) {
+         return {
+             status: mapping.status === 'ambiguous' ? 'ambiguous' : 'unmapped',
+             confidence: 0,
++            confidenceBasis: 'deterministic',
+             evidence: mapping.evidence,
+             summary: mapping.summary,
++            ...visualEvidence ? { visualEvidence } : {},
+             usage: {
+                 sourcesUsed: [ ...sources ],
+                 visualModelCalls
+@@ -189,7 +281,8 @@ function fromMapping(
+             sources,
+             visualModelCalls,
+             'not-visible',
+-            '目标已经映射，但当前不可见或没有有效 geometry。'
++            '目标已经映射，但当前不可见或没有有效 geometry。',
++            visualEvidence
+         );
+     }
+     if (
+@@ -201,7 +294,8 @@ function fromMapping(
+             sources,
+             visualModelCalls,
+             'not-actionable',
+-            '目标已经映射，但不满足当前动作的执行条件。'
++            '目标已经映射，但不满足当前动作的执行条件。',
++            visualEvidence
+         );
+     }
+     if (candidate.interactionState.hitTest === 'blocked') {
+@@ -210,10 +304,33 @@ function fromMapping(
+             sources,
+             visualModelCalls,
+             'blocked',
+-            '目标的所有有效采样点均被无关元素阻挡。'
++            '目标的所有有效采样点均被无关元素阻挡。',
++            visualEvidence
+         );
+     }
+-    const target: ResolvedTarget = {
++    const target = createMappedTarget(request, candidate, source, confidence);
++    return {
++        status: 'grounded',
++        target,
++        confidence,
++        confidenceBasis: 'engine-heuristic',
++        evidence: candidate.evidence,
++        summary: mapping.summary,
++        ...visualEvidence ? { visualEvidence } : {},
++        usage: {
++            sourcesUsed: [ ...sources ],
++            visualModelCalls
++        }
++    };
++}
++
++function createMappedTarget(
++    request: GroundingRequest,
++    candidate: CandidateMappingResult['candidates'][number],
++    source: 'accessibility' | 'visual',
++    confidence: number
++): ResolvedTarget {
++    return {
+         description: request.action.target!.description,
+         observationId: request.perception.dom.observationId,
+         candidateId: candidate.candidateId,
+@@ -225,21 +342,30 @@ function fromMapping(
+             source
+         },
+         confidence,
++        confidenceBasis: 'engine-heuristic',
+         unique: true,
+         actionable: true,
+         evidence: candidate.evidence
+     };
+-    return {
+-        status: 'grounded',
+-        target,
+-        confidence,
+-        evidence: candidate.evidence,
+-        summary: mapping.summary,
+-        usage: {
+-            sourcesUsed: [ ...sources ],
+-            visualModelCalls
++}
++
++function createVisualEvidence(
++    request: GroundingRequest,
++    mapping: CandidateMappingResult,
++    source: 'accessibility' | 'visual',
++    regions: VisualRegion[]
++): GroundingDecision['visualEvidence'] | undefined {
++    return source === 'visual'
++        ? {
++            mappedCandidateIds: mapping.candidates.map(
++                ({ candidateId }) => candidateId
++            ),
++            regions,
++            ...request.perception.visual?.screenshotRef
++                ? { screenshotRef: request.perception.visual.screenshotRef }
++                : {}
+         }
+-    };
++        : undefined;
+ }
+ 
+ function mappingFailure(
+@@ -250,13 +376,16 @@ function mappingFailure(
+     visualModelCalls: number,
+     status: Extract<GroundingDecision['status'],
+     'blocked' | 'not-actionable' | 'not-visible'>,
+-    summary: string
++    summary: string,
++    visualEvidence?: GroundingDecision['visualEvidence']
+ ): GroundingDecision {
+     return {
+         status,
+         confidence: 1,
++        confidenceBasis: 'deterministic',
+         evidence: mapping.evidence,
+         summary,
++        ...visualEvidence ? { visualEvidence } : {},
+         usage: {
+             sourcesUsed: [ ...sourcesUsed ],
+             visualModelCalls
+diff --git a/modules/engine-core/src/grounding/deterministic_target_grounder.ts b/modules/engine-core/src/grounding/deterministic_target_grounder.ts
+index f13597f..01299f4 100644
+--- a/modules/engine-core/src/grounding/deterministic_target_grounder.ts
++++ b/modules/engine-core/src/grounding/deterministic_target_grounder.ts
+@@ -76,20 +76,28 @@ export class DeterministicTargetGrounder implements TargetGrounder {
+             this.isCompatible(action.type, element)
+         );
+         if (compatible.length === 0) {
+-            const disabled = semanticMatches.filter(({ element }) =>
+-                element.disabled && action.type !== 'HOVER'
++            const visible = semanticMatches.filter(({ element }) =>
++                isVisibleWithGeometry(element)
+             );
+-            if (disabled.length > 0) {
++            if (visible.length === 0) {
+                 return {
+-                    status: 'blocked',
++                    status: 'not-visible',
+                     confidence: 1,
+-                    evidence: disabled.flatMap(({ evidence }) => evidence),
+-                    summary: `与“${ action.target.description }”匹配的元素当前处于 disabled 状态。`
++                    confidenceBasis: 'deterministic',
++                    evidence: semanticMatches.flatMap(({ evidence }) =>
++                        evidence
++                    ),
++                    summary: `与“${ action.target.description }”匹配的元素不可见、不在视口内或没有有效 geometry。`
+                 };
+             }
+-            return this.notFound(
++            return {
++                status: 'not-actionable',
++                confidence: 1,
++                confidenceBasis: 'deterministic',
++                evidence: visible.flatMap(({ evidence }) => evidence),
++                summary:
+                 `与“${ action.target.description }”匹配的元素不满足 ${ action.type } 的确定性执行条件。`
+-            );
++            };
+         }
+ 
+         const ranked = compatible.sort(compareCandidates);
+@@ -113,6 +121,7 @@ export class DeterministicTargetGrounder implements TargetGrounder {
+         return {
+             status: 'grounded',
+             confidence,
++            confidenceBasis: 'deterministic',
+             evidence: best.evidence,
+             summary: `已将“${ action.target.description }”绑定到当前页面唯一目标。`,
+             target: {
+@@ -126,6 +135,7 @@ export class DeterministicTargetGrounder implements TargetGrounder {
+                     candidateId: best.element.candidateId
+                 },
+                 confidence,
++                confidenceBasis: 'deterministic',
+                 unique: true,
+                 actionable: true,
+                 evidence: best.evidence
+@@ -200,7 +210,7 @@ export class DeterministicTargetGrounder implements TargetGrounder {
+     }
+ 
+     private isCompatible(type: ActionType, element: ObservedElement): boolean {
+-        if (!element.visible || !hasValidGeometry(element)) {
++        if (!isVisibleWithGeometry(element)) {
+             return false;
+         }
+         if (type === 'HOVER') {
+@@ -304,6 +314,10 @@ function hasValidGeometry(element: ObservedElement): boolean {
+     );
+ }
+ 
++function isVisibleWithGeometry(element: ObservedElement): boolean {
++    return element.visible && element.inViewport && hasValidGeometry(element);
++}
++
+ function createElementSnapshot(
+     element: ObservedElement
+ ): ResolvedElementSnapshot {
+diff --git a/modules/engine-core/test/composite_target_grounder.test.ts b/modules/engine-core/test/composite_target_grounder.test.ts
+index 6d93668..3332109 100644
+--- a/modules/engine-core/test/composite_target_grounder.test.ts
++++ b/modules/engine-core/test/composite_target_grounder.test.ts
+@@ -53,6 +53,33 @@ describe('CompositeTargetGrounder 多模态顺序', () => {
+         assert.equal(decision.status, 'blocked');
+         assert.equal(mapper.calls.length, 0);
+         assert.equal(visual.callCount, 0);
++        assert.deepEqual(decision.usage?.sourcesUsed, [ 'dom', 'hit-test' ]);
++    });
++
++    it('DOM 与强 exact A11y 指向不同 candidate 时返回 ambiguous', async () => {
++        const mapper = new FakeCandidateMapper('ax-2');
++        const visual = new FakeVisualGrounder();
++        const request = createRequest(
++            [ createElement('e1', '收藏') ],
++            createAction('收藏')
++        );
++        request.perception.accessibility.nodes.push({
++            id: 'ax-node-1',
++            ancestors: [{ name: '应用 11', role: 'group' }],
++            name: '收藏',
++            role: 'button'
++        });
++
++        const decision = await new CompositeTargetGrounder(
++            mapper,
++            visual
++        ).ground(request, signal());
++
++        assert.equal(decision.status, 'ambiguous');
++        assert.equal(visual.callCount, 0);
++        assert.deepEqual(decision.usage?.sourcesUsed, [
++            'dom', 'accessibility', 'hit-test'
++        ]);
+     });
+ 
+     it('DOM 不足时使用 bounded A11y 证据映射到 live candidate', async () => {
+@@ -74,7 +101,9 @@ describe('CompositeTargetGrounder 多模态顺序', () => {
+         assert.equal(mapper.calls[0]?.source, 'accessibility');
+         assert.equal(visual.callCount, 0);
+     });
++});
+ 
++describe('CompositeTargetGrounder 视觉映射', () => {
+     it('DOM/A11y 不足时由视觉发现区域，再经 mapping 落到 candidate', async () => {
+         const mapper = new FakeCandidateMapper('visual-1');
+         const visual = new FakeVisualGrounder({
+@@ -90,15 +119,28 @@ describe('CompositeTargetGrounder 多模态顺序', () => {
+         });
+         const grounder = new CompositeTargetGrounder(mapper, visual);
+ 
+-        const decision = await grounder.ground(
+-            createRequest([], createAction('收藏星标')),
+-            signal()
+-        );
++        const request = createRequest([], createAction('收藏星标'));
++        request.perception.visual = {
++            regions: [],
++            screenshotRef: 'artifact://grounding-screen-1'
++        };
++        const decision = await grounder.ground(request, signal());
+ 
+         assert.equal(decision.status, 'grounded');
+         assert.equal(decision.target?.candidateId, 'visual-1');
+         assert.equal(mapper.calls[0]?.source, 'visual');
+         assert.equal(decision.usage?.visualModelCalls, 1);
++        assert.equal(decision.confidenceBasis, 'engine-heuristic');
++        assert.deepEqual(decision.visualEvidence, {
++            mappedCandidateIds: [ 'visual-1' ],
++            regions: [{
++                id: 'vr-1',
++                boundingBox: { x: 10, y: 20, width: 24, height: 24 },
++                context: [ '应用 11' ],
++                description: '收藏星标'
++            }],
++            screenshotRef: 'artifact://grounding-screen-1'
++        });
+     });
+ 
+     it('视觉区域无法安全映射时返回 unmapped，不生成坐标目标', async () => {
+diff --git a/modules/engine-core/test/deterministic_target_grounder.test.ts b/modules/engine-core/test/deterministic_target_grounder.test.ts
+index 3165063..b533ace 100644
+--- a/modules/engine-core/test/deterministic_target_grounder.test.ts
++++ b/modules/engine-core/test/deterministic_target_grounder.test.ts
+@@ -78,12 +78,12 @@ describe('DeterministicTargetGrounder 物理绑定', () => {
+             new AbortController().signal
+         );
+ 
+-        assert.equal(decision.status, 'not-found');
++        assert.equal(decision.status, 'not-visible');
+     });
+ 
+ });
+ 
+-describe('DeterministicTargetGrounder 消歧与阻塞', () => {
++describe('DeterministicTargetGrounder 消歧与可执行性', () => {
+     const grounder = new DeterministicTargetGrounder();
+ 
+     it('使用 scope 区分多个同名元素', async () => {
+@@ -150,7 +150,7 @@ describe('DeterministicTargetGrounder 消歧与阻塞', () => {
+         assert.equal(decision.target, undefined);
+     });
+ 
+-    it('只把能够证明的 disabled 状态分类为 blocked', async () => {
++    it('把 disabled 状态分类为 not-actionable', async () => {
+         const decision = await grounder.ground(
+             createRequest(
+                 createAction('CLICK', '提交'),
+@@ -162,8 +162,37 @@ describe('DeterministicTargetGrounder 消歧与阻塞', () => {
+             new AbortController().signal
+         );
+ 
+-        assert.equal(decision.status, 'blocked');
+-        assert.match(decision.summary, /disabled/u);
++        assert.equal(decision.status, 'not-actionable');
++        assert.match(decision.summary, /CLICK/u);
++    });
++
++    it('把动作类型不兼容分类为 not-actionable', async () => {
++        const decision = await grounder.ground(
++            createRequest(
++                createAction('TYPE', '提交'),
++                createObservation([createElement('e1', {
++                    name: '提交'
++                })])
++            ),
++            new AbortController().signal
++        );
++
++        assert.equal(decision.status, 'not-actionable');
++    });
++
++    it('把视口外目标分类为 not-visible', async () => {
++        const decision = await grounder.ground(
++            createRequest(
++                createAction('CLICK', '提交'),
++                createObservation([createElement('e1', {
++                    name: '提交',
++                    inViewport: false
++                })])
++            ),
++            new AbortController().signal
++        );
++
++        assert.equal(decision.status, 'not-visible');
+     });
+ });
+ 
+diff --git a/server/src/adapters/browser/playwright_browser_adapter.ts b/server/src/adapters/browser/playwright_browser_adapter.ts
+index 4d3e42f..6983817 100644
+--- a/server/src/adapters/browser/playwright_browser_adapter.ts
++++ b/server/src/adapters/browser/playwright_browser_adapter.ts
+@@ -46,6 +46,7 @@ interface ManagedBrowserSession {
+     browser: Browser;
+     context: BrowserContext;
+     elementIndex?: {
++        accessibilityRefs: Map<string, string>,
+         observationId: string,
+         locators: Map<string, Locator>
+     };
+@@ -514,6 +515,17 @@ implements BrowserAdapter, PlaywrightPageProvider {
+             : [];
+     };
+ 
++    public getAccessibilityRef = (
++        session: BrowserSession,
++        observationId: string,
++        accessibilityNodeId: string
++    ): string | undefined => {
++        const managed = this.requireSession(session);
++        return managed.elementIndex?.observationId === observationId
++            ? managed.elementIndex.accessibilityRefs.get(accessibilityNodeId)
++            : undefined;
++    };
++
+     public registerTransientCandidate = (
+         session: BrowserSession,
+         observationId: string,
+@@ -530,6 +542,22 @@ implements BrowserAdapter, PlaywrightPageProvider {
+         managed.elementIndex.locators.set(candidateId, locator);
+     };
+ 
++    public registerAccessibilityRef = (
++        session: BrowserSession,
++        observationId: string,
++        accessibilityNodeId: string,
++        ariaRef: string
++    ): void => {
++        const managed = this.requireSession(session);
++        if (managed.elementIndex?.observationId !== observationId) {
++            throw new Error('无法向过期 observation 登记 aria-ref。');
++        }
++        managed.elementIndex.accessibilityRefs.set(
++            accessibilityNodeId,
++            ariaRef
++        );
++    };
++
+     /**
+      * 根据公开的 sessionId 查找 Playwright 运行时对象。
+      */
+@@ -1086,6 +1114,7 @@ implements BrowserAdapter, PlaywrightPageProvider {
+         const truncated = observed.length >= MAX_INTERACTIVE_ELEMENTS;
+ 
+         session.elementIndex = {
++            accessibilityRefs: new Map(),
+             observationId,
+             locators
+         };
+diff --git a/server/src/adapters/browser/playwright_candidate_mapping_adapter.ts b/server/src/adapters/browser/playwright_candidate_mapping_adapter.ts
+index 17b9612..82671be 100644
+--- a/server/src/adapters/browser/playwright_candidate_mapping_adapter.ts
++++ b/server/src/adapters/browser/playwright_candidate_mapping_adapter.ts
+@@ -39,24 +39,13 @@ const VISUAL_MAPPING_SCRIPT = String.raw`(input) => {
+     const hits = points.map(({x, y}) => document.elementFromPoint(x, y))
+         .filter(Boolean);
+     if (hits.length === 0) return { status: 'unmapped', created: false };
+-    const existing = new Set(hits.map((hit) =>
+-        hit.closest('[' + input.attribute + ']')
+-            ?.getAttribute(input.attribute)
+-    ).filter(Boolean));
+-    if (existing.size === 1) {
+-        return {
+-            status: 'mapped', created: false,
+-            candidateId: Array.from(existing)[0]
+-        };
+-    }
+-    if (existing.size > 1) return { status: 'ambiguous', created: false };
+     const visible = (element) => {
+         const style = window.getComputedStyle(element);
+         const box = element.getBoundingClientRect();
+         return style.display !== 'none' && style.visibility !== 'hidden' &&
+             Number(style.opacity) !== 0 && box.width > 0 && box.height > 0;
+     };
+-    const compatible = (element) => {
++    const strongOwner = (element) => {
+         if (!visible(element)) return false;
+         if (input.actionType === 'HOVER') return true;
+         if (element.disabled || element.getAttribute('aria-disabled') === 'true') {
+@@ -81,32 +70,46 @@ const VISUAL_MAPPING_SCRIPT = String.raw`(input) => {
+             ['button', 'checkbox', 'link', 'menuitem', 'option', 'radio',
+                 'switch', 'tab'].includes(role) ||
+             element.hasAttribute('onclick') ||
+-            element.hasAttribute('aria-haspopup') ||
+-            window.getComputedStyle(element).cursor === 'pointer';
++            element.hasAttribute('aria-haspopup');
+     };
++    const pointerOwner = (element) => input.actionType === 'CLICK' &&
++        visible(element) &&
++        !['svg', 'path', 'use'].includes(element.tagName.toLowerCase()) &&
++        window.getComputedStyle(element).cursor === 'pointer';
+     const candidates = [];
+     for (const hit of hits) {
+         let current = hit;
++        let pointerCandidate;
+         for (let depth = 0; current && depth < 7; depth += 1) {
+-            if (compatible(current)) {
++            if (strongOwner(current)) {
+                 candidates.push(current);
+                 break;
+             }
++            if (!pointerCandidate && pointerOwner(current)) {
++                pointerCandidate = current;
++            }
+             current = current.parentElement;
+         }
++        if (!current && pointerCandidate) {
++            candidates.push(pointerCandidate);
++        }
+     }
+     if (candidates.length === 0) {
+         return { status: 'unmapped', created: false };
+     }
+     let selected = candidates[0];
+     for (const candidate of candidates.slice(1)) {
+-        if (candidate === selected || selected.contains(candidate)) continue;
+-        if (candidate.contains(selected)) {
++        if (candidate === selected || candidate.contains(selected)) continue;
++        if (selected.contains(candidate)) {
+             selected = candidate;
+             continue;
+         }
+         return { status: 'ambiguous', created: false };
+     }
++    const existing = selected.getAttribute(input.attribute);
++    if (existing) {
++        return { status: 'mapped', created: false, candidateId: existing };
++    }
+     selected.setAttribute(input.attribute, input.candidateId);
+     return {
+         status: 'mapped', created: true, candidateId: input.candidateId
+@@ -134,9 +137,13 @@ implements CandidateMappingPort {
+             return unmapped('语义动作没有页面目标。');
+         }
+         if (evidence.source === 'accessibility') {
+-            const ids = unique(evidence.nodes.flatMap((node) =>
+-                node.domCandidateId ? [ node.domCandidateId ] : []
+-            ));
++            const ids = unique((await Promise.all(evidence.nodes.map(
++                async (node) => await this.mapAccessibilityNode(
++                    session,
++                    observationId,
++                    node.id
++                )
++            ))).filter((id): id is string => Boolean(id)));
+             return await this.mapCandidateIds(
+                 session,
+                 observationId,
+@@ -181,19 +188,49 @@ implements CandidateMappingPort {
+         );
+     };
+ 
++    private async mapAccessibilityNode(
++        session: Parameters<CandidateMappingPort['map']>[0],
++        observationId: string,
++        accessibilityNodeId: string
++    ): Promise<string | undefined> {
++        const ariaRef = this.pageProvider.getAccessibilityRef(
++            session,
++            observationId,
++            accessibilityNodeId
++        );
++        if (!ariaRef) {
++            return undefined;
++        }
++        const page = this.pageProvider.getPage(session);
++        const locator = page.locator(`aria-ref=${ ariaRef }`);
++        if (await locator.count() !== 1) {
++            return undefined;
++        }
++        const existing = await locator.getAttribute(
++            RUNTIME_CANDIDATE_ATTRIBUTE
++        );
++        if (existing) {
++            return existing;
++        }
++        const candidateId = `ax-${ randomUUID().slice(0, 12) }`;
++        await locator.evaluate(`(element) => element.setAttribute(${
++            JSON.stringify(RUNTIME_CANDIDATE_ATTRIBUTE)
++        }, ${ JSON.stringify(candidateId) })`);
++        this.pageProvider.registerTransientCandidate(
++            session,
++            observationId,
++            candidateId,
++            locator
++        );
++        return candidateId;
++    }
++
+     private async mapVisualRegion(
+         session: Parameters<CandidateMappingPort['map']>[0],
+         observationId: string,
+         actionType: ActionType,
+         region: VisualRegion
+     ): Promise<VisualDomMapping> {
+-        if (region.mappedCandidateId) {
+-            return {
+-                candidateId: region.mappedCandidateId,
+-                created: false,
+-                status: 'mapped'
+-            };
+-        }
+         const page = this.pageProvider.getPage(session);
+         const candidateId = `visual-${ randomUUID().slice(0, 12) }`;
+         const result = await page.evaluate(`(${ VISUAL_MAPPING_SCRIPT })(${
+@@ -237,20 +274,20 @@ implements CandidateMappingPort {
+                 summary: `感知证据映射到 ${ candidateIds.length } 个不同元素。`
+             };
+         }
+-        const page = this.pageProvider.getPage(session);
+         const candidates = (await Promise.all(candidateIds.map(
+             async (candidateId): Promise<MappedCandidate | undefined> => {
+-                if (!this.pageProvider.getCandidateLocator(
++                const locator = this.pageProvider.getCandidateLocator(
+                     session,
+                     observationId,
+                     candidateId
+-                )) {
++                );
++                if (!locator) {
+                     return undefined;
+                 }
+                 const [ elementSnapshot, interactionState ] =
+                     await Promise.all([
+-                        captureElementSnapshot(page, candidateId),
+-                        captureInteractionState(page, candidateId)
++                        captureElementSnapshot(locator),
++                        captureInteractionState(locator, candidateId)
+                     ]);
+                 if (!elementSnapshot || !interactionState) {
+                     return undefined;
+diff --git a/server/src/adapters/browser/playwright_element_evidence.ts b/server/src/adapters/browser/playwright_element_evidence.ts
+index 636d8ea..775e5db 100644
+--- a/server/src/adapters/browser/playwright_element_evidence.ts
++++ b/server/src/adapters/browser/playwright_element_evidence.ts
+@@ -3,18 +3,11 @@ import type {
+     ResolvedElementSnapshot,
+ } from '@ai-web-test-engine/core';
+ import type {
+-    Page,
++    Locator,
+ } from 'playwright';
++import vm from 'node:vm';
+ 
+-import {
+-    RUNTIME_CANDIDATE_ATTRIBUTE,
+-} from './interactive_element_script';
+-
+-const SNAPSHOT_SCRIPT = String.raw`(input) => {
+-    const element = document.querySelector(
+-        '[' + input.attribute + '="' + CSS.escape(input.candidateId) + '"]'
+-    );
+-    if (!element) return undefined;
++const SNAPSHOT_SCRIPT = String.raw`(element) => {
+     const clean = (value, limit = 200) => {
+         const normalized = value && String(value).replace(/\s+/gu, ' ').trim();
+         return normalized ? normalized.slice(0, limit) : undefined;
+@@ -86,11 +79,7 @@ const SNAPSHOT_SCRIPT = String.raw`(input) => {
+     };
+ }`;
+ 
+-const INTERACTION_SCRIPT = String.raw`(input) => {
+-    const element = document.querySelector(
+-        '[' + input.attribute + '="' + CSS.escape(input.candidateId) + '"]'
+-    );
+-    if (!element) return undefined;
++const INTERACTION_SCRIPT = String.raw`(element, input) => {
+     const box = element.getBoundingClientRect();
+     const style = window.getComputedStyle(element);
+     const visible = style.display !== 'none' && style.visibility !== 'hidden' &&
+@@ -111,8 +100,17 @@ const INTERACTION_SCRIPT = String.raw`(input) => {
+     let blocked = 0;
+     let unknown = 0;
+     let blocker;
++    const deepElementFromPoint = (x, y) => {
++        let hit = document.elementFromPoint(x, y);
++        while (hit?.shadowRoot) {
++            const nested = hit.shadowRoot.elementFromPoint(x, y);
++            if (!nested || nested === hit) break;
++            hit = nested;
++        }
++        return hit;
++    };
+     for (const point of points) {
+-        const hit = document.elementFromPoint(point.x, point.y);
++        const hit = deepElementFromPoint(point.x, point.y);
+         if (!hit) {
+             unknown += 1;
+             continue;
+@@ -149,35 +147,42 @@ const INTERACTION_SCRIPT = String.raw`(input) => {
+     };
+ }`;
+ 
++const snapshotEvaluator = vm.runInThisContext(
++    `(${ SNAPSHOT_SCRIPT })`
++) as (element: unknown) => ResolvedElementSnapshot;
++const interactionEvaluator = vm.runInThisContext(
++    `(${ INTERACTION_SCRIPT })`
++) as (
++    element: unknown,
++    input: { candidateId: string }
++) => ElementInteractionState & {
++    samples: {
++        blocked: number,
++        receives: number,
++        total: number,
++        unknown: number
++    }
++};
++
+ export async function captureElementSnapshot(
+-    page: Page,
+-    candidateId: string
++    locator: Locator
+ ): Promise<ResolvedElementSnapshot | undefined> {
+-    return await page.evaluate(`(${ SNAPSHOT_SCRIPT })(${
+-        JSON.stringify({
+-        attribute: RUNTIME_CANDIDATE_ATTRIBUTE,
+-        candidateId
+-        })
+-    })`) as ResolvedElementSnapshot | undefined;
++    return await locator.count() === 1
++        ? await locator.evaluate(snapshotEvaluator)
++        : undefined;
+ }
+ 
+ export async function captureInteractionState(
+-    page: Page,
++    locator: Locator,
+     candidateId: string
+ ): Promise<ElementInteractionState | undefined> {
+-    const result = await page.evaluate(`(${ INTERACTION_SCRIPT })(${
+-        JSON.stringify({
+-            attribute: RUNTIME_CANDIDATE_ATTRIBUTE,
+-            candidateId
+-        })
+-    })`) as (ElementInteractionState & {
+-        samples: {
+-            blocked: number,
+-            receives: number,
+-            total: number,
+-            unknown: number
+-        }
+-    }) | undefined;
++    if (await locator.count() !== 1) {
++        return undefined;
++    }
++    const result = await locator.evaluate(
++        interactionEvaluator,
++        { candidateId }
++    );
+     if (!result) {
+         return undefined;
+     }
+diff --git a/server/src/adapters/browser/playwright_page_perception_adapter.ts b/server/src/adapters/browser/playwright_page_perception_adapter.ts
+index 103c778..488646b 100644
+--- a/server/src/adapters/browser/playwright_page_perception_adapter.ts
++++ b/server/src/adapters/browser/playwright_page_perception_adapter.ts
+@@ -11,28 +11,12 @@ import type {
+ } from '@ai-web-test-engine/core';
+ import { parseDocument } from 'yaml';
+ 
+-import { RUNTIME_CANDIDATE_ATTRIBUTE } from './interactive_element_script';
+ import { captureInteractionState } from './playwright_element_evidence';
+ import type { PlaywrightPageProvider } from './playwright_page_provider';
+ 
+ const MAX_ACCESSIBILITY_NODES = 200;
+ const MAX_ACCESSIBILITY_DEPTH = 12;
+ const MAX_ANCESTORS = 4;
+-const ACCESSIBLE_ACTION_ROLES = new Set([
+-    'button',
+-    'checkbox',
+-    'combobox',
+-    'link',
+-    'menuitem',
+-    'option',
+-    'radio',
+-    'slider',
+-    'spinbutton',
+-    'switch',
+-    'tab',
+-    'textbox'
+-]);
+-
+ interface ParsedAriaNode extends Omit<AccessibilityNode, 'id'> {
+     children: ParsedAriaNode[];
+     ref?: string;
+@@ -70,20 +54,20 @@ export class PlaywrightPagePerceptionAdapter implements PagePerceptionPort {
+         );
+         const nodes: AccessibilityNode[] = [];
+         const identityCounts = new Map<string, number>();
+-        let transientSequence = 0;
+         for (const node of flattened) {
+             signal.throwIfAborted();
+             const identity = accessibilityIdentity(node);
+             const occurrence = (identityCounts.get(identity) ?? 0) + 1;
+             identityCounts.set(identity, occurrence);
+-            const domCandidateId = node.ref
+-                ? await this.mapAriaRefToCandidate(
++            const id = createStableAccessibilityId(identity, occurrence);
++            if (node.ref) {
++                this.pageProvider.registerAccessibilityRef(
+                     session,
+                     observation.observationId,
+-                    node,
+-                    () => `ax-${ ++transientSequence }`
+-                )
+-                : undefined;
++                    id,
++                    node.ref
++                );
++            }
+             const {
+                 children: _children,
+                 ref: _ref,
+@@ -91,8 +75,7 @@ export class PlaywrightPagePerceptionAdapter implements PagePerceptionPort {
+             } = node;
+             nodes.push({
+                 ...snapshot,
+-                id: createStableAccessibilityId(identity, occurrence),
+-                ...domCandidateId ? { domCandidateId } : {}
++                id
+             });
+         }
+         const interactionStates = Object.fromEntries((await Promise.all(
+@@ -100,7 +83,14 @@ export class PlaywrightPagePerceptionAdapter implements PagePerceptionPort {
+                 session,
+                 observation.observationId
+             ).map(async (candidateId) => {
+-                const state = await captureInteractionState(page, candidateId);
++                const locator = this.pageProvider.getCandidateLocator(
++                    session,
++                    observation.observationId,
++                    candidateId
++                );
++                const state = locator
++                    ? await captureInteractionState(locator, candidateId)
++                    : undefined;
+                 return state ? [ candidateId, state ] as const : undefined;
+             })
+         )).filter((entry): entry is readonly [string, NonNullable<
+@@ -117,53 +107,6 @@ export class PlaywrightPagePerceptionAdapter implements PagePerceptionPort {
+         };
+     };
+ 
+-    private async mapAriaRefToCandidate(
+-        session: BrowserSession,
+-        observationId: string,
+-        node: ParsedAriaNode,
+-        nextCandidateId: () => string
+-    ): Promise<string | undefined> {
+-        const page = this.pageProvider.getPage(session);
+-        const locator = page.locator(`aria-ref=${ node.ref! }`);
+-        if (await locator.count() !== 1) {
+-            return undefined;
+-        }
+-        const existing = await locator.evaluate((element, attribute) =>
+-            (element as unknown as {
+-                closest: (selector: string) => {
+-                    getAttribute: (name: string) => string | null
+-                } | null
+-            }).closest(`[${ attribute }]`)
+-                ?.getAttribute(attribute) ??
+-                undefined,
+-        RUNTIME_CANDIDATE_ATTRIBUTE);
+-        if (existing) {
+-            return existing;
+-        }
+-        if (!node.role || !ACCESSIBLE_ACTION_ROLES.has(node.role)) {
+-            return undefined;
+-        }
+-        const candidateId = nextCandidateId();
+-        await locator.evaluate(
+-            (element, input) =>
+-                (element as unknown as {
+-                    setAttribute: (name: string, value: string) => void
+-                }).setAttribute(input.attribute, input.candidateId),
+-            {
+-                attribute: RUNTIME_CANDIDATE_ATTRIBUTE,
+-                candidateId
+-            }
+-        );
+-        this.pageProvider.registerTransientCandidate(
+-            session,
+-            observationId,
+-            candidateId,
+-            page.locator(
+-                `[${ RUNTIME_CANDIDATE_ATTRIBUTE }="${ candidateId }"]`
+-            )
+-        );
+-        return candidateId;
+-    }
+ }
+ 
+ /** 将 Playwright YAML 解析为不包含临时 ref 的内部树。 */
+diff --git a/server/src/adapters/browser/playwright_page_provider.ts b/server/src/adapters/browser/playwright_page_provider.ts
+index 191d2f8..5edd770 100644
+--- a/server/src/adapters/browser/playwright_page_provider.ts
++++ b/server/src/adapters/browser/playwright_page_provider.ts
+@@ -18,6 +18,11 @@ export interface PlaywrightPageProvider {
+         session: BrowserSession,
+         observationId: string
+     ) => string[];
++    getAccessibilityRef: (
++        session: BrowserSession,
++        observationId: string,
++        accessibilityNodeId: string
++    ) => string | undefined;
+     isObservationCurrent: (
+         session: BrowserSession,
+         observationId: string
+@@ -28,4 +33,10 @@ export interface PlaywrightPageProvider {
+         candidateId: string,
+         locator: Locator
+     ) => void;
++    registerAccessibilityRef: (
++        session: BrowserSession,
++        observationId: string,
++        accessibilityNodeId: string,
++        ariaRef: string
++    ) => void;
+ }
+diff --git a/server/src/adapters/visual/index.ts b/server/src/adapters/visual/index.ts
+index 06cc50a..4637777 100644
+--- a/server/src/adapters/visual/index.ts
++++ b/server/src/adapters/visual/index.ts
+@@ -1,4 +1,2 @@
+ export * from './midscene_visual_agent';
+-export * from './midscene_visual_candidate_annotator';
+ export * from './midscene_visual_grounding_adapter';
+-export * from './visual_candidate_overlay_script';
+diff --git a/server/src/adapters/visual/midscene_visual_candidate_annotator.ts b/server/src/adapters/visual/midscene_visual_candidate_annotator.ts
+deleted file mode 100644
+index ee438dc..0000000
+--- a/server/src/adapters/visual/midscene_visual_candidate_annotator.ts
++++ /dev/null
+@@ -1,187 +0,0 @@
+-import type {
+-    ObservedElement,
+-} from '@ai-web-test-engine/core';
+-import type {
+-    Page,
+-} from 'playwright';
+-import {
+-    createConfiguredMidsceneVisualAgent,
+-} from './midscene_visual_agent';
+-import {
+-    createVisualCandidateOverlayScript,
+-    REMOVE_VISUAL_CANDIDATE_OVERLAY_SCRIPT,
+-    toVisualCandidateBoxes,
+-} from './visual_candidate_overlay_script';
+-
+-/** Midscene 为一个确定候选框补充的独立视觉语义。 */
+-export interface VisualCandidateAnnotation {
+-    candidateId: string;
+-    confidence?: number;
+-    elementType?: string;
+-    visualDescription: string;
+-}
+-
+-/** 浏览器适配器依赖的批量视觉标注边界，测试可注入确定性替身。 */
+-export interface VisualCandidateAnnotator {
+-    annotate: (
+-        page: Page,
+-        candidates: ObservedElement[],
+-        signal: AbortSignal
+-    ) => Promise<VisualCandidateAnnotation[]>;
+-}
+-
+-interface MidsceneAnnotationResponse {
+-    annotations: VisualCandidateAnnotation[];
+-}
+-
+-/** 使用 Midscene + Terra 一次看图并命名全部候选框。 */
+-export class MidsceneVisualCandidateAnnotator
+-implements VisualCandidateAnnotator {
+-    public annotate = async (
+-        page: Page,
+-        candidates: ObservedElement[],
+-        signal: AbortSignal
+-    ): Promise<VisualCandidateAnnotation[]> => {
+-        signal.throwIfAborted();
+-        const boxes = toVisualCandidateBoxes(candidates);
+-        if (boxes.length === 0) {
+-            return [];
+-        }
+-
+-        const agent = createConfiguredMidsceneVisualAgent(page);
+-        try {
+-            await page.evaluate(
+-                createVisualCandidateOverlayScript(boxes)
+-            );
+-            const raw = await waitForVisualResult(
+-                agent.aiQuery<MidsceneAnnotationResponse>(
+-                    buildCandidateAnnotationDemand(boxes.map(
+-                        ({ candidateId }) => candidateId
+-                    )),
+-                    {
+-                        domIncluded: false,
+-                        screenshotIncluded: true
+-                    }
+-                ),
+-                signal
+-            );
+-            signal.throwIfAborted();
+-            return parseVisualCandidateAnnotations(
+-                raw,
+-                new Set(boxes.map(({ candidateId }) => candidateId))
+-            );
+-        } finally {
+-            await Promise.allSettled([
+-                agent.destroy(),
+-                page.evaluate(REMOVE_VISUAL_CANDIDATE_OVERLAY_SCRIPT)
+-            ]);
+-        }
+-    };
+-}
+-
+-/** 用显式 ID 列表约束模型输出，避免它创造页面上不存在的目标。 */
+-export function buildCandidateAnnotationDemand(
+-    candidateIds: string[]
+-): Record<string, string> {
+-    return {
+-        annotations: [
+-            '截图中每个粉红色候选框都标有唯一 candidateId。',
+-            `请逐一识别这些候选：${ candidateIds.join('、') }。`,
+-            '返回 JSON 数组，每项严格包含 candidateId、visualDescription，',
+-            '可选包含 elementType 和 0 到 1 的 confidence。',
+-            'visualDescription 请用简洁中文说明可见外观与最可能的交互用途，',
+-            '例如“空心五角星图标，可能是收藏按钮”。',
+-            '必须覆盖每个看得清的候选框；看不清时也保留 candidateId，',
+-            '并把 visualDescription 写为“无法可靠识别”。',
+-            '不得返回候选 ID 列表之外的元素。'
+-        ].join('')
+-    };
+-}
+-
+-/** 只接受已提供的候选 ID，并清理模型可能返回的额外或畸形字段。 */
+-export function parseVisualCandidateAnnotations(
+-    value: unknown,
+-    allowedCandidateIds: ReadonlySet<string>
+-): VisualCandidateAnnotation[] {
+-    const records = extractAnnotationRecords(value);
+-    const seen = new Set<string>();
+-    return records.flatMap((record) => {
+-        if (!isRecord(record)) {
+-            return [];
+-        }
+-        const candidateId = normalizeText(record.candidateId, 100);
+-        const visualDescription = normalizeText(
+-            record.visualDescription,
+-            300
+-        );
+-        if (
+-            !candidateId || !visualDescription ||
+-            !allowedCandidateIds.has(candidateId) || seen.has(candidateId)
+-        ) {
+-            return [];
+-        }
+-        seen.add(candidateId);
+-        const elementType = normalizeText(record.elementType, 100);
+-        const confidence = typeof record.confidence === 'number' &&
+-            Number.isFinite(record.confidence) &&
+-            record.confidence >= 0 && record.confidence <= 1
+-            ? record.confidence
+-            : undefined;
+-        return [{
+-            candidateId,
+-            visualDescription,
+-            ...elementType ? { elementType } : {},
+-            ...confidence === undefined ? {} : { confidence }
+-        }];
+-    });
+-}
+-
+-function extractAnnotationRecords(value: unknown): unknown[] {
+-    if (Array.isArray(value)) {
+-        return value;
+-    }
+-    if (isRecord(value) && Array.isArray(value.annotations)) {
+-        return value.annotations;
+-    }
+-    return [];
+-}
+-
+-function normalizeText(value: unknown, maxLength: number): string | undefined {
+-    if (typeof value !== 'string') {
+-        return undefined;
+-    }
+-    const normalized = value.replace(/\s+/gu, ' ').trim();
+-    return normalized ? normalized.slice(0, maxLength) : undefined;
+-}
+-
+-function isRecord(value: unknown): value is Record<string, unknown> {
+-    return typeof value === 'object' && value !== null && !Array.isArray(value);
+-}
+-
+-/** 让主动终止立即结束视觉等待；后台模型结果会被安全消费。 */
+-async function waitForVisualResult<T>(
+-    task: Promise<T>,
+-    signal: AbortSignal
+-): Promise<T> {
+-    signal.throwIfAborted();
+-    return await new Promise<T>((resolve, reject) => {
+-        const onAbort = (): void => {
+-            cleanup();
+-            reject(signal.reason ?? new Error('视觉标注已终止。'));
+-        };
+-        const cleanup = (): void => {
+-            signal.removeEventListener('abort', onAbort);
+-        };
+-        signal.addEventListener('abort', onAbort, { once: true });
+-        task.then(
+-            (result) => {
+-                cleanup();
+-                resolve(result);
+-            },
+-            (error: unknown) => {
+-                cleanup();
+-                reject(error);
+-            }
+-        );
+-    });
+-}
+diff --git a/server/src/adapters/visual/midscene_visual_grounding_adapter.ts b/server/src/adapters/visual/midscene_visual_grounding_adapter.ts
+index f8c1cff..aae0d0e 100644
+--- a/server/src/adapters/visual/midscene_visual_grounding_adapter.ts
++++ b/server/src/adapters/visual/midscene_visual_grounding_adapter.ts
+@@ -1,6 +1,7 @@
+ import { randomUUID } from 'node:crypto';
+ 
+ import type {
++    BoundingBox,
+     PagePerception,
+     SemanticTarget,
+     VisualGroundingPort,
+@@ -76,12 +77,7 @@ export class MidsceneVisualGroundingAdapter implements VisualGroundingPort {
+                 status: 'located',
+                 regions: [{
+                     id: `visual-${ randomUUID() }`,
+-                    boundingBox: {
+-                        height: rect.height,
+-                        width: rect.width,
+-                        x: rect.left,
+-                        y: rect.top
+-                    },
++                    boundingBox: toCssViewportBoundingBox(rect, located.dpr),
+                     context: target.scope ? [ target.scope ] : [],
+                     description: target.description
+                 }],
+@@ -120,6 +116,26 @@ function isValidNumber(value: number): boolean {
+     return Number.isFinite(value);
+ }
+ 
++/**
++ * Midscene 1.12.0 的 aiLocate 返回 screenshot 像素坐标和原始 DPR；它只在
++ * action 执行前通过 parseActionParam 归一化。当前 Agent 固定 shrinkFactor=1，
++ * 因此这里必须除以 DPR 才能得到 CSS viewport 坐标。
++ */
++export function toCssViewportBoundingBox(
++    rect: { height: number, left: number, top: number, width: number },
++    devicePixelRatio?: number
++): BoundingBox {
++    const ratio = devicePixelRatio && devicePixelRatio > 0
++        ? devicePixelRatio
++        : 1;
++    return {
++        height: rect.height / ratio,
++        width: rect.width / ratio,
++        x: rect.left / ratio,
++        y: rect.top / ratio
++    };
++}
++
+ /** 主动终止只结束等待；Midscene 后台结果仍由 Promise 安全消费。 */
+ async function waitForVisualResult<T>(
+     task: Promise<T>,
+diff --git a/server/src/adapters/visual/visual_candidate_overlay_script.ts b/server/src/adapters/visual/visual_candidate_overlay_script.ts
+deleted file mode 100644
+index 0ae2bd8..0000000
+--- a/server/src/adapters/visual/visual_candidate_overlay_script.ts
++++ /dev/null
+@@ -1,97 +0,0 @@
+-import type {
+-    ObservedElement,
+-} from '@ai-web-test-engine/core';
+-
+-export const VISUAL_CANDIDATE_OVERLAY_ID =
+-    'ai-web-test-visual-candidate-overlay';
+-
+-interface VisualCandidateBox {
+-    candidateId: string;
+-    height: number;
+-    width: number;
+-    x: number;
+-    y: number;
+-}
+-
+-/** 只把当前视口内可执行候选转换为视觉模型可识别的编号框。 */
+-export function toVisualCandidateBoxes(
+-    elements: ObservedElement[]
+-): VisualCandidateBox[] {
+-    return elements.flatMap((element) => {
+-        const box = element.boundingBox;
+-        if (
+-            !element.visible || !element.inViewport || element.disabled ||
+-            !box || box.width <= 0 || box.height <= 0 ||
+-            ![ box.x, box.y, box.width, box.height ].every(Number.isFinite)
+-        ) {
+-            return [];
+-        }
+-        return [{
+-            candidateId: element.candidateId,
+-            x: box.x,
+-            y: box.y,
+-            width: box.width,
+-            height: box.height
+-        }];
+-    });
+-}
+-
+-/** 生成一次性覆盖层脚本；覆盖层不拦截鼠标，也不改变页面布局。 */
+-export function createVisualCandidateOverlayScript(
+-    boxes: VisualCandidateBox[]
+-): string {
+-    const input = JSON.stringify({
+-        boxes,
+-        overlayId: VISUAL_CANDIDATE_OVERLAY_ID
+-    });
+-    return String.raw`(() => {
+-        const input = ${ input };
+-        document.getElementById(input.overlayId)?.remove();
+-        const root = document.createElement('div');
+-        root.id = input.overlayId;
+-        root.setAttribute('aria-hidden', 'true');
+-        Object.assign(root.style, {
+-            position: 'fixed',
+-            inset: '0',
+-            pointerEvents: 'none',
+-            zIndex: '2147483647'
+-        });
+-        for (const box of input.boxes) {
+-            const frame = document.createElement('div');
+-            Object.assign(frame.style, {
+-                position: 'fixed',
+-                left: Math.max(0, box.x) + 'px',
+-                top: Math.max(0, box.y) + 'px',
+-                width: Math.max(1, box.width) + 'px',
+-                height: Math.max(1, box.height) + 'px',
+-                border: '2px solid #ff2d55',
+-                boxSizing: 'border-box',
+-                background: 'rgba(255, 45, 85, 0.04)'
+-            });
+-            const label = document.createElement('span');
+-            label.textContent = box.candidateId;
+-            Object.assign(label.style, {
+-                position: 'absolute',
+-                left: '0',
+-                top: '0',
+-                transform: 'translateY(-100%)',
+-                padding: '1px 4px',
+-                borderRadius: '2px',
+-                background: '#ff2d55',
+-                color: '#fff',
+-                font: 'bold 12px/16px monospace',
+-                whiteSpace: 'nowrap'
+-            });
+-            frame.appendChild(label);
+-            root.appendChild(frame);
+-        }
+-        document.documentElement.appendChild(root);
+-    })()`;
+-}
+-
+-/** 无论视觉调用成功与否，都删除临时候选框。 */
+-export const REMOVE_VISUAL_CANDIDATE_OVERLAY_SCRIPT = String.raw`(() => {
+-    document.getElementById(${ JSON.stringify(
+-        VISUAL_CANDIDATE_OVERLAY_ID
+-    ) })?.remove();
+-})()`;
+diff --git a/server/test/server/adapters/browser/playwright_candidate_mapping_adapter.test.ts b/server/test/server/adapters/browser/playwright_candidate_mapping_adapter.test.ts
+index 19e181a..2475de7 100644
+--- a/server/test/server/adapters/browser/playwright_candidate_mapping_adapter.test.ts
++++ b/server/test/server/adapters/browser/playwright_candidate_mapping_adapter.test.ts
+@@ -4,11 +4,19 @@ import type {
+     SemanticAction,
+     VisualRegion,
+ } from '@ai-web-test-engine/core';
++import {
++    CompositeTargetGrounder,
++    PerceptionService,
++} from '@ai-web-test-engine/core';
+ import {
+     captureInteractionState,
+     PlaywrightBrowserAdapter,
+     PlaywrightCandidateMappingAdapter,
++    PlaywrightPagePerceptionAdapter,
+ } from '../../../../src/adapters/browser';
++import {
++    DisabledVisualGroundingAdapter,
++} from '../../../../src/adapters/visual';
+ 
+ const START_OPTIONS = {
+     headless: true,
+@@ -125,6 +133,105 @@ describe('PlaywrightCandidateMappingAdapter', () => {
+         }
+     }).timeout(15_000);
+ 
++    it('已有 app-card candidate 时仍绑定内部收藏 star，不劫持父卡片', async () => {
++        const browser = new PlaywrightBrowserAdapter();
++        const session = await browser.start(START_OPTIONS);
++        try {
++            const page = browser.getPage(session);
++            await page.setContent([
++                '<div id="card" role="button" aria-label="应用 11 卡片" ',
++                'style="width:200px;height:100px">应用 11',
++                '<details><summary id="star" style="display:block;',
++                'width:40px;height:40px">☆</summary></details></div>'
++            ].join(''));
++            const observation = await browser.observe(session);
++            const cardId = observation.interactiveElements.find(
++                ({ attributes }) => attributes.id === 'card'
++            )?.candidateId;
++            const box = await page.locator('#star').boundingBox();
++            assert.ok(cardId);
++            assert.ok(box);
++
++            const result = await new PlaywrightCandidateMappingAdapter(
++                browser
++            ).map(
++                session,
++                createPerception(observation),
++                createClickAction(),
++                { source: 'visual', regions: [ createRegion(box) ] },
++                new AbortController().signal
++            );
++
++            assert.equal(result.status, 'mapped', result.summary);
++            assert.match(result.candidates[0].candidateId, /^visual-/u);
++            assert.notEqual(result.candidates[0].candidateId, cardId);
++            assert.equal(await page.locator('#star').getAttribute(
++                'data-ai-web-test-candidate'
++            ), result.candidates[0].candidateId);
++        } finally {
++            await browser.close(session);
++        }
++    }).timeout(15_000);
++
++    it('真实 ariaSnapshot 经 ax-* transient target 完成浏览器执行', async () => {
++        const browser = new PlaywrightBrowserAdapter();
++        const session = await browser.start(START_OPTIONS);
++        try {
++            const page = browser.getPage(session);
++            await page.setContent([
++                '<x-star></x-star><script>',
++                'customElements.define("x-star",class extends HTMLElement{',
++                'connectedCallback(){const root=this.attachShadow({mode:"open"});',
++                'root.innerHTML="<button aria-label=\\"收藏星标\\">★</button>";',
++                'root.querySelector("button").onclick=()=>',
++                'document.body.dataset.favorite="true"}})</script>'
++            ].join(''));
++            const observation = await browser.observe(session);
++            assert.equal(observation.interactiveElements.length, 0);
++            const perception = await new PerceptionService(
++                new PlaywrightPagePerceptionAdapter(browser)
++            ).capture(session, observation, undefined, signal());
++            assert.equal(perception.accessibility.nodes.some(
++                ({ name }) => name === '收藏星标'
++            ), true);
++            const action: SemanticAction = {
++                ...createClickAction(),
++                target: { description: '收藏星标' }
++            };
++            const decision = await new CompositeTargetGrounder(
++                new PlaywrightCandidateMappingAdapter(browser),
++                new DisabledVisualGroundingAdapter()
++            ).ground({
++                action,
++                perception,
++                session,
++                visualAllowed: false
++            }, signal());
++
++            assert.equal(decision.status, 'grounded', decision.summary);
++            assert.match(decision.target!.candidateId, /^ax-/u);
++            const result = await browser.execute(
++                session,
++                {
++                    type: 'CLICK',
++                    target: {
++                        candidateId: decision.target!.candidateId,
++                        description: '收藏星标'
++                    },
++                    expectedEffect: '应用被收藏',
++                    reasonSummary: '执行 A11y transient candidate'
++                },
++                decision.target!
++            );
++            assert.equal(result.status, 'executed');
++            assert.equal(await page.locator('body').getAttribute(
++                'data-favorite'
++            ), 'true');
++        } finally {
++            await browser.close(session);
++        }
++    }).timeout(15_000);
++
+     it('视觉区域没有动作兼容元素时返回 unmapped，不创建坐标目标', async () => {
+         const browser = new PlaywrightBrowserAdapter();
+         const session = await browser.start(START_OPTIONS);
+@@ -171,13 +278,25 @@ describe('PlaywrightCandidateMappingAdapter', () => {
+             )?.candidateId;
+             assert.ok(candidateId);
+ 
+-            const partial = await captureInteractionState(page, candidateId);
++            const locator = browser.getCandidateLocator(
++                session,
++                observation.observationId,
++                candidateId
++            );
++            assert.ok(locator);
++            const partial = await captureInteractionState(
++                locator,
++                candidateId
++            );
+             assert.equal(partial?.hitTest, 'receives-events');
+ 
+             await page.evaluate(String.raw`document.querySelector('#overlay')
+                 .setAttribute('style', 'position:fixed;left:20px;top:20px;' +
+                     'width:100px;height:100px;z-index:2')`);
+-            const covered = await captureInteractionState(page, candidateId);
++            const covered = await captureInteractionState(
++                locator,
++                candidateId
++            );
+             assert.equal(covered?.hitTest, 'blocked');
+             assert.equal(covered?.blockedBy?.tag, 'div');
+         } finally {
+@@ -224,3 +343,7 @@ function createRegion(
+         description: '收藏星标'
+     };
+ }
++
++function signal(): AbortSignal {
++    return new AbortController().signal;
++}
+diff --git a/server/test/server/adapters/visual/midscene_visual_candidate_annotator.test.ts b/server/test/server/adapters/visual/midscene_visual_candidate_annotator.test.ts
+deleted file mode 100644
+index c9d811a..0000000
+--- a/server/test/server/adapters/visual/midscene_visual_candidate_annotator.test.ts
++++ /dev/null
+@@ -1,115 +0,0 @@
+-import assert from 'node:assert/strict';
+-import {
+-    describe,
+-    it,
+-} from 'mocha';
+-import {
+-    buildCandidateAnnotationDemand,
+-    parseVisualCandidateAnnotations,
+-    toVisualCandidateBoxes,
+-} from '../../../../src/adapters/visual';
+-
+-describe('MidsceneVisualCandidateAnnotator', () => {
+-    it('要求模型一次返回全部候选框的中文视觉名称', () => {
+-        const demand = buildCandidateAnnotationDemand([
+-            'e1',
+-            'e2'
+-        ]);
+-
+-        assert.match(demand.annotations, /e1、e2/u);
+-        assert.match(demand.annotations, /visualDescription/u);
+-        assert.match(demand.annotations, /不得返回候选 ID 列表之外/u);
+-    });
+-
+-    it('只保留白名单内、字段合法且不重复的视觉标注', () => {
+-        const annotations = parseVisualCandidateAnnotations({
+-            annotations: [
+-                {
+-                    candidateId: 'e1',
+-                    visualDescription: ' 空心五角星图标，收藏按钮 ',
+-                    elementType: ' 图标按钮 ',
+-                    confidence: 0.92
+-                },
+-                {
+-                    candidateId: 'e1',
+-                    visualDescription: '重复结果'
+-                },
+-                {
+-                    candidateId: 'invented',
+-                    visualDescription: '模型虚构的候选'
+-                },
+-                {
+-                    candidateId: 'e2',
+-                    visualDescription: '齿轮图标，设置按钮',
+-                    confidence: 2
+-                },
+-                {
+-                    candidateId: 'e3',
+-                    visualDescription: ''
+-                }
+-            ]
+-        }, new Set([
+-            'e1',
+-            'e2',
+-            'e3'
+-        ]));
+-
+-        assert.deepEqual(annotations, [
+-            {
+-                candidateId: 'e1',
+-                visualDescription: '空心五角星图标，收藏按钮',
+-                elementType: '图标按钮',
+-                confidence: 0.92
+-            },
+-            {
+-                candidateId: 'e2',
+-                visualDescription: '齿轮图标，设置按钮'
+-            }
+-        ]);
+-    });
+-
+-    it('只为当前视口内可见、可用且有边界的候选创建框', () => {
+-        const candidates = [
+-            createCandidate('e1'),
+-            {
+-                ...createCandidate('e2'),
+-                inViewport: false
+-            },
+-            {
+-                ...createCandidate('e3'),
+-                disabled: true
+-            },
+-            {
+-                ...createCandidate('e4'),
+-                boundingBox: undefined
+-            }
+-        ];
+-
+-        assert.deepEqual(toVisualCandidateBoxes(candidates), [{
+-            candidateId: 'e1',
+-            x: 10,
+-            y: 20,
+-            width: 30,
+-            height: 40
+-        }]);
+-    });
+-});
+-
+-function createCandidate(candidateId: string) {
+-    return {
+-        candidateId,
+-        tag: 'button',
+-        disabled: false,
+-        visible: true,
+-        inViewport: true,
+-        attributes: {},
+-        nearbyText: [],
+-        boundingBox: {
+-            x: 10,
+-            y: 20,
+-            width: 30,
+-            height: 40
+-        },
+-        locatorHints: []
+-    };
+-}
+diff --git a/server/test/server/adapters/visual/midscene_visual_grounding_adapter.test.ts b/server/test/server/adapters/visual/midscene_visual_grounding_adapter.test.ts
+index fe13bb8..b0e014b 100644
+--- a/server/test/server/adapters/visual/midscene_visual_grounding_adapter.test.ts
++++ b/server/test/server/adapters/visual/midscene_visual_grounding_adapter.test.ts
+@@ -5,6 +5,7 @@ import type {
+ } from '@ai-web-test-engine/core';
+ import {
+     buildVisualLocatePrompt,
++    toCssViewportBoundingBox,
+ } from '../../../../src/adapters/visual';
+ 
+ describe('MidsceneVisualGroundingAdapter', () => {
+@@ -21,6 +22,20 @@ describe('MidsceneVisualGroundingAdapter', () => {
+         assert.doesNotMatch(prompt, /左上角/u);
+         assert.match(prompt, /不要点击、悬浮、滚动/u);
+     });
++
++    it('Midscene screenshot rect 在 DPR=2 时归一化为 CSS viewport', () => {
++        assert.deepEqual(toCssViewportBoundingBox({
++            left: 20,
++            top: 30,
++            width: 40,
++            height: 50
++        }, 2), {
++            x: 10,
++            y: 15,
++            width: 20,
++            height: 25
++        });
++    });
+ });
+ 
+ function createPerception(): PagePerception {

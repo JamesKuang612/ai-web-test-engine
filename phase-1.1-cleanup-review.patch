@@ -1,0 +1,573 @@
+From ed14fecce9c6cddf79a0b05ec5941b5c94140133 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ethan=2EKuang-=E5=86=B5=E4=BD=B3=E6=AC=A3?=
+ <Ethan.Kuang@fanruan.com>
+Date: Mon, 31 Aug 2026 14:14:14 +0800
+Subject: [PATCH] =?UTF-8?q?fix(core):=20=E6=94=B6=E7=B4=A7=20Phase=201=20g?=
+ =?UTF-8?q?rounding=20=E5=A5=91=E7=BA=A6?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ .../resources/engine-contracts.schema.json    | 119 ++++++++----------
+ modules/engine-core/src/contracts/trace.ts    |   9 +-
+ .../deterministic_target_grounder.ts          |   8 +-
+ .../src/planning/model_action_planner.ts      |   6 +-
+ .../src/planning/semantic_action_schema.ts    |  16 +--
+ .../src/replay/plan_compilation_source.ts     |  54 ++++++--
+ .../deterministic_target_grounder.test.ts     |  24 ++++
+ .../test/model_action_planner.test.ts         |  25 ++++
+ .../test/semantic_action_schema.test.ts       |  20 ++-
+ .../test/trace_plan_compiler.test.ts          |   9 +-
+ .../browser/playwright_browser_adapter.ts     |  12 ++
+ .../playwright_browser_adapter.test.ts        |  10 ++
+ 12 files changed, 207 insertions(+), 105 deletions(-)
+
+diff --git a/modules/engine-core/resources/engine-contracts.schema.json b/modules/engine-core/resources/engine-contracts.schema.json
+index 955fb31c5f487f182ee0018216ef47e1e91d883a..fab12fdf6762ba2058603cf26c04e341ab8a1033 100644
+--- a/modules/engine-core/resources/engine-contracts.schema.json
++++ b/modules/engine-core/resources/engine-contracts.schema.json
+@@ -124,6 +124,59 @@
+             ],
+             "type": "string"
+         },
++        "CandidateResolvedTarget": {
++            "additionalProperties": false,
++            "description": "Phase 1 基于当前 Observation candidate 索引解析出的物理目标。",
++            "properties": {
++                "actionable": {
++                    "type": "boolean"
++                },
++                "candidateId": {
++                    "type": "string"
++                },
++                "confidence": {
++                    "type": "number"
++                },
++                "description": {
++                    "type": "string"
++                },
++                "elementSnapshot": {
++                    "$ref": "#/definitions/ResolvedElementSnapshot"
++                },
++                "evidence": {
++                    "items": {
++                        "type": "string"
++                    },
++                    "type": "array"
++                },
++                "locatorData": {
++                    "$ref": "#/definitions/Record<string,JsonValue>"
++                },
++                "observationId": {
++                    "type": "string"
++                },
++                "strategy": {
++                    "const": "candidate-id",
++                    "type": "string"
++                },
++                "unique": {
++                    "type": "boolean"
++                }
++            },
++            "required": [
++                "actionable",
++                "candidateId",
++                "confidence",
++                "description",
++                "elementSnapshot",
++                "evidence",
++                "locatorData",
++                "observationId",
++                "strategy",
++                "unique"
++            ],
++            "type": "object"
++        },
+         "CompiledActionType": {
+             "description": "可由确定性回放器执行的动作集合。",
+             "enum": [
+@@ -577,7 +630,7 @@
+                     "type": "string"
+                 },
+                 "target": {
+-                    "$ref": "#/definitions/ResolvedTarget"
++                    "$ref": "#/definitions/CandidateResolvedTarget"
+                 }
+             },
+             "required": [
+@@ -1013,68 +1066,6 @@
+             ],
+             "type": "object"
+         },
+-        "ResolvedTarget": {
+-            "additionalProperties": false,
+-            "description": "将规划器的语义目标转换为浏览器可以实际操作的定位结果。",
+-            "properties": {
+-                "actionable": {
+-                    "type": "boolean"
+-                },
+-                "candidateId": {
+-                    "type": "string"
+-                },
+-                "confidence": {
+-                    "type": "number"
+-                },
+-                "description": {
+-                    "type": "string"
+-                },
+-                "elementSnapshot": {
+-                    "$ref": "#/definitions/ResolvedElementSnapshot"
+-                },
+-                "evidence": {
+-                    "items": {
+-                        "type": "string"
+-                    },
+-                    "type": "array"
+-                },
+-                "locatorData": {
+-                    "$ref": "#/definitions/Record<string,JsonValue>"
+-                },
+-                "observationId": {
+-                    "type": "string"
+-                },
+-                "strategy": {
+-                    "enum": [
+-                        "candidate-id",
+-                        "css",
+-                        "label",
+-                        "placeholder",
+-                        "role-name",
+-                        "test-id",
+-                        "text",
+-                        "vision"
+-                    ],
+-                    "type": "string"
+-                },
+-                "unique": {
+-                    "type": "boolean"
+-                }
+-            },
+-            "required": [
+-                "actionable",
+-                "candidateId",
+-                "confidence",
+-                "description",
+-                "elementSnapshot",
+-                "evidence",
+-                "locatorData",
+-                "observationId",
+-                "strategy",
+-                "unique"
+-            ],
+-            "type": "object"
+-        },
+         "RunBudgets": {
+             "additionalProperties": false,
+             "description": "限制单次运行可消耗的时间、动作和模型调用，防止失控循环。",
+@@ -1615,7 +1606,7 @@
+                     "$ref": "#/definitions/EffectVerification"
+                 },
+                 "resolvedTarget": {
+-                    "$ref": "#/definitions/ResolvedTarget"
++                    "$ref": "#/definitions/CandidateResolvedTarget"
+                 },
+                 "retryOf": {
+                     "type": "number"
+diff --git a/modules/engine-core/src/contracts/trace.ts b/modules/engine-core/src/contracts/trace.ts
+index 22acf5ae091bac87403950f7916844c582046d07..6358e648bee0f508b8979c7fb3e0fa9bf1ae10fb 100644
+--- a/modules/engine-core/src/contracts/trace.ts
++++ b/modules/engine-core/src/contracts/trace.ts
+@@ -16,13 +16,13 @@ import type {
+ /** Grounder 绑定目标时保存的完整元素证据，不包含瞬时候选编号。 */
+ export type ResolvedElementSnapshot = Omit<ObservedElement, 'candidateId'>;
+ 
+-/** 将规划器的语义目标转换为浏览器可以实际操作的定位结果。 */
+-export interface ResolvedTarget {
++/** Phase 1 基于当前 Observation candidate 索引解析出的物理目标。 */
++export interface CandidateResolvedTarget {
+     description: string;
+     observationId: string;
+     candidateId: string;
+     elementSnapshot: ResolvedElementSnapshot;
+-    strategy: 'candidate-id' | 'css' | 'label' | 'placeholder' | 'role-name' | 'test-id' | 'text' | 'vision';
++    strategy: 'candidate-id';
+     locatorData: Record<string, JsonValue>;
+     confidence: number;
+     unique: boolean;
+@@ -30,6 +30,9 @@ export interface ResolvedTarget {
+     evidence: string[];
+ }
+ 
++/** 为 Phase 2 的 discriminated union 保留统一物理目标名称。 */
++export type ResolvedTarget = CandidateResolvedTarget;
++
+ /** 浏览器执行一个动作后返回的状态、时间和页面信号。 */
+ export interface ActionResult {
+     status: 'executed' | 'failed' | 'rejected' | 'timed-out';
+diff --git a/modules/engine-core/src/grounding/deterministic_target_grounder.ts b/modules/engine-core/src/grounding/deterministic_target_grounder.ts
+index b985733fe6b9895f2dcb0ee12aaf572fa7b70d39..c05b33ce379ea3f274f05e20e8d6b1980dbf5deb 100644
+--- a/modules/engine-core/src/grounding/deterministic_target_grounder.ts
++++ b/modules/engine-core/src/grounding/deterministic_target_grounder.ts
+@@ -153,10 +153,10 @@ export class DeterministicTargetGrounder implements TargetGrounder {
+             return undefined;
+         }
+ 
+-        const contextRequirements = [
+-            target.scope,
+-            target.relation
+-        ].filter((value): value is string => Boolean(value));
++        // relation 是 Phase 2 的前向兼容元数据；当前没有空间感知能力，
++        // 因此不能把无法解释的 relation 当成目标不存在的证据。
++        const contextRequirements = [ target.scope ]
++            .filter((value): value is string => Boolean(value));
+         const contextValues = [
+             element.name,
+             element.label,
+diff --git a/modules/engine-core/src/planning/model_action_planner.ts b/modules/engine-core/src/planning/model_action_planner.ts
+index c20604540882f8305f63fe8b0f03e6f7e87546d9..46bdbdea5fbda75b22ea2863db96096639b0b017 100644
+--- a/modules/engine-core/src/planning/model_action_planner.ts
++++ b/modules/engine-core/src/planning/model_action_planner.ts
+@@ -67,7 +67,8 @@ export class ModelActionPlanner implements ActionPlanner {
+             'SELECT 必须引用真实下拉框候选元素，并用字符串字面量提供页面显示的精确选项文本。',
+             'CHECK 必须引用真实复选框候选元素，并用布尔字面量明确期望的勾选状态。',
+             'WAIT 只用于页面正在加载或等待明确的异步内容，使用 100～5000 毫秒整数字面量，禁止连续等待。',
+-            'target 只能描述业务语义目标，可以用 scope 或 relation 区分同名元素。',
++            'target 只能描述业务语义目标，Phase 1 仅可用 scope 区分同名元素。',
++            '不得输出 relation；空间关系将在后续感知阶段支持。',
+             '优先沿用 observation 中可见的准确名称、标签或文本，不要改写成模糊同义词。',
+             '不得输出 candidateId、Playwright API、CSS、XPath、坐标或 JavaScript。',
+             '无法唯一描述目标时返回 UNCERTAIN，禁止猜测物理元素。',
+@@ -168,9 +169,6 @@ function redactActionValue(action: SemanticAction): JsonValue {
+                     description: action.target.description,
+                     ...action.target.scope
+                         ? { scope: action.target.scope }
+-                        : {},
+-                    ...action.target.relation
+-                        ? { relation: action.target.relation }
+                         : {}
+                 }
+             }
+diff --git a/modules/engine-core/src/planning/semantic_action_schema.ts b/modules/engine-core/src/planning/semantic_action_schema.ts
+index ceddb9e47dafbdbfed85b23cee62cc376a260579..c0ebddb98741b5991d99815d36cde1c329d5f63f 100644
+--- a/modules/engine-core/src/planning/semantic_action_schema.ts
++++ b/modules/engine-core/src/planning/semantic_action_schema.ts
+@@ -62,8 +62,7 @@ const JSON_SCHEMA: Record<string, JsonValue> = {
+                 required: ['description'],
+                 properties: {
+                     description: { type: 'string', minLength: 1 },
+-                    scope: { type: 'string', minLength: 1 },
+-                    relation: { type: 'string', minLength: 1 }
++                    scope: { type: 'string', minLength: 1 }
+                 }
+             }, { type: 'null' }]
+         },
+@@ -154,8 +153,7 @@ function parseTarget(value: unknown): SemanticTarget {
+     const object = requireObject(value, path);
+     requireAllowedFields(object, [
+         'description',
+-        'scope',
+-        'relation'
++        'scope'
+     ], path);
+     return {
+         description: requireNonEmptyString(
+@@ -164,15 +162,7 @@ function parseTarget(value: unknown): SemanticTarget {
+         ),
+         ...object.scope === undefined
+             ? {}
+-            : { scope: requireNonEmptyString(object.scope, `${ path }.scope`) },
+-        ...object.relation === undefined
+-            ? {}
+-            : {
+-                relation: requireNonEmptyString(
+-                    object.relation,
+-                    `${ path }.relation`
+-                )
+-            }
++            : { scope: requireNonEmptyString(object.scope, `${ path }.scope`) }
+     };
+ }
+ 
+diff --git a/modules/engine-core/src/replay/plan_compilation_source.ts b/modules/engine-core/src/replay/plan_compilation_source.ts
+index 3e7f7a9f1b0a2d18f7be104d7747267000a659b1..1daa63c755682b85e980824930f2423ddf3d6578 100644
+--- a/modules/engine-core/src/replay/plan_compilation_source.ts
++++ b/modules/engine-core/src/replay/plan_compilation_source.ts
+@@ -8,6 +8,7 @@ import type {
+     PageNotice,
+     PageObservation,
+     ResolvedTarget,
++    SemanticAction,
+     TabSummary,
+ } from '../contracts';
+ import {
+@@ -88,8 +89,9 @@ function parseStep(value: unknown, path: string): CompilableTraceStep {
+         ...object.semanticAction === undefined
+             ? {}
+             : {
+-                semanticAction: semanticActionSchema.parse(
+-                    object.semanticAction
++                semanticAction: parsePersistedSemanticAction(
++                    object.semanticAction,
++                    `${ path }.semanticAction`
+                 )
+             },
+         command: actionCommandSchema.parse(object.command),
+@@ -117,6 +119,39 @@ function parseStep(value: unknown, path: string): CompilableTraceStep {
+     };
+ }
+ 
++/** 历史数据允许保留 Phase 2 relation 元数据，但不放宽 Planner Schema。 */
++function parsePersistedSemanticAction(
++    value: unknown,
++    path: string
++): SemanticAction {
++    const object = requireObject(value, path);
++    const target = object.target === undefined || object.target === null
++        ? undefined
++        : requireObject(object.target, `${ path }.target`);
++    const relation = target?.relation === undefined
++        ? undefined
++        : requireString(target.relation, `${ path }.target.relation`);
++    const plannerCompatible = target
++        ? {
++            ...object,
++            target: Object.fromEntries(
++                Object.entries(target).filter(([key]) => key !== 'relation')
++            )
++        }
++        : object;
++    const parsed = semanticActionSchema.parse(plannerCompatible);
++    if (!relation || !parsed.target) {
++        return parsed;
++    }
++    return {
++        ...parsed,
++        target: {
++            ...parsed.target,
++            relation
++        }
++    };
++}
++
+ function parseResolvedTarget(value: unknown, path: string): ResolvedTarget {
+     const object = requireObject(value, path);
+     const snapshotObject = requireObject(
+@@ -145,16 +180,11 @@ function parseResolvedTarget(value: unknown, path: string): ResolvedTarget {
+             `${ path }.candidateId`
+         ),
+         elementSnapshot,
+-        strategy: requireEnum(object.strategy, [
+-            'candidate-id',
+-            'css',
+-            'label',
+-            'placeholder',
+-            'role-name',
+-            'test-id',
+-            'text',
+-            'vision'
+-        ] as const, `${ path }.strategy`),
++        strategy: requireEnum(
++            object.strategy,
++            [ 'candidate-id' ] as const,
++            `${ path }.strategy`
++        ),
+         locatorData: parseJsonRecord(
+             object.locatorData,
+             `${ path }.locatorData`
+diff --git a/modules/engine-core/test/deterministic_target_grounder.test.ts b/modules/engine-core/test/deterministic_target_grounder.test.ts
+index 7ac9a5fc24db2fbc3e92408a7d8c26900aa66251..97f21b0ef204fc53335602e01d8233393109ae20 100644
+--- a/modules/engine-core/test/deterministic_target_grounder.test.ts
++++ b/modules/engine-core/test/deterministic_target_grounder.test.ts
+@@ -99,6 +99,30 @@ describe('DeterministicTargetGrounder 消歧与阻塞', () => {
+         assert.equal(decision.target?.candidateId, 'e2');
+     });
+ 
++    it('忽略历史对象中的 relation 前向兼容元数据', async () => {
++        const action: SemanticAction = {
++            ...createAction('CLICK', '收藏', '应用 11'),
++            target: {
++                description: '收藏',
++                scope: '应用 11',
++                relation: '应用名称左侧'
++            }
++        };
++        const decision = await grounder.ground(
++            action,
++            createObservation([
++                createElement('e1', {
++                    name: '收藏',
++                    nearbyText: ['应用 11']
++                })
++            ]),
++            new AbortController().signal
++        );
++
++        assert.equal(decision.status, 'grounded');
++        assert.equal(decision.target?.candidateId, 'e1');
++    });
++
+     it('同等级重复目标在没有 scope 时返回 ambiguous', async () => {
+         const decision = await grounder.ground(
+             createAction('CLICK', '收藏'),
+diff --git a/modules/engine-core/test/model_action_planner.test.ts b/modules/engine-core/test/model_action_planner.test.ts
+index 7f49637bec9fbe28a591cf7566472f8593c4d8c3..425608794738841e580e043d343bfb81103df67c 100644
+--- a/modules/engine-core/test/model_action_planner.test.ts
++++ b/modules/engine-core/test/model_action_planner.test.ts
+@@ -182,6 +182,31 @@ describe('ModelActionPlanner', () => {
+     });
+ });
+ 
++describe('ModelActionPlanner Phase 1 relation 边界', () => {
++    it('通过 Prompt 和 Schema 同时禁止 Planner 输出 relation', async () => {
++        const adapter = new FakeModelAdapter({
++            type: 'CLICK',
++            target: { description: '收藏星标' },
++            value: null,
++            expectedEffect: '应用变为已收藏',
++            reasonSummary: '点击收藏'
++        });
++        const planner = new ModelActionPlanner(adapter, semanticActionSchema);
++
++        await planner.plan(planInput, new AbortController().signal);
++
++        assert.match(
++            adapter.lastRequest?.systemPrompt ?? '',
++            /不得输出 relation/u
++        );
++        assert.equal(
++            JSON.stringify(semanticActionSchema.jsonSchema)
++                .includes('relation'),
++            false
++        );
++    });
++});
++
+ /** 用固定输出模拟结构化模型调用。 */
+ class FakeModelAdapter implements ModelAdapter {
+     public lastRequest?: ModelRequest;
+diff --git a/modules/engine-core/test/semantic_action_schema.test.ts b/modules/engine-core/test/semantic_action_schema.test.ts
+index e790999bf26d4f5493d59469b7d6eff2a137f010..6f87614fa53724347b58007bbd940fd8e3f12bc2 100644
+--- a/modules/engine-core/test/semantic_action_schema.test.ts
++++ b/modules/engine-core/test/semantic_action_schema.test.ts
+@@ -10,8 +10,7 @@ describe('semanticActionSchema', () => {
+             type: 'CLICK',
+             target: {
+                 description: '收藏星标',
+-                scope: '应用 11',
+-                relation: '应用名称左侧'
++                scope: '应用 11'
+             },
+             value: null,
+             expectedEffect: '应用 11 变为已收藏',
+@@ -20,14 +19,27 @@ describe('semanticActionSchema', () => {
+             type: 'CLICK',
+             target: {
+                 description: '收藏星标',
+-                scope: '应用 11',
+-                relation: '应用名称左侧'
++                scope: '应用 11'
+             },
+             expectedEffect: '应用 11 变为已收藏',
+             reasonSummary: '收藏目标应用'
+         });
+     });
+ 
++    it('Phase 1 拒绝 Planner 输出空间 relation', () => {
++        assert.throws(() => semanticActionSchema.parse({
++            type: 'CLICK',
++            target: {
++                description: '收藏星标',
++                relation: '应用名称左侧'
++            },
++            value: null,
++            expectedEffect: '应用变为已收藏',
++            reasonSummary: '点击收藏'
++        }), (error: unknown) => error instanceof SemanticActionSchemaError
++            && error.path === 'SemanticAction.target.relation');
++    });
++
+     it('拒绝 Planner 输出 candidateId', () => {
+         assert.throws(() => semanticActionSchema.parse({
+             type: 'CLICK',
+diff --git a/modules/engine-core/test/trace_plan_compiler.test.ts b/modules/engine-core/test/trace_plan_compiler.test.ts
+index c50d0e09d228ac6eafe3e043d395e396a61c203f..84b83f56af75a06546a1bd6876693b3eb2d176d2 100644
+--- a/modules/engine-core/test/trace_plan_compiler.test.ts
++++ b/modules/engine-core/test/trace_plan_compiler.test.ts
+@@ -83,7 +83,10 @@ describe('TracePlanCompiler', () => {
+         }, [ element ]);
+         click.semanticAction = {
+             type: 'CLICK',
+-            target: { description: '语义登录按钮' },
++            target: {
++                description: '语义登录按钮',
++                relation: '表单底部'
++            },
+             expectedEffect: '页面进入工作台',
+             reasonSummary: '提交登录'
+         };
+@@ -104,6 +107,10 @@ describe('TracePlanCompiler', () => {
+             source.steps[1]?.resolvedTarget?.elementSnapshot.name,
+             '登录'
+         );
++        assert.equal(
++            source.steps[1]?.semanticAction?.target?.relation,
++            '表单底部'
++        );
+         const plan = new TracePlanCompiler().compile(source);
+         assert.equal(plan.steps[1]?.target?.description, '语义登录按钮');
+         assert.equal(plan.steps[1]?.target?.identity.name, '登录');
+diff --git a/server/src/adapters/browser/playwright_browser_adapter.ts b/server/src/adapters/browser/playwright_browser_adapter.ts
+index 77a2797b4a65fbc41e03b031fef4c4cc882c62c5..6e2bb3474ee1c41b66d9dc31b23d67d9c45ad707 100644
+--- a/server/src/adapters/browser/playwright_browser_adapter.ts
++++ b/server/src/adapters/browser/playwright_browser_adapter.ts
+@@ -584,6 +584,12 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
+         target: ResolvedTarget,
+         startedAt: string
+     ): ActionResult | undefined {
++        if (target.strategy !== 'candidate-id') {
++            return this.createActionResult(startedAt, 'rejected', false, {
++                code: 'INVALID_RESOLVED_TARGET',
++                message: 'Phase 1 只接受 candidate-id ResolvedTarget。'
++            });
++        }
+         if (session.elementIndex?.observationId !== target.observationId) {
+             return this.createActionResult(startedAt, 'rejected', false, {
+                 code: 'STALE_RESOLVED_TARGET',
+@@ -596,6 +602,12 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
+                 message: 'ResolvedTarget 未证明目标唯一，已拒绝执行。'
+             });
+         }
++        if (!target.actionable) {
++            return this.createActionResult(startedAt, 'rejected', false, {
++                code: 'INVALID_RESOLVED_TARGET',
++                message: 'ResolvedTarget 当前不可执行，已拒绝执行。'
++            });
++        }
+         return undefined;
+     }
+ 
+diff --git a/server/test/server/adapters/browser/playwright_browser_adapter.test.ts b/server/test/server/adapters/browser/playwright_browser_adapter.test.ts
+index 0b948adb6d0256b8c73b4c511903f4f0439284b3..ec095c9cb48dbc86d84c3ad6c9820ffb72938e51 100644
+--- a/server/test/server/adapters/browser/playwright_browser_adapter.test.ts
++++ b/server/test/server/adapters/browser/playwright_browser_adapter.test.ts
+@@ -322,6 +322,16 @@ describe('PlaywrightBrowserAdapter', () => {
+             assert.equal(stale.status, 'rejected');
+             assert.equal(stale.error?.code, 'STALE_RESOLVED_TARGET');
+ 
++            const notActionable = await adapter.execute(session, command, {
++                ...target,
++                actionable: false
++            });
++            assert.equal(notActionable.status, 'rejected');
++            assert.equal(
++                notActionable.error?.code,
++                'INVALID_RESOLVED_TARGET'
++            );
++
+             const result = await adapter.execute(session, command, target);
+             const after = await adapter.observe(session);
+             assert.equal(result.status, 'executed');
+-- 
+2.55.0.windows.2
+

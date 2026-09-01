@@ -1,6 +1,6 @@
 schemaVersion: 1
-id: test-70b977ef
-name: 验证创建应用
+id: v
+name: 八十八v
 environmentId: jiandaoyun-test
 startUrl: https://www.jiandaoyun.com/dashboard#/
 action: ""
