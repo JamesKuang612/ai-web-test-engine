@@ -5,6 +5,10 @@ import {
 } from '../src';
 
 describe('semanticActionSchema', () => {
+    it('所有对象节点满足 Codex strict required 约束', () => {
+        assertStrictObjectSchemas(semanticActionSchema.jsonSchema);
+    });
+
     it('主 Planner Schema 不开放 Recovery-only 动作', () => {
         [ 'BACK', 'SCROLL', 'INSPECT', 'NAVIGATE' ].forEach((type) => {
             assert.throws(() => semanticActionSchema.parse({
@@ -35,6 +39,23 @@ describe('semanticActionSchema', () => {
             },
             expectedEffect: '应用 11 变为已收藏',
             reasonSummary: '收藏目标应用'
+        });
+    });
+
+    it('把 strict schema 的 nullable scope 还原为缺省 scope', () => {
+        assert.deepEqual(semanticActionSchema.parse({
+            type: 'CLICK',
+            target: {
+                description: '新建应用',
+                scope: null
+            },
+            value: null,
+            expectedEffect: null,
+            reasonSummary: '点击新建应用'
+        }), {
+            type: 'CLICK',
+            target: { description: '新建应用' },
+            reasonSummary: '点击新建应用'
         });
     });
 
@@ -78,3 +99,34 @@ describe('semanticActionSchema', () => {
             && error.path === 'SemanticAction.risk');
     });
 });
+
+function assertStrictObjectSchemas(value: unknown, path = 'schema'): void {
+    if (Array.isArray(value)) {
+        value.forEach((item, index) => assertStrictObjectSchemas(
+            item,
+            `${ path }[${ index }]`
+        ));
+        return;
+    }
+    if (typeof value !== 'object' || value === null) {
+        return;
+    }
+    const record = value as Record<string, unknown>;
+    if (
+        record.type === 'object'
+        && typeof record.properties === 'object'
+        && record.properties !== null
+    ) {
+        const properties = Object.keys(
+            record.properties as Record<string, unknown>
+        ).sort();
+        assert.deepEqual(
+            Array.isArray(record.required) ? [ ...record.required ].sort() : [],
+            properties,
+            `${ path }.required 必须包含 properties 的全部字段`
+        );
+    }
+    Object.entries(record).forEach(([ key, item ]) => {
+        assertStrictObjectSchemas(item, `${ path }.${ key }`);
+    });
+}

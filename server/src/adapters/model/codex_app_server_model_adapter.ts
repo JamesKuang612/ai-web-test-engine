@@ -1,8 +1,13 @@
 import type {
     ModelAdapter,
+    ModelProtocolSchemaIssue,
     ModelRequest,
     ModelResult,
     RuntimeSchema,
+} from '@ai-web-test-engine/core';
+import {
+    ClassifiedModelFailure,
+    RuntimeSchemaValidationError,
 } from '@ai-web-test-engine/core';
 import {
     CodexAppServerError,
@@ -11,7 +16,11 @@ import {
 import type {
     CodexAppServerClient,
     CodexReasoningEffort,
+    CodexStructuredTurnOutput,
 } from './codex_app_server_client';
+import {
+    createSafeModelProtocolDiagnostic,
+} from './model_protocol_diagnostic';
 
 export interface CodexAppServerModelAdapterOptions {
     model: string;
@@ -74,54 +83,125 @@ export class CodexAppServerModelAdapter implements ModelAdapter {
                 maxOutputTokens: request.maxOutputTokens,
                 outputSchema: schema.jsonSchema
             }, requestSignal);
-            let rawValue: unknown;
-            try {
-                rawValue = JSON.parse(output.text) as unknown;
-            } catch {
-                throw new CodexAppServerError(
-                    'INVALID_RESPONSE',
-                    'Codex App Server 最终输出不是合法 JSON。'
-                );
-            }
-
-            let value: T;
-            try {
-                value = schema.parse(rawValue);
-            } catch {
-                throw new CodexAppServerError(
-                    'SCHEMA_VALIDATION_FAILED',
-                    `Codex App Server 返回内容不符合 ${ schema.name } Schema。`
-                );
-            }
-
-            return {
-                model: output.model,
-                requestId: output.turnId,
-                value
-            };
+            return parseCodexOutput(output, request, schema);
         } catch (error) {
             if (signal.aborted) {
                 signal.throwIfAborted();
             }
-            if (error instanceof CodexAppServerError) {
+            if (error instanceof ClassifiedModelFailure) {
                 throw error;
             }
             if (timeoutController.signal.aborted) {
-                throw new CodexAppServerError(
-                    'TIMEOUT',
+                throw classifiedUnavailable(
+                    request,
+                    'model-timeout',
                     'Codex App Server 模型调用超时。'
                 );
             }
-            throw new CodexAppServerError(
-                'PROTOCOL_ERROR',
-                `Codex App Server 调用异常：${
-                    error instanceof Error
-                        ? error.message
-                        : '未知错误'
-                }`
-            );
+            if (error instanceof CodexAppServerError) {
+                if (error.code === 'TIMEOUT') {
+                    throw classifiedUnavailable(
+                        request,
+                        'model-timeout',
+                        error.message
+                    );
+                }
+                throw classifiedUnavailable(
+                    request,
+                    'provider-unavailable',
+                    error.message
+                );
+            }
+            throw error;
         } finally {
             clearTimeout(timeoutHandle);
         }
     };
+}
+
+function parseCodexOutput<T>(
+    output: CodexStructuredTurnOutput,
+    request: ModelRequest,
+    schema: RuntimeSchema<T>
+): ModelResult<T> {
+    let rawValue: unknown;
+    try {
+        rawValue = JSON.parse(output.text) as unknown;
+    } catch {
+        throw new ClassifiedModelFailure(
+            'invalid-json',
+            'Codex App Server 最终输出不是合法 JSON。',
+            createSafeModelProtocolDiagnostic({
+                modelRole: request.modelRole ?? 'action-planner',
+                phase: request.protocolPhase ?? 'initial',
+                failureType: 'invalid-json',
+                model: output.model,
+                requestId: output.turnId,
+                rawOutput: output.text,
+                schemaIssues: [{
+                    path: '$',
+                    code: 'invalid-json',
+                    message: '模型最终输出无法解析为 JSON。'
+                }]
+            })
+        );
+    }
+    let value: T;
+    try {
+        value = schema.parse(rawValue);
+    } catch (error) {
+        throw new ClassifiedModelFailure(
+            'schema-invalid',
+            `Codex App Server 返回内容不符合 ${ schema.name } Schema。`,
+            createSafeModelProtocolDiagnostic({
+                modelRole: request.modelRole ?? 'action-planner',
+                phase: request.protocolPhase ?? 'initial',
+                failureType: 'schema-invalid',
+                model: output.model,
+                requestId: output.turnId,
+                rawOutput: output.text,
+                parsedJson: rawValue,
+                schemaIssues: schemaIssues(error)
+            })
+        );
+    }
+    return {
+        model: output.model,
+        requestId: output.turnId,
+        value
+    };
+}
+
+function schemaIssues(error: unknown): ModelProtocolSchemaIssue[] {
+    if (error instanceof RuntimeSchemaValidationError) {
+        return error.issues;
+    }
+    return [{
+        path: '$',
+        code: 'schema-parse-failed',
+        message: error instanceof Error
+            ? error.message
+            : 'RuntimeSchema parser 未提供失败详情。'
+    }];
+}
+
+function classifiedUnavailable(
+    request: ModelRequest,
+    failureType: 'model-timeout' | 'provider-unavailable',
+    message: string
+): ClassifiedModelFailure {
+    return new ClassifiedModelFailure(
+        failureType,
+        message,
+        createSafeModelProtocolDiagnostic({
+            modelRole: request.modelRole ?? 'action-planner',
+            phase: request.protocolPhase ?? 'initial',
+            failureType,
+            schemaIssues: [{
+                path: '$provider',
+                code: failureType,
+                message
+            }]
+        })
+    );
 }

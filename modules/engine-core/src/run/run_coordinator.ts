@@ -51,6 +51,7 @@ import type {
     BrowserSession,
     BrowserStartOptions,
     EnvironmentValueResolver,
+    ModelProtocolDiagnostic,
     PageStabilityPort,
     RunEventPublisher,
 } from '../ports';
@@ -838,6 +839,20 @@ export class RunCoordinator implements ExecutionEngine {
                     signal
                 );
             },
+            recordRecoveryProtocolDiagnostic: async (
+                diagnostic,
+                stepId,
+                recoveryAttempt,
+                signal
+            ) => {
+                await this.recordRecoveryProtocolDiagnostic(
+                    context,
+                    diagnostic,
+                    stepId,
+                    recoveryAttempt,
+                    signal
+                );
+            },
             consumeModelCalls: (count) => {
                 context.modelCallCount += count;
                 runtime.counters.modelCallCount = context.modelCallCount;
@@ -868,6 +883,25 @@ export class RunCoordinator implements ExecutionEngine {
                 perceptionId: perception.perceptionId,
                 capturedAt: perception.capturedAt
             })
+        );
+        context.evidence.push(reference);
+    }
+
+    /** 持久化 provider 边界已经脱敏、截断的 Recovery 模型协议诊断。 */
+    private async recordRecoveryProtocolDiagnostic(
+        context: RunExecutionContext,
+        diagnostic: ModelProtocolDiagnostic,
+        stepId: string,
+        recoveryAttempt: number,
+        signal: AbortSignal
+    ): Promise<void> {
+        signal.throwIfAborted();
+        const reference = await this.artifactStore.saveJson(
+            context.runId,
+            `recovery-protocol-${ stepId }-${ recoveryAttempt }-${
+                diagnostic.phase
+            }`,
+            toJsonValue(diagnostic)
         );
         context.evidence.push(reference);
     }

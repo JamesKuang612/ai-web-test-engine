@@ -53,10 +53,10 @@ const JSON_SCHEMA: Record<string, JsonValue> = {
             anyOf: [{
                 type: 'object',
                 additionalProperties: false,
-                required: ['description'],
+                required: ['description', 'scope'],
                 properties: {
                     description: { type: 'string', minLength: 1 },
-                    scope: { type: 'string', minLength: 1 }
+                    scope: { type: ['string', 'null'], minLength: 1 }
                 }
             }, { type: 'null' }]
         },
@@ -154,7 +154,7 @@ function parseTarget(value: unknown): SemanticTarget {
             object.description,
             `${ path }.description`
         ),
-        ...object.scope === undefined
+        ...object.scope === undefined || object.scope === null
             ? {}
             : { scope: requireNonEmptyString(object.scope, `${ path }.scope`) }
     };

@@ -1,9 +1,17 @@
 import type {
     ModelAdapter,
+    ModelProtocolSchemaIssue,
     ModelRequest,
     ModelResult,
     RuntimeSchema,
 } from '@ai-web-test-engine/core';
+import {
+    ClassifiedModelFailure,
+    RuntimeSchemaValidationError,
+} from '@ai-web-test-engine/core';
+import {
+    createSafeModelProtocolDiagnostic,
+} from './model_protocol_diagnostic';
 
 export type FineOneApiProtocol =
     | 'chat_completions'
@@ -225,8 +233,9 @@ export class FineOneModelAdapter implements ModelAdapter {
         signal.throwIfAborted();
 
         if (!this.apiKey) {
-            throw new FineOneModelAdapterError(
-                'MISSING_API_KEY',
+            throw classifiedFineOneFailure(
+                request,
+                'provider-unavailable',
                 'FineOneAPI API Key 尚未配置。'
             );
         }
@@ -250,10 +259,19 @@ export class FineOneModelAdapter implements ModelAdapter {
             let value: T;
             try {
                 value = schema.parse(parsedResponse.value);
-            } catch {
-                throw new FineOneModelAdapterError(
-                    'SCHEMA_VALIDATION_FAILED',
-                    `FineOneAPI 返回内容不符合 ${ schema.name } Schema。`
+            } catch (error) {
+                throw new ClassifiedModelFailure(
+                    'schema-invalid',
+                    `FineOneAPI 返回内容不符合 ${ schema.name } Schema。`,
+                    createSafeModelProtocolDiagnostic({
+                        modelRole: request.modelRole ?? 'action-planner',
+                        phase: request.protocolPhase ?? 'initial',
+                        failureType: 'schema-invalid',
+                        model: parsedResponse.model,
+                        requestId: parsedResponse.requestId,
+                        parsedJson: parsedResponse.value,
+                        schemaIssues: fineOneSchemaIssues(error)
+                    })
                 );
             }
 
@@ -266,23 +284,28 @@ export class FineOneModelAdapter implements ModelAdapter {
             if (signal.aborted) {
                 signal.throwIfAborted();
             }
-            if (error instanceof FineOneModelAdapterError) {
+            if (error instanceof ClassifiedModelFailure) {
                 throw error;
             }
             if (timeoutController.signal.aborted) {
-                throw new FineOneModelAdapterError(
-                    'TIMEOUT',
+                throw classifiedFineOneFailure(
+                    request,
+                    'model-timeout',
                     'FineOneAPI 请求超时。'
                 );
             }
-            throw new FineOneModelAdapterError(
-                'NETWORK_ERROR',
-                `FineOneAPI 请求异常：${
-                    error instanceof Error
-                        ? error.message
-                        : '未知网络错误'
-                }`
-            );
+            if (error instanceof FineOneModelAdapterError) {
+                throw classifiedFineOneFailure(
+                    request,
+                    error.code === 'TIMEOUT'
+                        ? 'model-timeout'
+                        : error.code === 'INVALID_RESPONSE'
+                            ? 'invalid-json'
+                            : 'provider-unavailable',
+                    error.message
+                );
+            }
+            throw error;
         } finally {
             clearTimeout(timeoutHandle);
         }
@@ -567,4 +590,38 @@ export class FineOneModelAdapter implements ModelAdapter {
             ? outputTexts.join('')
             : undefined;
     }
+}
+
+function fineOneSchemaIssues(error: unknown): ModelProtocolSchemaIssue[] {
+    if (error instanceof RuntimeSchemaValidationError) {
+        return error.issues;
+    }
+    return [{
+        path: '$',
+        code: 'schema-parse-failed',
+        message: error instanceof Error
+            ? error.message
+            : 'RuntimeSchema parser 未提供失败详情。'
+    }];
+}
+
+function classifiedFineOneFailure(
+    request: ModelRequest,
+    failureType: 'invalid-json' | 'model-timeout' | 'provider-unavailable',
+    message: string
+): ClassifiedModelFailure {
+    return new ClassifiedModelFailure(
+        failureType,
+        message,
+        createSafeModelProtocolDiagnostic({
+            modelRole: request.modelRole ?? 'action-planner',
+            phase: request.protocolPhase ?? 'initial',
+            failureType,
+            schemaIssues: [{
+                path: '$provider',
+                code: failureType,
+                message
+            }]
+        })
+    );
 }

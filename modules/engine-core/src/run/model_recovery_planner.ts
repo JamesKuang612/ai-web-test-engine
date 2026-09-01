@@ -5,10 +5,17 @@ import type {
     SemanticTarget,
 } from '../contracts';
 import type {
+    ModelProtocolDiagnostic,
     ModelAdapter,
+    ModelRequest,
     RuntimeSchema,
 } from '../ports';
+import {
+    ClassifiedModelFailure,
+    RuntimeSchemaValidationError,
+} from '../ports';
 import type {
+    RecoveryPlannerAttempt,
     RecoveryPlannerPort,
 } from './recovery_ports';
 
@@ -32,8 +39,8 @@ export class ModelRecoveryPlanner implements RecoveryPlannerPort {
     public async plan(
         input: RecoveryPlannerInput,
         signal: AbortSignal
-    ): Promise<RecoveryDecision> {
-        const result = await this.modelAdapter.generateStructured({
+    ): Promise<RecoveryPlannerAttempt> {
+        return await this.generate({
             systemPrompt: [
                 '你是 Web 测试单步恢复规划器，不是主任务规划器。',
                 '原始 primaryAction 永远不变；只能提出低风险、可逆、临时状态恢复。',
@@ -44,78 +51,224 @@ export class ModelRecoveryPlanner implements RecoveryPlannerPort {
             ].join('\n'),
             userPrompt: JSON.stringify(input, null, 2),
             timeoutMs: this.options.timeoutMs,
-            maxOutputTokens: this.options.maxOutputTokens
-        }, recoveryDecisionSchema, signal);
-        return result.value;
+            maxOutputTokens: this.options.maxOutputTokens,
+            modelRole: 'recovery-planner',
+            protocolPhase: 'initial'
+        }, signal);
+    }
+
+    public async repairProtocol(
+        diagnostic: ModelProtocolDiagnostic,
+        signal: AbortSignal
+    ): Promise<RecoveryPlannerAttempt> {
+        return await this.generate({
+            systemPrompt: [
+                '你只负责修复 RecoveryDecision JSON 的协议结构。',
+                '不得重新规划策略，不得改变原动作意图、目标或理由。',
+                '仅根据校验错误调整字段、null 和对象结构。',
+                '只输出符合给定 JSON Schema 的 JSON。'
+            ].join('\n'),
+            userPrompt: JSON.stringify({
+                originalDecision: diagnostic.parsedJson ??
+                    diagnostic.rawOutputPreview,
+                schemaIssues: diagnostic.schemaIssues
+            }, null, 2),
+            timeoutMs: this.options.timeoutMs,
+            maxOutputTokens: this.options.maxOutputTokens,
+            modelRole: 'recovery-planner',
+            protocolPhase: 'repair'
+        }, signal);
+    }
+
+    private async generate(
+        request: ModelRequest,
+        signal: AbortSignal
+    ): Promise<RecoveryPlannerAttempt> {
+        try {
+            const result = await this.modelAdapter.generateStructured(
+                request,
+                recoveryDecisionSchema,
+                signal
+            );
+            return { status: 'decision', decision: result.value };
+        } catch (error) {
+            if (!(error instanceof ClassifiedModelFailure)) {
+                throw error;
+            }
+            if (
+                error.failureType === 'invalid-json'
+                || error.failureType === 'schema-invalid'
+            ) {
+                return {
+                    status: 'protocol-invalid',
+                    diagnostic: error.diagnostic
+                };
+            }
+            return {
+                status: 'unavailable',
+                reason: error.message,
+                diagnostic: error.diagnostic
+            };
+        }
     }
 }
 
 const recoveryDecisionSchema: RuntimeSchema<RecoveryDecision> = {
     name: 'RecoveryDecision',
     jsonSchema: {
-        oneOf: [
-            {
-                type: 'object',
-                additionalProperties: false,
-                required: [ 'kind', 'action' ],
-                properties: {
-                    kind: { const: 'recover' },
-                    action: {
-                        type: 'object',
-                        additionalProperties: false,
-                        required: [ 'type', 'reasonSummary' ],
-                        properties: {
-                            type: {
-                                enum: [
-                                    'CLEAR', 'CLICK', 'HOVER', 'SCROLL',
-                                    'WAIT', 'BACK', 'REOBSERVE'
-                                ]
-                            },
-                            target: {
-                                type: 'object',
-                                additionalProperties: false,
-                                required: [ 'description' ],
-                                properties: {
-                                    description: { type: 'string' },
-                                    scope: { type: 'string' }
-                                }
-                            },
-                            direction: { enum: [ 'up', 'down' ] },
-                            amount: { enum: [ 'small', 'medium', 'page' ] },
-                            duration: { enum: [ 'short', 'medium' ] },
-                            expectedTransientEffect: { type: 'string' },
-                            reasonSummary: { type: 'string' }
-                        }
-                    }
-                }
+        type: 'object',
+        additionalProperties: false,
+        required: [ 'kind', 'action', 'reason' ],
+        properties: {
+            kind: {
+                type: 'string',
+                enum: [ 'recover', 'stop' ]
             },
-            {
-                type: 'object',
-                additionalProperties: false,
-                required: [ 'kind', 'reason' ],
-                properties: {
-                    kind: { const: 'stop' },
-                    reason: { type: 'string' }
-                }
-            }
-        ]
+            action: {
+                anyOf: [
+                    targetedRecoveryActionSchema(),
+                    scrollRecoveryActionSchema(),
+                    waitRecoveryActionSchema(),
+                    targetlessRecoveryActionSchema(),
+                    { type: 'null' }
+                ]
+            },
+            reason: { type: [ 'string', 'null' ] }
+        }
     },
     parse: parseRecoveryDecision
 };
 
+function targetedRecoveryActionSchema() {
+    return {
+        type: 'object',
+        additionalProperties: false,
+        required: [
+            'type', 'target', 'expectedTransientEffect', 'reasonSummary'
+        ],
+        properties: {
+            type: {
+                type: 'string',
+                enum: [ 'CLEAR', 'CLICK', 'HOVER' ]
+            },
+            target: {
+                type: 'object',
+                additionalProperties: false,
+                required: [ 'description', 'scope' ],
+                properties: {
+                    description: { type: 'string', minLength: 1 },
+                    scope: { type: [ 'string', 'null' ], minLength: 1 }
+                }
+            },
+            expectedTransientEffect: {
+                type: [ 'string', 'null' ], minLength: 1
+            },
+            reasonSummary: { type: 'string', minLength: 1 }
+        }
+    };
+}
+
+function scrollRecoveryActionSchema() {
+    return {
+        type: 'object',
+        additionalProperties: false,
+        required: [
+            'type', 'direction', 'amount', 'expectedTransientEffect',
+            'reasonSummary'
+        ],
+        properties: {
+            type: { type: 'string', const: 'SCROLL' },
+            direction: { type: 'string', enum: [ 'up', 'down' ] },
+            amount: {
+                type: 'string',
+                enum: [ 'small', 'medium', 'page' ]
+            },
+            expectedTransientEffect: {
+                type: [ 'string', 'null' ], minLength: 1
+            },
+            reasonSummary: { type: 'string', minLength: 1 }
+        }
+    };
+}
+
+function waitRecoveryActionSchema() {
+    return {
+        type: 'object',
+        additionalProperties: false,
+        required: [
+            'type', 'duration', 'expectedTransientEffect', 'reasonSummary'
+        ],
+        properties: {
+            type: { type: 'string', const: 'WAIT' },
+            duration: {
+                type: 'string',
+                enum: [ 'short', 'medium' ]
+            },
+            expectedTransientEffect: {
+                type: [ 'string', 'null' ], minLength: 1
+            },
+            reasonSummary: { type: 'string', minLength: 1 }
+        }
+    };
+}
+
+function targetlessRecoveryActionSchema() {
+    return {
+        type: 'object',
+        additionalProperties: false,
+        required: [ 'type', 'expectedTransientEffect', 'reasonSummary' ],
+        properties: {
+            type: {
+                type: 'string',
+                enum: [ 'BACK', 'REOBSERVE' ]
+            },
+            expectedTransientEffect: {
+                type: [ 'string', 'null' ], minLength: 1
+            },
+            reasonSummary: { type: 'string', minLength: 1 }
+        }
+    };
+}
+
 function parseRecoveryDecision(value: unknown): RecoveryDecision {
     const object = requireObject(value, 'RecoveryDecision');
     if (object.kind === 'stop') {
-        requireFields(object, [ 'kind', 'reason' ], 'RecoveryDecision');
+        requireFields(
+            object,
+            [ 'kind', 'action', 'reason' ],
+            'RecoveryDecision'
+        );
+        if (object.action !== null) {
+            invalid(
+                'RecoveryDecision.action',
+                'invalid-stop-action',
+                'stop.action 必须为 null。'
+            );
+        }
         return {
             kind: 'stop',
             reason: requireString(object.reason, 'RecoveryDecision.reason')
         };
     }
     if (object.kind !== 'recover') {
-        throw new Error('RecoveryDecision.kind 必须是 recover 或 stop。');
+        invalid(
+            'RecoveryDecision.kind',
+            'invalid-kind',
+            '必须是 recover 或 stop。'
+        );
     }
-    requireFields(object, [ 'kind', 'action' ], 'RecoveryDecision');
+    requireFields(
+        object,
+        [ 'kind', 'action', 'reason' ],
+        'RecoveryDecision'
+    );
+    if (object.reason !== null) {
+        invalid(
+            'RecoveryDecision.reason',
+            'invalid-recover-reason',
+            'recover.reason 必须为 null。'
+        );
+    }
     return {
         kind: 'recover',
         action: parseRecoveryAction(object.action)
@@ -127,6 +280,7 @@ function parseRecoveryAction(value: unknown): RecoveryAction {
     const type = requireString(object.type, 'RecoveryDecision.action.type');
     const common = {
         ...object.expectedTransientEffect === undefined
+            || object.expectedTransientEffect === null
             ? {}
             : {
                 expectedTransientEffect: requireString(
@@ -152,10 +306,15 @@ function parseRecoveryAction(value: unknown): RecoveryAction {
         ], 'RecoveryDecision.action', true);
         return {
             type,
-            direction: requireEnum(object.direction, [ 'up', 'down' ]),
+            direction: requireEnum(
+                object.direction,
+                [ 'up', 'down' ],
+                'RecoveryDecision.action.direction'
+            ),
             amount: requireEnum(
                 object.amount,
-                [ 'small', 'medium', 'page' ]
+                [ 'small', 'medium', 'page' ],
+                'RecoveryDecision.action.amount'
             ),
             ...common
         };
@@ -166,7 +325,11 @@ function parseRecoveryAction(value: unknown): RecoveryAction {
         ], 'RecoveryDecision.action', true);
         return {
             type,
-            duration: requireEnum(object.duration, [ 'short', 'medium' ]),
+            duration: requireEnum(
+                object.duration,
+                [ 'short', 'medium' ],
+                'RecoveryDecision.action.duration'
+            ),
             ...common
         };
     }
@@ -176,7 +339,11 @@ function parseRecoveryAction(value: unknown): RecoveryAction {
         ], 'RecoveryDecision.action', true);
         return { type, ...common };
     }
-    throw new Error(`不支持的 RecoveryAction：${ type }`);
+    invalid(
+        'RecoveryDecision.action.type',
+        'unsupported-action',
+        `不支持的 RecoveryAction：${ type }`
+    );
 }
 
 function parseTarget(value: unknown): SemanticTarget {
@@ -188,7 +355,7 @@ function parseTarget(value: unknown): SemanticTarget {
             object.description,
             'RecoveryDecision.action.target.description'
         ),
-        ...object.scope === undefined
+        ...object.scope === undefined || object.scope === null
             ? {}
             : { scope: requireString(object.scope, 'target.scope') }
     };
@@ -196,7 +363,7 @@ function parseTarget(value: unknown): SemanticTarget {
 
 function requireObject(value: unknown, path: string): Record<string, unknown> {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-        throw new Error(`${ path } 必须是对象。`);
+        invalid(path, 'expected-object', '必须是对象。');
     }
     return value as Record<string, unknown>;
 }
@@ -209,26 +376,46 @@ function requireFields(
 ): void {
     const unexpected = Object.keys(object).find((key) => !fields.includes(key));
     if (unexpected) {
-        throw new Error(`${ path }.${ unexpected } 不允许出现。`);
+        invalid(
+            `${ path }.${ unexpected }`,
+            'unexpected-field',
+            '字段不允许出现。'
+        );
     }
     if (!optionalAllowed) {
         const missing = fields.find((field) => !(field in object));
         if (missing) {
-            throw new Error(`${ path }.${ missing } 缺失。`);
+            invalid(
+                `${ path }.${ missing }`,
+                'missing-field',
+                '字段缺失。'
+            );
         }
     }
 }
 
 function requireString(value: unknown, path: string): string {
     if (typeof value !== 'string' || !value.trim()) {
-        throw new Error(`${ path } 必须是非空字符串。`);
+        invalid(path, 'expected-non-empty-string', '必须是非空字符串。');
     }
     return value;
 }
 
-function requireEnum<T extends string>(value: unknown, allowed: T[]): T {
+function requireEnum<T extends string>(
+    value: unknown,
+    allowed: T[],
+    path: string
+): T {
     if (typeof value !== 'string' || !allowed.includes(value as T)) {
-        throw new Error(`值不在允许集合中：${ String(value) }`);
+        invalid(
+            path,
+            'invalid-enum',
+            `值不在允许集合中：${ String(value) }`
+        );
     }
     return value as T;
+}
+
+function invalid(path: string, code: string, message: string): never {
+    throw new RuntimeSchemaValidationError([{ path, code, message }]);
 }

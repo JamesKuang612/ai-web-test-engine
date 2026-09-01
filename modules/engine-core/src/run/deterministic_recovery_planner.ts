@@ -2,15 +2,12 @@ import type {
     RecoveryDecision,
     RecoveryPlannerInput,
 } from '../contracts';
-import type {
-    RecoveryPlannerPort,
-} from './recovery_ports';
 import {
     isSpecificRecoveryTarget,
 } from './recovery_target_quality_policy';
 
 /** 只提出当前感知能够明确证明安全且通用的 transient 恢复。 */
-export class DeterministicRecoveryPlanner implements RecoveryPlannerPort {
+export class DeterministicRecoveryPlanner {
     public async plan(
         input: RecoveryPlannerInput
     ): Promise<RecoveryDecision> {

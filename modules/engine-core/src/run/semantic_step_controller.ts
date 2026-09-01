@@ -17,6 +17,9 @@ import type {
     TestIntent,
 } from '../contracts';
 import type {
+    ModelProtocolDiagnostic,
+} from '../ports';
+import type {
     PageSettlingResult,
 } from './page_settler';
 import type {
@@ -35,6 +38,7 @@ import {
     PrimaryRetryPolicy,
 } from './primary_retry_policy';
 import type {
+    RecoveryPlannerAttempt,
     RecoveryPlannerPort,
     RecoverySafetyPolicy,
 } from './recovery_ports';
@@ -96,16 +100,23 @@ export interface SemanticStepRuntimePort<TRecord> {
         attempt: number,
         signal: AbortSignal
     ) => Promise<void>;
+    recordRecoveryProtocolDiagnostic: (
+        diagnostic: ModelProtocolDiagnostic,
+        stepId: string,
+        recoveryAttempt: number,
+        signal: AbortSignal
+    ) => Promise<void>;
     consumeModelCalls: (
         count: number,
         purpose: 'primary-visual' | 'recovery-planner' | 'recovery-visual' |
-            'step-progress'
+            'recovery-protocol-repair' | 'step-progress'
     ) => void;
 }
 
 export interface SemanticStepControllerOptions {
     maxRecoveryAttemptsPerStep: number;
     maxRecoveryPlannerCallsPerStep: number;
+    maxRecoveryProtocolRepairCallsPerStep: number;
     maxRecoveryVisualCallsPerStep: number;
     maxStepProgressModelCallsPerStep: number;
     maxSameRecoveryAction: number;
@@ -122,6 +133,7 @@ export interface SemanticStepControllerResult<TRecord> {
 const DEFAULT_OPTIONS: SemanticStepControllerOptions = {
     maxRecoveryAttemptsPerStep: 3,
     maxRecoveryPlannerCallsPerStep: 1,
+    maxRecoveryProtocolRepairCallsPerStep: 1,
     maxRecoveryVisualCallsPerStep: 1,
     maxStepProgressModelCallsPerStep: 1,
     maxSameRecoveryAction: 1,
@@ -183,7 +195,7 @@ export class SemanticStepController<TRecord> {
     }
 
     // Recovery loop keeps its bounded state transitions together for auditability.
-    // eslint-disable-next-line max-lines-per-function
+    // eslint-disable-next-line complexity, max-lines-per-function
     private async recover(
         step: SemanticStep,
         testIntent: TestIntent,
@@ -199,18 +211,29 @@ export class SemanticStepController<TRecord> {
                 step,
                 testIntent,
                 state,
+                attempt,
                 signal
             );
-            if (decision.kind === 'stop') {
+            if (decision.status === 'unavailable') {
+                return this.result(
+                    state,
+                    unavailableRecoveryOutcome(
+                        decision.reason,
+                        state.latestProgress
+                    )
+                );
+            }
+            const recoveryDecision = decision.decision;
+            if (recoveryDecision.kind === 'stop') {
                 return this.result(state, {
                     status: 'exhausted',
-                    reason: decision.reason,
+                    reason: recoveryDecision.reason,
                     ...state.latestProgress
                         ? { progress: state.latestProgress }
                         : {}
                 });
             }
-            const cycle = this.detectCycle(state, decision.action);
+            const cycle = this.detectCycle(state, recoveryDecision.action);
             if (cycle) {
                 return this.result(state, {
                     status: 'cycle',
@@ -222,7 +245,7 @@ export class SemanticStepController<TRecord> {
             const recovery = await this.executeRecovery(
                 step,
                 testIntent,
-                decision.action,
+                recoveryDecision.action,
                 attempt,
                 state,
                 signal
@@ -281,7 +304,7 @@ export class SemanticStepController<TRecord> {
                 state.executions.push(recovery.execution);
             }
             state.attempts.push({
-                action: decision.action,
+                action: recoveryDecision.action,
                 outcome: recoveryOutcome,
                 summary: recovery.execution?.effect.summary ??
                     '重新观察了当前页面。'
@@ -552,8 +575,9 @@ export class SemanticStepController<TRecord> {
         step: SemanticStep,
         testIntent: TestIntent,
         state: ControllerState<TRecord>,
+        recoveryAttempt: number,
         signal: AbortSignal
-    ): Promise<RecoveryDecision> {
+    ): Promise<RecoveryPlanningResolution> {
         const input: RecoveryPlannerInput = {
             step: createRecoveryPlanningStepView(step),
             testIntent,
@@ -581,12 +605,15 @@ export class SemanticStepController<TRecord> {
         };
         const deterministic = await this.deterministicPlanner.plan(input);
         if (deterministic.kind === 'recover') {
-            return this.hasSpecificRecoveryTarget(deterministic)
-                ? deterministic
-                : {
+            return {
+                status: 'decision',
+                decision: this.hasSpecificRecoveryTarget(deterministic)
+                    ? deterministic
+                    : {
                     kind: 'stop',
                     reason: '确定性 RecoveryTarget 缺少具体语义身份。'
-                };
+                    }
+            };
         }
         if (
             !this.modelRecoveryPlanner
@@ -594,19 +621,83 @@ export class SemanticStepController<TRecord> {
                 this.options.maxRecoveryPlannerCallsPerStep
             || !this.runtime.canUseModel()
         ) {
-            return deterministic;
+            return { status: 'decision', decision: deterministic };
         }
         state.recoveryPlannerCalls += 1;
         this.runtime.consumeModelCalls(1, 'recovery-planner');
         const modeled = await this.modelRecoveryPlanner.plan(input, signal);
-        return modeled.kind === 'recover' && !this.hasSpecificRecoveryTarget(
-            modeled
-        )
-            ? {
+        return await this.resolveModeledRecovery(
+            step,
+            state,
+            recoveryAttempt,
+            modeled,
+            signal
+        );
+    }
+
+    private async resolveModeledRecovery(
+        step: SemanticStep,
+        state: ControllerState<TRecord>,
+        recoveryAttempt: number,
+        initial: RecoveryPlannerAttempt,
+        signal: AbortSignal
+    ): Promise<RecoveryPlanningResolution> {
+        let modeled = initial;
+        const repairProtocol = this.modelRecoveryPlanner?.repairProtocol;
+        if (modeled.status !== 'decision') {
+            await this.runtime.recordRecoveryProtocolDiagnostic(
+                modeled.diagnostic,
+                step.id,
+                recoveryAttempt,
+                signal
+            );
+        }
+        if (modeled.status === 'protocol-invalid') {
+            if (
+                !repairProtocol
+                || state.recoveryProtocolRepairCalls >=
+                    this.options.maxRecoveryProtocolRepairCallsPerStep
+                || !this.runtime.canUseModel()
+            ) {
+                return {
+                    status: 'unavailable',
+                    reason: 'Recovery planner 协议无效，且修复预算不可用。'
+                };
+            }
+            state.recoveryProtocolRepairCalls += 1;
+            this.runtime.consumeModelCalls(1, 'recovery-protocol-repair');
+            modeled = await repairProtocol(
+                modeled.diagnostic,
+                signal
+            );
+            if (modeled.status !== 'decision') {
+                await this.runtime.recordRecoveryProtocolDiagnostic(
+                    modeled.diagnostic,
+                    step.id,
+                    recoveryAttempt,
+                    signal
+                );
+            }
+        }
+        if (modeled.status !== 'decision') {
+            return {
+                status: 'unavailable',
+                reason: modeled.status === 'unavailable'
+                    ? `Recovery planner unavailable：${ modeled.reason }`
+                    : 'Recovery planner 协议修复后仍不合法。'
+            };
+        }
+        const decision = modeled.decision;
+        return {
+            status: 'decision',
+            decision: decision.kind === 'recover'
+                && !this.hasSpecificRecoveryTarget(decision)
+                ? {
                 kind: 'stop',
                 reason: '模型 RecoveryTarget 缺少具体语义身份，已拒绝执行。'
-            }
-            : modeled;
+                }
+                : decision
+        };
     }
 
     private hasSpecificRecoveryTarget(
@@ -671,6 +762,7 @@ export class SemanticStepController<TRecord> {
             attempts: [],
             recoveryFingerprints: new Map(),
             recoveryPlannerCalls: 0,
+            recoveryProtocolRepairCalls: 0,
             recoveryVisualCalls: 0,
             progressModelCalls: 0,
             consecutiveNoProgress: 0,
@@ -703,6 +795,7 @@ interface ControllerState<TRecord> {
     attempts: RecoveryAttemptSummary[];
     recoveryFingerprints: Map<string, number>;
     recoveryPlannerCalls: number;
+    recoveryProtocolRepairCalls: number;
     recoveryVisualCalls: number;
     progressModelCalls: number;
     consecutiveNoProgress: number;
@@ -710,6 +803,27 @@ interface ControllerState<TRecord> {
     lastRecoveryNavigation?: {
         fromUrl: string,
         toUrl: string
+    };
+}
+
+type RecoveryPlanningResolution =
+    | {
+        status: 'decision',
+        decision: RecoveryDecision
+    }
+    | {
+        status: 'unavailable',
+        reason: string
+    };
+
+function unavailableRecoveryOutcome(
+    reason: string,
+    progress: SemanticStepProgress | undefined
+): SemanticStepExecutionOutcome {
+    return {
+        status: 'exhausted',
+        reason,
+        ...progress ? { progress } : {}
     };
 }
 

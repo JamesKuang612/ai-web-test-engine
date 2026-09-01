@@ -4,9 +4,11 @@ import type {
     RuntimeSchema,
 } from '@ai-web-test-engine/core';
 import {
+    ClassifiedModelFailure,
+} from '@ai-web-test-engine/core';
+import {
     FineOneApiProtocol,
     FineOneModelAdapter,
-    FineOneModelAdapterError,
 } from '../../../../src/adapters/model';
 
 interface StatusResult {
@@ -243,7 +245,7 @@ describe('FineOneModelAdapter', () => {
                 statusSchema,
                 new AbortController().signal
             ),
-            hasFineOneErrorCode('SCHEMA_VALIDATION_FAILED')
+            hasClassifiedModelFailure('schema-invalid')
         );
     });
 
@@ -260,7 +262,7 @@ describe('FineOneModelAdapter', () => {
                 statusSchema,
                 new AbortController().signal
             ),
-            hasFineOneErrorCode('MISSING_API_KEY')
+            hasClassifiedModelFailure('provider-unavailable')
         );
         assert.equal(fetchCalled, false);
     });
@@ -294,13 +296,13 @@ describe('FineOneModelAdapter', () => {
     });
 });
 
-/** 为 assert.rejects 匹配 FineOne 的稳定错误分类。 */
-function hasFineOneErrorCode(
-    code: FineOneModelAdapterError['code']
+/** 为 assert.rejects 匹配跨 provider 的稳定模型失败分类。 */
+function hasClassifiedModelFailure(
+    type: ClassifiedModelFailure['failureType']
 ) {
     return (error: unknown) =>
-        error instanceof FineOneModelAdapterError &&
-        error.code === code;
+        error instanceof ClassifiedModelFailure &&
+        error.failureType === type;
 }
 
 /** 为 assert.rejects 匹配指定名称的 Error。 */

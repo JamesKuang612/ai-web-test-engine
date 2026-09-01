@@ -4,7 +4,9 @@ import type {
     RuntimeSchema,
 } from '@ai-web-test-engine/core';
 import {
-    CodexAppServerError,
+    ClassifiedModelFailure,
+} from '@ai-web-test-engine/core';
+import {
     CodexAppServerModelAdapter,
 } from '../../../../src/adapters/model';
 import type {
@@ -21,7 +23,9 @@ const request: ModelRequest = {
     systemPrompt: '只返回 JSON。',
     userPrompt: '检查状态',
     timeoutMs: 1_000,
-    maxOutputTokens: 100
+    maxOutputTokens: 100,
+    modelRole: 'recovery-planner',
+    protocolPhase: 'initial'
 };
 
 const statusSchema: RuntimeSchema<StatusResult> = {
@@ -92,7 +96,7 @@ describe('CodexAppServerModelAdapter', () => {
             model: 'gpt-5.6-sol',
             threadId: 'thread-001',
             turnId: 'turn-001',
-            text: 'not-json'
+            text: 'token=secret-value https://example.test/path?q=secret not-json'
         });
 
         await assert.rejects(
@@ -101,7 +105,19 @@ describe('CodexAppServerModelAdapter', () => {
                 statusSchema,
                 new AbortController().signal
             ),
-            hasCodexErrorCode('INVALID_RESPONSE')
+            hasClassifiedFailure('invalid-json', (error) => {
+                assert.equal(error.diagnostic.modelRole, 'recovery-planner');
+                assert.equal(error.diagnostic.phase, 'initial');
+                assert.equal(
+                    error.diagnostic.rawOutputPreview?.includes('secret-value'),
+                    false
+                );
+                assert.equal(
+                    error.diagnostic.rawOutputPreview?.includes('?q='),
+                    false
+                );
+                assert.equal(error.diagnostic.rawSha256?.length, 64);
+            })
         );
     });
 
@@ -119,7 +135,10 @@ describe('CodexAppServerModelAdapter', () => {
                 statusSchema,
                 new AbortController().signal
             ),
-            hasCodexErrorCode('SCHEMA_VALIDATION_FAILED')
+            hasClassifiedFailure('schema-invalid', (error) => {
+                assert.deepEqual(error.diagnostic.parsedJson, { status: 123 });
+                assert.equal(error.diagnostic.schemaIssues[0]?.path, '$');
+            })
         );
     });
 
@@ -136,7 +155,7 @@ describe('CodexAppServerModelAdapter', () => {
                 statusSchema,
                 new AbortController().signal
             ),
-            hasCodexErrorCode('TIMEOUT')
+            hasClassifiedFailure('model-timeout')
         );
     });
 
@@ -172,11 +191,21 @@ function createAdapter(
     }, client);
 }
 
-/** 为 assert.rejects 匹配 Codex 的稳定错误分类。 */
-function hasCodexErrorCode(code: CodexAppServerError['code']) {
-    return (error: unknown) =>
-        error instanceof CodexAppServerError &&
-        error.code === code;
+/** 为 assert.rejects 匹配 provider-neutral 的稳定模型错误分类。 */
+function hasClassifiedFailure(
+    failureType: ClassifiedModelFailure['failureType'],
+    inspect?: (error: ClassifiedModelFailure) => void
+) {
+    return (error: unknown) => {
+        if (
+            !(error instanceof ClassifiedModelFailure)
+            || error.failureType !== failureType
+        ) {
+            return false;
+        }
+        inspect?.(error);
+        return true;
+    };
 }
 
 /** 返回固定 App Server 回合，并记录适配器传入的参数。 */

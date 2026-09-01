@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 import type {
     GroundingDecision,
+    ModelProtocolDiagnostic,
     PagePerception,
     RecoveryDecision,
     RecoveryPlannerPort,
@@ -378,6 +379,47 @@ describe('SemanticStepController', () => {
         );
     });
 
+    it('Recovery protocol repair 失败后 exhausted 而不抛异常', async () => {
+        const initial = perception('initial', {
+            elements: [ element('search', '搜索', 'filled') ]
+        });
+        const cleared = perception('cleared', {
+            previous: initial,
+            elements: [ element('search', '搜索', 'empty') ]
+        });
+        const runtime = new FakeRuntime(
+            initial,
+            (action, current) => action.type === 'TYPE'
+                ? grounded('search', current, '搜索')
+                : decision('not-found'),
+            (action) => action.type === 'TYPE' ? cleared : initial
+        );
+        const planner = new ProtocolFailureRecoveryPlanner();
+
+        const result = await controller(
+            runtime,
+            new SemanticStepProgressEvaluator(),
+            planner
+        ).execute(step({
+            type: 'CLICK',
+            target: { description: '新建应用' },
+            reasonSummary: '创建应用'
+        }), intent, signal());
+
+        assert.equal(result.outcome.status, 'exhausted');
+        assert.deepEqual(runtime.executedTypes, [ 'TYPE' ]);
+        assert.equal(result.executions[0]?.recoveryAction?.type, 'CLEAR');
+        assert.equal(
+            result.executions[0]?.compilationContribution,
+            'non-productive'
+        );
+        assert.deepEqual(runtime.modelPurposes, [
+            'recovery-planner',
+            'recovery-protocol-repair'
+        ]);
+        assert.deepEqual(runtime.protocolPhases, [ 'initial', 'repair' ]);
+    });
+
     it('非导航 wrong-state 不会授权 BACK', () => {
         const policy = new DeterministicRecoverySafetyPolicy();
         const common = {
@@ -432,6 +474,7 @@ class FakeRuntime implements SemanticStepRuntimePort<string> {
     public executedTypes: string[] = [];
     public modelPurposes: string[] = [];
     public settleCalls = 0;
+    public protocolPhases: Array<'initial' | 'repair'> = [];
     private current: PagePerception;
 
     constructor(
@@ -512,6 +555,11 @@ class FakeRuntime implements SemanticStepRuntimePort<string> {
         return execution;
     };
     public recordReobserve = async () => {};
+    public recordRecoveryProtocolDiagnostic = async (
+        diagnostic: ModelProtocolDiagnostic
+    ) => {
+        this.protocolPhases.push(diagnostic.phase);
+    };
     public reverifyEffectAfterSettling:
     SemanticStepRuntimePort<string>['reverifyEffectAfterSettling'] = async (
         execution
@@ -522,8 +570,44 @@ class FakeRuntime implements SemanticStepRuntimePort<string> {
 
 class SequenceRecoveryPlanner implements RecoveryPlannerPort {
     constructor(private readonly decisions: RecoveryDecision[]) {}
-    public plan: RecoveryPlannerPort['plan'] = async () =>
-        this.decisions.shift() ?? { kind: 'stop', reason: '没有更多恢复动作' };
+    public plan: RecoveryPlannerPort['plan'] = async () => ({
+        status: 'decision',
+        decision: this.decisions.shift() ?? {
+            kind: 'stop',
+            reason: '没有更多恢复动作'
+        }
+    });
+}
+
+class ProtocolFailureRecoveryPlanner implements RecoveryPlannerPort {
+    public plan: RecoveryPlannerPort['plan'] = async () => ({
+        status: 'protocol-invalid',
+        diagnostic: protocolDiagnostic('initial')
+    });
+    public repairProtocol: NonNullable<
+    RecoveryPlannerPort['repairProtocol']> = async () => ({
+        status: 'protocol-invalid',
+        diagnostic: protocolDiagnostic('repair')
+    });
+}
+
+function protocolDiagnostic(
+    phase: 'initial' | 'repair'
+): ModelProtocolDiagnostic {
+    return {
+        schemaVersion: 1,
+        modelRole: 'recovery-planner',
+        phase,
+        failureType: 'schema-invalid',
+        parsedJson: { kind: 'stop' },
+        schemaIssues: [{
+            path: 'RecoveryDecision.action',
+            code: 'missing-field',
+            message: '字段缺失。'
+        }],
+        sanitized: true,
+        truncated: false
+    };
 }
 
 function controller(
