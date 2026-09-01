@@ -102,6 +102,9 @@ describe('CodexAppServerModelAdapter', () => {
                 'password="multi word password"',
                 "token='multi word token'",
                 'credential = "multi word credential"',
+                'password: my secret password',
+                'token=alpha beta gamma',
+                'credential: foo bar baz',
                 'https://example.test/path?q=query-secret#fragment-secret',
                 'not-json'
             ].join('\n')
@@ -122,6 +125,9 @@ describe('CodexAppServerModelAdapter', () => {
                     'multi word password',
                     'multi word token',
                     'multi word credential',
+                    'my secret password',
+                    'alpha beta gamma',
+                    'foo bar baz',
                     'query-secret',
                     'fragment-secret'
                 ].forEach((secret) => assert.equal(

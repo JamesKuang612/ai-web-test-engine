@@ -136,6 +136,7 @@ export class ModelRecoveryPlanner implements RecoveryPlannerPort {
 
 interface SemanticRepairGuard {
     values: Record<string, string>;
+    nullOnlyPaths: string[];
 }
 
 const RECOVERY_ACTION_TYPES = new Set([
@@ -150,9 +151,10 @@ function createSemanticRepairGuard(
         return undefined;
     }
     const values: Record<string, string> = { kind: value.kind };
+    const nullOnlyPaths: string[] = [];
     if (value.kind === 'stop') {
         preserveString(values, 'stop.reason', value.reason);
-        return { values };
+        return { values, nullOnlyPaths };
     }
     if (!isRecord(value.action)) {
         return undefined;
@@ -171,20 +173,46 @@ function createSemanticRepairGuard(
             return undefined;
         }
         values['target.description'] = action.target.description;
-        preserveString(values, 'target.scope', action.target.scope);
+        if (!preserveNullableString(
+            values,
+            nullOnlyPaths,
+            'target.scope',
+            action.target.scope
+        )) {
+            return undefined;
+        }
     }
-    preserveEnum(values, 'direction', action.direction, [ 'up', 'down' ]);
-    preserveEnum(values, 'amount', action.amount, [
-        'small', 'medium', 'page'
-    ]);
-    preserveEnum(values, 'duration', action.duration, [ 'short', 'medium' ]);
+    if (actionType === 'SCROLL' && (
+        !preserveRequiredEnum(values, 'direction', action.direction, [
+            'up', 'down'
+        ])
+        || !preserveRequiredEnum(values, 'amount', action.amount, [
+            'small', 'medium', 'page'
+        ])
+    )) {
+        return undefined;
+    }
+    if (
+        actionType === 'WAIT'
+        && !preserveRequiredEnum(
+            values,
+            'duration',
+            action.duration,
+            [ 'short', 'medium' ]
+        )
+    ) {
+        return undefined;
+    }
     preserveString(values, 'reasonSummary', action.reasonSummary);
-    preserveString(
+    if (!preserveNullableString(
         values,
+        nullOnlyPaths,
         'expectedTransientEffect',
         action.expectedTransientEffect
-    );
-    return { values };
+    )) {
+        return undefined;
+    }
+    return { values, nullOnlyPaths };
 }
 
 function changedSemanticPaths(
@@ -195,9 +223,13 @@ function changedSemanticPaths(
     if (!repairedGuard) {
         return [ 'strategy.identity' ];
     }
-    return Object.entries(guard.values)
+    const changedValues = Object.entries(guard.values)
         .filter(([ path, value ]) => repairedGuard.values[path] !== value)
         .map(([ path ]) => path);
+    const inventedValues = guard.nullOnlyPaths.filter(
+        (path) => repairedGuard.values[path] !== undefined
+    );
+    return [ ...new Set([ ...changedValues, ...inventedValues ]) ];
 }
 
 function unavailableRepair(
@@ -245,15 +277,34 @@ function preserveString(
     }
 }
 
-function preserveEnum(
+function preserveRequiredEnum(
     output: Record<string, string>,
     path: string,
     value: unknown,
     allowed: string[]
-): void {
+): boolean {
     if (typeof value === 'string' && allowed.includes(value)) {
         output[path] = value;
+        return true;
     }
+    return false;
+}
+
+function preserveNullableString(
+    output: Record<string, string>,
+    nullOnlyPaths: string[],
+    path: string,
+    value: unknown
+): boolean {
+    if (value === undefined || value === null) {
+        nullOnlyPaths.push(path);
+        return true;
+    }
+    if (!nonEmptyString(value)) {
+        return false;
+    }
+    output[path] = value;
+    return true;
 }
 
 function nonEmptyString(value: unknown): value is string {

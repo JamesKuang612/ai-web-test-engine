@@ -100,6 +100,7 @@ describe('Phase 3 model recovery services', () => {
             status: 'protocol-invalid',
             diagnostic
         });
+        assert.equal(planner.canRepairProtocol(diagnostic), true);
         assert.equal(planner.repairProtocol !== undefined, true);
         const repaired = await planner.repairProtocol(
             diagnostic,
@@ -156,6 +157,77 @@ describe('Phase 3 model recovery services', () => {
                 : false,
             true
         );
+    });
+
+    it('HOVER scope 缺失时 repair 不得发明非空 scope', async () => {
+        const diagnostic = hoverProtocolDiagnostic();
+        const planner = new ModelRecoveryPlanner(new FakeModelAdapter({
+            kind: 'recover',
+            action: {
+                type: 'HOVER',
+                target: {
+                    description: '应用11卡片',
+                    scope: '设置区域'
+                },
+                expectedTransientEffect: null,
+                reasonSummary: '显示收藏入口'
+            },
+            reason: null
+        }));
+
+        const repaired = await planner.repairProtocol(diagnostic, signal());
+
+        assert.equal(repaired.status, 'unavailable');
+        assert.equal(
+            repaired.status === 'unavailable'
+                ? repaired.diagnostic.schemaIssues.some(
+                    ({ path }) => path === 'target.scope'
+                )
+                : false,
+            true
+        );
+    });
+
+    it('缺失 expectedTransientEffect 时 repair 只能补 null', async () => {
+        const diagnostic = hoverProtocolDiagnostic();
+        const planner = new ModelRecoveryPlanner(new FakeModelAdapter({
+            kind: 'recover',
+            action: {
+                type: 'HOVER',
+                target: { description: '应用11卡片', scope: null },
+                expectedTransientEffect: '打开设置区域',
+                reasonSummary: '显示收藏入口'
+            },
+            reason: null
+        }));
+
+        const repaired = await planner.repairProtocol(diagnostic, signal());
+
+        assert.equal(repaired.status, 'unavailable');
+        assert.equal(
+            repaired.status === 'unavailable'
+                ? repaired.diagnostic.schemaIssues.some(
+                    ({ path }) => path === 'expectedTransientEffect'
+                )
+                : false,
+            true
+        );
+    });
+
+    it('SCROLL 缺 direction/amount 时不调用 repair', async () => {
+        await assertUnrepairableActionDoesNotCallModel({
+            type: 'SCROLL',
+            expectedTransientEffect: null,
+            reasonSummary: '查找目标'
+        });
+    });
+
+    it('WAIT 缺 duration 时不调用 repair', async () => {
+        await assertUnrepairableActionDoesNotCallModel({
+            type: 'WAIT',
+            expectedTransientEffect: null,
+            reasonSummary: '等待页面'
+        });
     });
 
     it('缺少 Recovery strategy identity 时不调用 repair 模型', async () => {
@@ -297,6 +369,36 @@ function unrepairableProtocolDiagnostic(): ModelProtocolDiagnostic {
         sanitized: true,
         truncated: false
     };
+}
+
+async function assertUnrepairableActionDoesNotCallModel(
+    action: Record<string, unknown>
+): Promise<void> {
+    const diagnostic: ModelProtocolDiagnostic = {
+        schemaVersion: 1,
+        modelRole: 'recovery-planner',
+        phase: 'initial',
+        failureType: 'schema-invalid',
+        parsedJson: { kind: 'recover', action, reason: null },
+        schemaIssues: [{
+            path: 'RecoveryDecision.action',
+            code: 'missing-field',
+            message: '执行策略参数缺失。'
+        }],
+        sanitized: true,
+        truncated: false
+    };
+    const adapter = new FakeModelAdapter({
+        kind: 'stop', action: null, reason: '不应调用'
+    });
+    const planner = new ModelRecoveryPlanner(adapter);
+
+    assert.equal(planner.canRepairProtocol(diagnostic), false);
+    assert.equal(
+        (await planner.repairProtocol(diagnostic, signal())).status,
+        'unavailable'
+    );
+    assert.equal(adapter.requests.length, 0);
 }
 
 function signal(): AbortSignal {

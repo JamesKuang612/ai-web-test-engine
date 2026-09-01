@@ -16,7 +16,7 @@ const MAX_OBJECT_KEYS = 50;
 const MAX_DEPTH = 6;
 const SENSITIVE_KEY = /(?:authorization|cookie|credential|password|secret|token)/iu;
 const RAW_HEADER_SECRET = /(["']?(?:authorization|cookie)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n}]+)/giu;
-const RAW_NAMED_SECRET = /(["']?(?:credential|password|secret|token)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}\]]+)/giu;
+const RAW_NAMED_SECRET = /(["']?(?:credential|password|secret|token)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n}]+)/giu;
 const URL_PATTERN = /https?:\/\/[^\s"'<>]+/giu;
 
 interface DiagnosticInput {
