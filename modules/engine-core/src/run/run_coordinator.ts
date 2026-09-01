@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type {
+    ActionTraceAdjudication,
     ActionCommand,
     ActionResult,
     CompilationContribution,
@@ -182,6 +183,8 @@ interface PlannedActionExecution {
     semanticStepId?: string;
     compilationContribution?: CompilationContribution;
     semanticStepProgress?: SemanticStepProgress;
+    traceSequence: number;
+    adjudicationStatus?: 'completed';
 }
 
 /** 浏览器阶段完成后交给最终判定的数据。 */
@@ -562,7 +565,8 @@ export class RunCoordinator implements ExecutionEngine {
                 ?.stateFingerprint;
             const controller = this.createSemanticStepController(
                 context,
-                runtime
+                runtime,
+                step
             );
             const stepResult = await controller.execute(
                 step,
@@ -695,7 +699,8 @@ export class RunCoordinator implements ExecutionEngine {
     // eslint-disable-next-line max-lines-per-function
     private createSemanticStepController(
         context: RunExecutionContext,
-        runtime: RunContext
+        runtime: RunContext,
+        step: SemanticStep
     ): SemanticStepController<PlannedActionExecution> {
         const settler = new PageSettler({
             canContinue: () => this.getRemainingBudgets(context)
@@ -786,7 +791,17 @@ export class RunCoordinator implements ExecutionEngine {
                         command,
                         resolvedTarget: input.resolvedTarget
                     },
-                    beforeReference
+                    beforeReference,
+                    {
+                        semanticStepId: step.id,
+                        origin: input.origin,
+                        ...input.recoveryAction
+                            ? { recoveryAction: input.recoveryAction }
+                            : {},
+                        ...input.recoveryAttempt
+                            ? { recoveryAttempt: input.recoveryAttempt }
+                            : {}
+                    }
                 );
                 const after = await this.captureRuntimePerception(
                     context,
@@ -1672,7 +1687,13 @@ export class RunCoordinator implements ExecutionEngine {
         context: RunExecutionContext,
         runtime: RunContext,
         grounded: ReturnType<GroundedActionBuilder['build']>,
-        beforeObservationReference: EvidenceRef
+        beforeObservationReference: EvidenceRef,
+        metadata: {
+            semanticStepId: string,
+            origin: 'planner' | 'recovery',
+            recoveryAction?: RecoveryAction,
+            recoveryAttempt?: number
+        }
     ): Promise<PlannedActionExecution> {
         const beforeObservation = runtime.latestObservation;
         if (!beforeObservation) {
@@ -1687,6 +1708,15 @@ export class RunCoordinator implements ExecutionEngine {
             runtime.browserSession,
             executableCommand,
             grounded.resolvedTarget
+        );
+        const traceSequence = context.actionCount;
+        await this.appendActionExecutionFact(
+            context,
+            grounded,
+            beforeObservationReference,
+            result,
+            traceSequence,
+            metadata
         );
         runtime.counters.actionCount = context.actionCount;
         const after = await this.observeAfterPlannedAction(
@@ -1713,11 +1743,59 @@ export class RunCoordinator implements ExecutionEngine {
             beforeObservationReference,
             afterObservation: after.observation,
             afterObservationReference: after.observationReference,
-            afterScreenshotReference: after.screenshotReference
+            afterScreenshotReference: after.screenshotReference,
+            traceSequence
         };
         runtime.latestObservation = execution.afterObservation;
         runtime.latestObservationReference = execution.afterObservationReference;
         return execution;
+    }
+
+    /** Browser 返回结果后立即持久化不可变执行事实。 */
+    private async appendActionExecutionFact(
+        context: RunExecutionContext,
+        grounded: ReturnType<GroundedActionBuilder['build']>,
+        beforeObservationReference: EvidenceRef,
+        result: ActionResult,
+        traceSequence: number,
+        metadata: {
+            semanticStepId: string,
+            origin: 'planner' | 'recovery',
+            recoveryAction?: RecoveryAction,
+            recoveryAttempt?: number
+        }
+    ): Promise<void> {
+        const traceEvent: TraceEvent = {
+            schemaVersion: 1,
+            runId: context.runId,
+            sequence: traceSequence,
+            semanticAction: grounded.semanticAction,
+            semanticStepId: metadata.semanticStepId,
+            origin: metadata.origin,
+            ...metadata.recoveryAction
+                ? {
+                    recoveryAction: metadata.recoveryAction,
+                    recoveryIntent: metadata.recoveryAction.reasonSummary
+                }
+                : {},
+            ...metadata.recoveryAttempt
+                ? { recoveryAttempt: metadata.recoveryAttempt }
+                : {},
+            command: grounded.command,
+            resolvedTarget: grounded.resolvedTarget,
+            beforeObservationRef: beforeObservationReference.ref,
+            actionResult: result,
+            artifacts: [ beforeObservationReference ]
+        };
+        await this.artifactStore.appendTrace(context.runId, traceEvent);
+        await this.publishEvent(
+            context.runId,
+            this.nextSequence(context),
+            'trace.appended', {
+                traceSequence,
+                fact: 'execution'
+            }
+        );
     }
 
     /** 只在浏览器调用边界把逻辑环境变量替换为实际字面量。 */
@@ -1813,12 +1891,17 @@ export class RunCoordinator implements ExecutionEngine {
         );
     }
 
-    /** 追加本轮 Trace，并把安全命令引用加入 Planner 历史。 */
+    /** 为已持久化执行事实追加独立判定，并更新 Planner 历史。 */
     private async recordPlannedAction(
         context: RunExecutionContext,
         runtime: RunContext,
         execution: PlannedActionExecution
     ): Promise<void> {
+        if (execution.adjudicationStatus === 'completed') {
+            throw new Error(
+                `Trace ${ execution.traceSequence } 已完成判定，禁止重复记录。`
+            );
+        }
         await this.publishEffect(context, execution.effect);
         if (context.lifecycle.current() !== 'RECORDING') {
             await this.transition(
@@ -1827,52 +1910,37 @@ export class RunCoordinator implements ExecutionEngine {
                 '正在记录 AI 页面动作轨迹'
             );
         }
-        const traceEvent: TraceEvent = {
+        const adjudication: ActionTraceAdjudication = {
             schemaVersion: 1,
             runId: context.runId,
-            sequence: runtime.history.length + 1,
-            semanticAction: execution.semanticAction,
+            traceSequence: execution.traceSequence,
+            status: 'completed',
+            origin: execution.origin ?? 'planner',
             ...execution.semanticStepId
                 ? { semanticStepId: execution.semanticStepId }
                 : {},
-            origin: execution.origin ?? 'planner',
-            ...execution.recoveryAction
-                ? {
-                    recoveryAction: execution.recoveryAction,
-                    recoveryIntent: execution.recoveryAction.reasonSummary
-                }
-                : {},
-            ...execution.recoveryAttempt
-                ? { recoveryAttempt: execution.recoveryAttempt }
-                : {},
-            ...execution.compilationContribution
-                ? {
-                    compilationContribution:
-                        execution.compilationContribution
-                }
+            ...execution.recoveryOutcome
+                ? { recoveryOutcome: execution.recoveryOutcome }
                 : {},
             ...execution.semanticStepProgress
                 ? { semanticStepProgress: execution.semanticStepProgress }
                 : {},
-            command: execution.command,
-            resolvedTarget: execution.resolvedTarget,
-            beforeObservationRef: execution.beforeObservationReference.ref,
+            compilationContribution:
+                execution.compilationContribution ?? 'failed',
             afterObservationRef: execution.afterObservationReference.ref,
-            actionResult: execution.result,
             effect: execution.effect,
             artifacts: [
                 execution.afterObservationReference,
                 execution.afterScreenshotReference
             ]
         };
-        await this.artifactStore.appendTrace(context.runId, traceEvent);
-        await this.publishEvent(
+        const adjudicationReference = await this.artifactStore.saveJson(
             context.runId,
-            this.nextSequence(context),
-            'trace.appended', {
-                traceSequence: traceEvent.sequence
-            }
+            `trace-adjudication-${ execution.traceSequence }`,
+            toJsonValue(adjudication)
         );
+        context.evidence.push(adjudicationReference);
+        execution.adjudicationStatus = 'completed';
         runtime.latestObservation = execution.afterObservation;
         runtime.latestObservationReference = execution.afterObservationReference;
         runtime.history.push({

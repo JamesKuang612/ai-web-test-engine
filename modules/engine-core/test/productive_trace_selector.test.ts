@@ -35,6 +35,7 @@ function action(
     return {
         command: { type },
         name,
+        adjudicationStatus: 'completed' as const,
         compilationContribution
     };
 }

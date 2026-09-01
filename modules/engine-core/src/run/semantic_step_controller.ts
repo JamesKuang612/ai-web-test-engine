@@ -86,6 +86,7 @@ export interface SemanticStepRuntimePort<TRecord> {
         action: SemanticAction,
         origin: 'planner' | 'recovery',
         recoveryAction?: RecoveryAction,
+        recoveryAttempt?: number,
         resolvedTarget?: ResolvedTarget,
         before: PagePerception,
         signal: AbortSignal
@@ -563,11 +564,11 @@ export class SemanticStepController<TRecord> {
             action: semanticAction,
             origin: 'recovery',
             recoveryAction: action,
+            recoveryAttempt: attempt,
             ...target ? { resolvedTarget: target } : {},
             before: state.perception,
             signal
         });
-        execution.recoveryAttempt = attempt;
         return { after: execution.after, execution };
     }
 

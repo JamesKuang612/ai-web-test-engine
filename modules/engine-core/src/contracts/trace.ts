@@ -94,3 +94,19 @@ export interface TraceEvent {
     retryOf?: number;
     artifacts: EvidenceRef[];
 }
+
+/** 对已持久化 execution fact 的后续判定；不修改原始 TraceEvent。 */
+export interface ActionTraceAdjudication {
+    schemaVersion: EngineSchemaVersion;
+    runId: string;
+    traceSequence: number;
+    status: 'completed';
+    semanticStepId?: string;
+    origin: 'planner' | 'recovery';
+    recoveryOutcome?: 'progress' | 'no-progress' | 'wrong-state';
+    semanticStepProgress?: SemanticStepProgress;
+    compilationContribution: CompilationContribution;
+    afterObservationRef: string;
+    effect: EffectVerification;
+    artifacts: EvidenceRef[];
+}

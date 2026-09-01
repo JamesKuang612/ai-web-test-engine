@@ -17,6 +17,7 @@ import type {
     JsonValue,
     PageObservation,
     PlanActionInput,
+    RecoveryPlannerPort,
     RunEvent,
     RunEventPublisher,
     RunResult,
@@ -478,6 +479,63 @@ describe('RunCoordinator Grounding 边界', () => {
     });
 });
 
+describe('RunCoordinator Recovery Trace durability', () => {
+    it('CLEAR 执行后即使 Recovery 协议修复失败仍只保留一条执行事实', async () => {
+        const artifactStore = new FakeArtifactStore();
+        const browserAdapter = new RecoveryTraceBrowserAdapter();
+        const coordinator = new RunCoordinator(
+            artifactStore,
+            new FakeRunEventPublisher(),
+            new FakeIntentBuilder(testIntent),
+            browserAdapter,
+            {
+                actionPlanner: new FakeActionPlanner({
+                    type: 'CLICK',
+                    target: { description: '新建应用' },
+                    expectedEffect: '进入新建应用流程',
+                    reasonSummary: '打开新建应用'
+                }),
+                recoveryPlanner: new InvalidRecoveryPlanner(),
+                verdictEvaluator: new FakeVerdictEvaluator(uncertainVerdict)
+            },
+            new FakeEnvironmentValueResolver()
+        );
+
+        const result = await coordinator.start(
+            startInput,
+            new AbortController().signal
+        );
+        const recoveryFacts = artifactStore.traces.filter(
+            ({ origin }) => origin === 'recovery'
+        );
+        const adjudication = artifactStore.savedJson.find(
+            ({ name }) => name === 'trace-adjudication-2'
+        )?.value as unknown as {compilationContribution?: string};
+
+        assert.equal(result.lifecycle, 'COMPLETED', result.summary);
+        assert.equal(result.result, 'UNCERTAIN');
+        assert.deepEqual(
+            browserAdapter.commands.map(({ type }) => type),
+            [ 'NAVIGATE', 'TYPE' ]
+        );
+        assert.equal(recoveryFacts.length, 1);
+        assert.equal(recoveryFacts[0]?.recoveryAction?.type, 'CLEAR');
+        assert.equal(recoveryFacts[0]?.actionResult?.status, 'executed');
+        assert.equal(recoveryFacts[0]?.effect, undefined);
+        assert.equal(recoveryFacts[0]?.compilationContribution, undefined);
+        assert.equal(adjudication.compilationContribution, 'non-productive');
+        assert.deepEqual(
+            artifactStore.savedJson
+                .filter(({ name }) => name.startsWith('recovery-protocol-'))
+                .map(({ value }) => (value as any).phase),
+            [ 'initial', 'repair' ]
+        );
+        assert.equal(artifactStore.savedJson.some(
+            ({ name }) => name === 'plan-compilation-source'
+        ), false);
+    });
+});
+
 interface CompletedRunState {
     actionPlanner: FakeActionPlanner;
     artifactStore: FakeArtifactStore;
@@ -585,12 +643,14 @@ function assertCompletedArtifactNames(artifactStore: FakeArtifactStore): void {
         'observation-reobserve-4',
         'page-perception-4',
         'page-settling-2',
+        'trace-adjudication-2',
         'grounding-decision-2',
         'observation-after-action-3',
         'page-perception-5',
         'observation-reobserve-6',
         'page-perception-6',
         'page-settling-3',
+        'trace-adjudication-3',
         'grounding-decision-3',
         'observation-after-action-4',
         'page-perception-7',
@@ -598,6 +658,7 @@ function assertCompletedArtifactNames(artifactStore: FakeArtifactStore): void {
         'page-perception-8',
         'page-settling-4',
         'grounding-decision-4',
+        'trace-adjudication-4',
         'verdict',
         'plan-compilation-source'
     ]);
@@ -607,10 +668,18 @@ function assertGroundingEvidencePersisted(
     artifactStore: FakeArtifactStore
 ): void {
     const groundedTrace = artifactStore.traces[1];
+    const adjudication = artifactStore.savedJson.find(
+        ({ name }) => name === 'trace-adjudication-2'
+    )?.value as unknown as {
+        compilationContribution?: string,
+        semanticStepProgress?: {status?: string}
+    };
     assert.equal(groundedTrace?.origin, 'planner');
     assert.equal(groundedTrace?.semanticStepId, 'runtime-step-1');
-    assert.equal(groundedTrace?.compilationContribution, 'productive');
-    assert.equal(groundedTrace?.semanticStepProgress?.status, 'complete');
+    assert.equal(groundedTrace?.compilationContribution, undefined);
+    assert.equal(groundedTrace?.semanticStepProgress, undefined);
+    assert.equal(adjudication.compilationContribution, 'productive');
+    assert.equal(adjudication.semanticStepProgress?.status, 'complete');
     assert.equal(
         groundedTrace?.semanticAction?.target?.description,
         '账号输入框'
@@ -1371,6 +1440,130 @@ class FakeBrowserAdapter implements BrowserAdapter {
         this.closeCount += 1;
         this.sessionCommands.delete(session.sessionId);
         return Promise.resolve();
+    };
+}
+
+/** 让确定性 Recovery 执行 CLEAR，但原始 New App 目标始终不可见。 */
+class RecoveryTraceBrowserAdapter implements BrowserAdapter {
+    public readonly commands: ActionCommand[] = [];
+    private searchFilled = true;
+
+    public start = (): Promise<BrowserSession> => Promise.resolve({
+        sessionId: 'recovery-trace-session'
+    });
+
+    public observe = (): Promise<PageObservation> => Promise.resolve(
+        this.commands.length === 0
+            ? createObservation('about:blank')
+            : createRecoverySearchObservation(this.searchFilled)
+    );
+
+    public execute = (
+        _session: BrowserSession,
+        command: ActionCommand
+    ): Promise<ActionResult> => {
+        this.commands.push(command);
+        if (
+            command.type === 'TYPE'
+            && command.value?.source === 'literal'
+            && command.value.value === ''
+        ) {
+            this.searchFilled = false;
+        }
+        return Promise.resolve({
+            status: 'executed',
+            startedAt: '2026-09-01T00:00:00.000Z',
+            finishedAt: '2026-09-01T00:00:01.000Z',
+            browserSignals: {
+                dialogOpened: false,
+                downloadStarted: false,
+                newTabOpened: false,
+                urlChanged: command.type === 'NAVIGATE'
+            }
+        });
+    };
+
+    public captureScreenshot = (): Promise<{
+        content: Uint8Array,
+        mediaType: 'image/png'
+    }> => Promise.resolve({
+        content: new Uint8Array([ 137, 80, 78, 71 ]),
+        mediaType: 'image/png'
+    });
+
+    public reset = (): Promise<void> => Promise.resolve();
+    public close = (): Promise<void> => Promise.resolve();
+}
+
+/** 初始与 repair 都返回已分类协议失败，模拟真实模型坏响应。 */
+class InvalidRecoveryPlanner implements RecoveryPlannerPort {
+    public plan: RecoveryPlannerPort['plan'] = () => Promise.resolve({
+        status: 'protocol-invalid',
+        diagnostic: recoveryProtocolDiagnostic('initial')
+    });
+
+    public repairProtocol: NonNullable<
+        RecoveryPlannerPort['repairProtocol']
+    > = () => Promise.resolve({
+        status: 'protocol-invalid',
+        diagnostic: recoveryProtocolDiagnostic('repair')
+    });
+}
+
+function recoveryProtocolDiagnostic(phase: 'initial' | 'repair') {
+    return {
+        schemaVersion: 1 as const,
+        modelRole: 'recovery-planner' as const,
+        phase,
+        failureType: 'schema-invalid' as const,
+        rawSha256: `${ phase }-sha256`,
+        schemaIssues: [{
+            path: '$.action.target',
+            code: 'required',
+            message: '缺少 target'
+        }],
+        sanitized: true as const,
+        truncated: false
+    };
+}
+
+function createRecoverySearchObservation(
+    filled: boolean
+): PageObservation {
+    const url = 'https://test.jdydevelop.com/dashboard#/';
+    return {
+        schemaVersion: 1,
+        observationId: `recovery-search-${ filled ? 'filled' : 'empty' }`,
+        capturedAt: '2026-09-01T00:00:00.000Z',
+        page: {
+            loading: false,
+            title: '简道云工作台',
+            url,
+            viewport: { width: 1280, height: 720 }
+        },
+        visibleText: [ '应用列表' ],
+        interactiveElements: [{
+            candidateId: 'search-1',
+            tag: 'input',
+            role: 'textbox',
+            name: '搜索应用',
+            placeholder: '搜索应用',
+            valueState: filled ? 'filled' : 'empty',
+            disabled: false,
+            visible: true,
+            inViewport: true,
+            boundingBox: { x: 20, y: 20, width: 240, height: 32 },
+            attributes: { type: 'search' },
+            nearbyText: [],
+            locatorHints: [{
+                strategy: 'role-name',
+                value: 'textbox::搜索应用'
+            }]
+        }],
+        notices: [],
+        tabs: [{ active: true, title: '工作台', url }],
+        stateFingerprint: `recovery-search-${ filled ? 'filled' : 'empty' }`,
+        truncated: false
     };
 }
 
