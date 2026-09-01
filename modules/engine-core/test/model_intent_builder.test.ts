@@ -259,6 +259,60 @@ describe('ModelIntentBuilder exact text assertions', () => {
             '我的待办'
         ]);
     });
+
+    it('搜索词和实体名不会被句尾业务验证升级成 exact-text', async () => {
+        const builder = new ModelIntentBuilder(
+            new FakeModelAdapter(modelIntent),
+            testIntentSchema
+        );
+        const intent = await builder.build({
+            ...buildInput,
+            test: {
+                ...buildInput.test,
+                action: '搜索“jdy”应用，如果搜索不到则新建该应用，' +
+                    '新建完成后验证是否创建成功'
+            }
+        }, new AbortController().signal);
+
+        assert.equal(intent.exactTextAssertions, undefined);
+        assert.equal(JSON.stringify(intent).includes('engine-exact-text'), false);
+    });
+
+    it('只提取同一 assertion-local clause 中的 expected text', async () => {
+        const builder = new ModelIntentBuilder(
+            new FakeModelAdapter(modelIntent),
+            testIntentSchema
+        );
+        const intent = await builder.build({
+            ...buildInput,
+            test: {
+                ...buildInput.test,
+                action: '输入“jdy”，验证页面显示“创建成功”，然后点击“返回”'
+            }
+        }, new AbortController().signal);
+
+        assert.deepEqual(intent.exactTextAssertions?.[0]?.values, [
+            '创建成功'
+        ]);
+    });
+
+    it('明确验证页面显示“创建成功”仍生成 exact-text', async () => {
+        const builder = new ModelIntentBuilder(
+            new FakeModelAdapter(modelIntent),
+            testIntentSchema
+        );
+        const intent = await builder.build({
+            ...buildInput,
+            test: {
+                ...buildInput.test,
+                action: '验证页面显示“创建成功”'
+            }
+        }, new AbortController().signal);
+
+        assert.deepEqual(intent.exactTextAssertions?.[0]?.values, [
+            '创建成功'
+        ]);
+    });
 });
 
 /** 使用预设输出代替真实模型，供意图构建单元测试使用。 */

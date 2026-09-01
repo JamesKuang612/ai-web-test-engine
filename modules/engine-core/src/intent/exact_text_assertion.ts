@@ -10,8 +10,13 @@ export interface ExtractedExactTextAssertions {
     successCriteria: SuccessCriterion[];
 }
 
-const ASSERTION_LANGUAGE_PATTERN =
-    /验证|断言|校验|确认|逐字|精确文本|必须显示|应当显示|应该显示/iu;
+const TEXT_ASSERTION_ANCHOR_PATTERN = new RegExp([
+    '(?:必须显示|应当显示|应该显示)',
+    '(?:(?:验证|断言|校验|确认|逐字|精确文本)' +
+        '[^。！？；;\\n]{0,80}?(?:显示|出现|文本|文案|内容|提示))'
+].join('|'), 'giu');
+const NEXT_ACTION_BOUNDARY_PATTERN =
+    /[，,](?=\s*(?:如果|若|否则|然后|随后|再|完成后|搜索|输入|填写|点击|选择|创建|打开))/iu;
 const ORDER_LANGUAGE_PATTERN =
     /顺序|依次|从上到下|从左到右/iu;
 const QUOTED_TEXT_PATTERN =
@@ -32,11 +37,7 @@ export function extractExactTextAssertions(
     const groups = action
         .split(/[。！？；;\n]+/u)
         .map((segment) => segment.trim())
-        .filter((segment) => ASSERTION_LANGUAGE_PATTERN.test(segment))
-        .map((segment) => ({
-            ordered: ORDER_LANGUAGE_PATTERN.test(segment),
-            values: extractQuotedTexts(segment)
-        }))
+        .flatMap(extractAssertionGroups)
         .filter((group) => group.values.length > 0);
 
     const assertions: ExactTextAssertion[] = [];
@@ -84,6 +85,30 @@ export function extractExactTextAssertions(
         successCriteria,
         failureCriteria
     };
+}
+
+/** 只关联明确文本验证锚点之后的引号，并在下一业务动作前结束 scope。 */
+function extractAssertionGroups(segment: string): Array<{
+    ordered: boolean,
+    values: string[]
+}> {
+    const anchors = [ ...segment.matchAll(TEXT_ASSERTION_ANCHOR_PATTERN) ];
+    return anchors.map((anchor, index) => {
+        const start = anchor.index;
+        const nextAnchor = anchors[index + 1]?.index ?? segment.length;
+        const candidate = segment.slice(start, nextAnchor);
+        const actionBoundary = candidate.search(NEXT_ACTION_BOUNDARY_PATTERN);
+        const assertionClause = actionBoundary >= 0
+            ? candidate.slice(0, actionBoundary)
+            : candidate;
+        return {
+            ordered: ORDER_LANGUAGE_PATTERN.test([
+                segment.slice(0, start),
+                assertionClause
+            ].join(' ')),
+            values: extractQuotedTexts(assertionClause)
+        };
+    });
 }
 
 /** 提取同一断言分句中的中英文引号内容，并保持原始顺序和文字。 */
