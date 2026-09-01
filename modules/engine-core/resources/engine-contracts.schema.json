@@ -2,6 +2,96 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "additionalProperties": false,
     "definitions": {
+        "AccessibilityAncestor": {
+            "additionalProperties": false,
+            "description": "Accessibility 节点的紧凑祖先语义。",
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "role": {
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        },
+        "AccessibilityNode": {
+            "additionalProperties": false,
+            "description": "浏览器原生 Accessibility 表示中的 bounded 节点。",
+            "properties": {
+                "ancestors": {
+                    "items": {
+                        "$ref": "#/definitions/AccessibilityAncestor"
+                    },
+                    "type": "array"
+                },
+                "boundingBox": {
+                    "$ref": "#/definitions/BoundingBox"
+                },
+                "checked": {
+                    "enum": [
+                        false,
+                        "mixed",
+                        true
+                    ]
+                },
+                "description": {
+                    "type": "string"
+                },
+                "disabled": {
+                    "type": "boolean"
+                },
+                "domCandidateId": {
+                    "description": "已安全映射并注册到当前 observation 的物理候选。",
+                    "type": "string"
+                },
+                "expanded": {
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "role": {
+                    "type": "string"
+                },
+                "selected": {
+                    "type": "boolean"
+                }
+            },
+            "required": [
+                "ancestors",
+                "id"
+            ],
+            "type": "object"
+        },
+        "AccessibilitySnapshot": {
+            "additionalProperties": false,
+            "description": "不保存原始完整树，只保存 Grounding 所需的有限节点。",
+            "properties": {
+                "nodes": {
+                    "items": {
+                        "$ref": "#/definitions/AccessibilityNode"
+                    },
+                    "type": "array"
+                },
+                "source": {
+                    "const": "playwright-aria-snapshot",
+                    "type": "string"
+                },
+                "truncated": {
+                    "type": "boolean"
+                }
+            },
+            "required": [
+                "nodes",
+                "source",
+                "truncated"
+            ],
+            "type": "object"
+        },
         "ActionCommand": {
             "additionalProperties": false,
             "description": "Planner 每轮只能返回的一个受控动作或终止建议。",
@@ -1029,6 +1119,247 @@
             ],
             "type": "object"
         },
+        "PagePerception": {
+            "additionalProperties": false,
+            "description": "DOM、Accessibility、交互状态和视觉证据的统一感知快照。",
+            "properties": {
+                "accessibility": {
+                    "$ref": "#/definitions/AccessibilitySnapshot"
+                },
+                "capturedAt": {
+                    "type": "string"
+                },
+                "delta": {
+                    "$ref": "#/definitions/PerceptionDelta"
+                },
+                "dom": {
+                    "$ref": "#/definitions/PageObservation"
+                },
+                "interactionStates": {
+                    "$ref": "#/definitions/Record<string,ElementInteractionState>"
+                },
+                "perceptionId": {
+                    "type": "string"
+                },
+                "stability": {
+                    "$ref": "#/definitions/PerceptionStability",
+                    "description": "缺失表示 legacy artifact，读取时必须按 unknown 处理。"
+                },
+                "visual": {
+                    "additionalProperties": false,
+                    "properties": {
+                        "regions": {
+                            "items": {
+                                "$ref": "#/definitions/VisualRegion"
+                            },
+                            "type": "array"
+                        },
+                        "screenshotRef": {
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "regions"
+                    ],
+                    "type": "object"
+                }
+            },
+            "required": [
+                "accessibility",
+                "capturedAt",
+                "dom",
+                "interactionStates",
+                "perceptionId"
+            ],
+            "type": "object"
+        },
+        "PageTransientSignal": {
+            "description": "页面中可以低成本识别的异步过渡信号。",
+            "enum": [
+                "aria-busy",
+                "document-loading",
+                "loading-text",
+                "progressbar",
+                "spinner"
+            ],
+            "type": "string"
+        },
+        "PerceptionDelta": {
+            "additionalProperties": false,
+            "description": "两次感知之间可确定、低成本计算的状态变化。",
+            "properties": {
+                "accessibility": {
+                    "additionalProperties": false,
+                    "properties": {
+                        "added": {
+                            "items": {
+                                "type": "string"
+                            },
+                            "type": "array"
+                        },
+                        "changed": {
+                            "items": {
+                                "type": "string"
+                            },
+                            "type": "array"
+                        },
+                        "removed": {
+                            "items": {
+                                "type": "string"
+                            },
+                            "type": "array"
+                        },
+                        "truncated": {
+                            "type": "boolean"
+                        }
+                    },
+                    "required": [
+                        "added",
+                        "changed",
+                        "removed",
+                        "truncated"
+                    ],
+                    "type": "object"
+                },
+                "candidates": {
+                    "additionalProperties": false,
+                    "properties": {
+                        "added": {
+                            "items": {
+                                "type": "string"
+                            },
+                            "type": "array"
+                        },
+                        "removed": {
+                            "items": {
+                                "type": "string"
+                            },
+                            "type": "array"
+                        },
+                        "truncated": {
+                            "type": "boolean"
+                        }
+                    },
+                    "required": [
+                        "added",
+                        "removed",
+                        "truncated"
+                    ],
+                    "type": "object"
+                },
+                "overlayState": {
+                    "additionalProperties": false,
+                    "properties": {
+                        "after": {
+                            "enum": [
+                                "blocked",
+                                "clear",
+                                "unknown"
+                            ],
+                            "type": "string"
+                        },
+                        "before": {
+                            "enum": [
+                                "blocked",
+                                "clear",
+                                "unknown"
+                            ],
+                            "type": "string"
+                        },
+                        "changed": {
+                            "type": "boolean"
+                        }
+                    },
+                    "required": [
+                        "after",
+                        "before",
+                        "changed"
+                    ],
+                    "type": "object"
+                },
+                "titleChanged": {
+                    "type": "boolean"
+                },
+                "urlChanged": {
+                    "type": "boolean"
+                },
+                "visibleText": {
+                    "additionalProperties": false,
+                    "properties": {
+                        "added": {
+                            "items": {
+                                "type": "string"
+                            },
+                            "type": "array"
+                        },
+                        "removed": {
+                            "items": {
+                                "type": "string"
+                            },
+                            "type": "array"
+                        },
+                        "truncated": {
+                            "type": "boolean"
+                        }
+                    },
+                    "required": [
+                        "added",
+                        "removed",
+                        "truncated"
+                    ],
+                    "type": "object"
+                }
+            },
+            "required": [
+                "accessibility",
+                "candidates",
+                "overlayState",
+                "titleChanged",
+                "urlChanged",
+                "visibleText"
+            ],
+            "type": "object"
+        },
+        "PerceptionStability": {
+            "additionalProperties": false,
+            "description": "一次完整 Perception capture window 的一致性结论。",
+            "properties": {
+                "afterFingerprint": {
+                    "type": "string"
+                },
+                "beforeFingerprint": {
+                    "type": "string"
+                },
+                "consistency": {
+                    "enum": [
+                        "consistent",
+                        "inconsistent",
+                        "unknown"
+                    ],
+                    "type": "string"
+                },
+                "state": {
+                    "enum": [
+                        "stable",
+                        "transient",
+                        "unknown"
+                    ],
+                    "type": "string"
+                },
+                "transientSignals": {
+                    "items": {
+                        "$ref": "#/definitions/PageTransientSignal"
+                    },
+                    "type": "array"
+                }
+            },
+            "required": [
+                "consistency",
+                "state",
+                "transientSignals"
+            ],
+            "type": "object"
+        },
         "ProjectContext": {
             "additionalProperties": false,
             "description": "项目规则、业务术语和执行保护组成的运行上下文。",
@@ -1051,6 +1382,10 @@
                 "rules",
                 "terms"
             ],
+            "type": "object"
+        },
+        "Record<string,ElementInteractionState>": {
+            "additionalProperties": false,
             "type": "object"
         },
         "Record<string,EnvironmentVariable>": {
@@ -2063,6 +2398,9 @@
         "pageObservation": {
             "$ref": "#/definitions/PageObservation"
         },
+        "pagePerception": {
+            "$ref": "#/definitions/PagePerception"
+        },
         "runEvent": {
             "$ref": "#/definitions/RunEvent"
         },
@@ -2097,6 +2435,7 @@
         "environmentDefinition",
         "groundingDecision",
         "pageObservation",
+        "pagePerception",
         "runEvent",
         "runResult",
         "runSnapshot",

@@ -62,6 +62,31 @@ export interface VisualRegion {
     description: string;
 }
 
+/** 页面中可以低成本识别的异步过渡信号。 */
+export type PageTransientSignal =
+    | 'aria-busy'
+    | 'document-loading'
+    | 'loading-text'
+    | 'progressbar'
+    | 'spinner';
+
+/** 不包含完整页面文本或瞬时物理 id 的低波动稳定性采样。 */
+export interface PageStabilitySample {
+    capturedAt: string;
+    fingerprint: string;
+    loading: boolean;
+    transientSignals: PageTransientSignal[];
+}
+
+/** 一次完整 Perception capture window 的一致性结论。 */
+export interface PerceptionStability {
+    consistency: 'consistent' | 'inconsistent' | 'unknown';
+    state: 'stable' | 'transient' | 'unknown';
+    afterFingerprint?: string;
+    beforeFingerprint?: string;
+    transientSignals: PageTransientSignal[];
+}
+
 /** 两次感知之间可确定、低成本计算的状态变化。 */
 export interface PerceptionDelta {
     accessibility: {
@@ -97,6 +122,8 @@ export interface PagePerception {
     delta?: PerceptionDelta;
     dom: PageObservation;
     interactionStates: Record<string, ElementInteractionState>;
+    /** 缺失表示 legacy artifact，读取时必须按 unknown 处理。 */
+    stability?: PerceptionStability;
     visual?: {
         regions: VisualRegion[],
         screenshotRef?: string

@@ -17,6 +17,9 @@ import type {
     PageObservation,
 } from './observation';
 import type {
+    PagePerception,
+} from './perception';
+import type {
     RunResult,
     RunSnapshot,
 } from './run';
@@ -44,6 +47,7 @@ export interface EngineContracts {
     environmentDefinition: EnvironmentDefinition;
     groundingDecision: GroundingDecision;
     pageObservation: PageObservation;
+    pagePerception: PagePerception;
     runEvent: RunEvent;
     runResult: RunResult;
     runSnapshot: RunSnapshot;

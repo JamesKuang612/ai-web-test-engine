@@ -2,6 +2,7 @@ import type {
     AccessibilitySnapshot,
     ElementInteractionState,
     PageObservation,
+    PageStabilitySample,
 } from '../contracts';
 import type {
     BrowserSession,
@@ -19,4 +20,12 @@ export interface PagePerceptionPort {
         observation: PageObservation,
         signal: AbortSignal
     ) => Promise<CapturedPerceptionSignals>;
+}
+
+/** 只采集低波动页面骨架，供 capture consistency 与 bounded settling 使用。 */
+export interface PageStabilityPort {
+    sample: (
+        session: BrowserSession,
+        signal: AbortSignal
+    ) => Promise<PageStabilitySample>;
 }

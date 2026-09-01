@@ -4,7 +4,9 @@ import type {
     AccessibilityNode,
     PageObservation,
     PagePerception,
+    PageStabilitySample,
     PerceptionDelta,
+    PerceptionStability,
 } from '../contracts';
 import type {
     BrowserSession,
@@ -21,7 +23,11 @@ export class PerceptionService {
         session: BrowserSession,
         observation: PageObservation,
         previous: PagePerception | undefined,
-        signal: AbortSignal
+        signal: AbortSignal,
+        consistencyWindow?: {
+            after: PageStabilitySample,
+            before: PageStabilitySample
+        }
     ): Promise<PagePerception> {
         signal.throwIfAborted();
         const signals = await this.perceptionPort.capture(
@@ -36,6 +42,7 @@ export class PerceptionService {
             accessibility: signals.accessibility,
             dom: observation,
             interactionStates: signals.interactionStates,
+            stability: createPerceptionStability(consistencyWindow),
             visual: {
                 regions: [],
                 ...observation.screenshotRef
@@ -50,6 +57,38 @@ export class PerceptionService {
             }
             : perception;
     }
+}
+
+/** legacy capture 没有 consistency window 时返回正式 unknown，而非假定稳定。 */
+export function createPerceptionStability(
+    window: {
+        after: PageStabilitySample,
+        before: PageStabilitySample
+    } | undefined
+): PerceptionStability {
+    if (!window) {
+        return {
+            consistency: 'unknown',
+            state: 'unknown',
+            transientSignals: []
+        };
+    }
+    const transientSignals = [ ...new Set([
+        ...window.before.transientSignals,
+        ...window.after.transientSignals
+    ]) ];
+    const transient = window.before.loading
+        || window.after.loading
+        || transientSignals.length > 0;
+    return {
+        consistency: window.before.fingerprint === window.after.fingerprint
+            ? 'consistent'
+            : 'inconsistent',
+        state: transient ? 'transient' : 'stable',
+        beforeFingerprint: window.before.fingerprint,
+        afterFingerprint: window.after.fingerprint,
+        transientSignals
+    };
 }
 /** 只比较已采集的紧凑数据，不调用模型或浏览器。 */
 export function createPerceptionDelta(
