@@ -33,6 +33,10 @@ export interface RecoveryPlannerPort {
         diagnostic: ModelProtocolDiagnostic,
         signal: AbortSignal
     ) => Promise<RecoveryPlannerAttempt>;
+    /** 在计入 repair 模型调用前确认原始策略身份仍可确定。 */
+    canRepairProtocol?: (
+        diagnostic: ModelProtocolDiagnostic
+    ) => boolean;
 }
 
 export interface RecoverySafetyPolicy {

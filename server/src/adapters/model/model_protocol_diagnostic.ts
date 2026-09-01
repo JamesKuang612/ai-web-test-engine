@@ -15,7 +15,8 @@ const MAX_ARRAY_LENGTH = 30;
 const MAX_OBJECT_KEYS = 50;
 const MAX_DEPTH = 6;
 const SENSITIVE_KEY = /(?:authorization|cookie|credential|password|secret|token)/iu;
-const RAW_SECRET = /((?:authorization|cookie|password|secret|token)\s*["']?\s*[:=]\s*)[^\s,}\]]+/giu;
+const RAW_HEADER_SECRET = /(["']?(?:authorization|cookie)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n}]+)/giu;
+const RAW_NAMED_SECRET = /(["']?(?:credential|password|secret|token)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}\]]+)/giu;
 const URL_PATTERN = /https?:\/\/[^\s"'<>]+/giu;
 
 interface DiagnosticInput {
@@ -35,6 +36,7 @@ export function createSafeModelProtocolDiagnostic(
 ): ModelProtocolDiagnostic {
     let truncated = false;
     const rawOutputPreview = input.rawOutput === undefined
+        || input.failureType !== 'invalid-json'
         ? undefined
         : bound(sanitizeText(input.rawOutput), MAX_RAW_PREVIEW, () => {
             truncated = true;
@@ -128,7 +130,8 @@ function sanitizeJson(
 
 function sanitizeText(value: string): string {
     return value
-        .replace(RAW_SECRET, '$1[REDACTED]')
+        .replace(RAW_HEADER_SECRET, '$1[REDACTED]')
+        .replace(RAW_NAMED_SECRET, '$1[REDACTED]')
         .replace(URL_PATTERN, (candidate) => sanitizeUrl(candidate));
 }
 

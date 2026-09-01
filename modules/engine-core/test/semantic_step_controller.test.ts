@@ -2,18 +2,24 @@ import assert from 'node:assert/strict';
 
 import type {
     GroundingDecision,
+    ModelAdapter,
     ModelProtocolDiagnostic,
+    ModelRequest,
+    ModelResult,
     PagePerception,
     RecoveryDecision,
     RecoveryPlannerPort,
     RecoverySafetyPolicy,
+    RuntimeSchema,
     SemanticAction,
     SemanticStepActionExecution,
     SemanticStepRuntimePort,
     TestIntent,
 } from '../src';
 import {
+    ClassifiedModelFailure,
     DeterministicRecoverySafetyPolicy,
+    ModelRecoveryPlanner,
     SemanticStepController,
     SemanticStepProgressEvaluator,
 } from '../src';
@@ -420,6 +426,36 @@ describe('SemanticStepController', () => {
         assert.deepEqual(runtime.protocolPhases, [ 'initial', 'repair' ]);
     });
 
+    it('repair 改变 Recovery 策略时拒绝且 Browser 不调用', async () => {
+        const initial = perception('initial', { elements: [] });
+        const runtime = new FakeRuntime(
+            initial,
+            () => decision('not-found'),
+            () => initial
+        );
+        const planner = new ModelRecoveryPlanner(
+            new StrategyChangingRepairAdapter()
+        );
+
+        const result = await controller(
+            runtime,
+            new SemanticStepProgressEvaluator(),
+            planner
+        ).execute(step({
+            type: 'CLICK',
+            target: { description: '新建应用' },
+            reasonSummary: '创建应用'
+        }), intent, signal());
+
+        assert.equal(result.outcome.status, 'exhausted');
+        assert.deepEqual(runtime.executedTypes, []);
+        assert.deepEqual(runtime.modelPurposes, [
+            'recovery-planner',
+            'recovery-protocol-repair'
+        ]);
+        assert.deepEqual(runtime.protocolPhases, [ 'initial', 'repair' ]);
+    });
+
     it('非导航 wrong-state 不会授权 BACK', () => {
         const policy = new DeterministicRecoverySafetyPolicy();
         const common = {
@@ -591,6 +627,37 @@ class ProtocolFailureRecoveryPlanner implements RecoveryPlannerPort {
     });
 }
 
+class StrategyChangingRepairAdapter implements ModelAdapter {
+    private callCount = 0;
+
+    public async generateStructured<T>(
+        _request: ModelRequest,
+        schema: RuntimeSchema<T>
+    ): Promise<ModelResult<T>> {
+        this.callCount += 1;
+        if (this.callCount === 1) {
+            throw new ClassifiedModelFailure(
+                'schema-invalid',
+                'RecoveryDecision schema invalid',
+                hoverProtocolDiagnostic()
+            );
+        }
+        return {
+            model: 'fake-model',
+            value: schema.parse({
+                kind: 'recover',
+                action: {
+                    type: 'CLICK',
+                    target: { description: '设置', scope: null },
+                    expectedTransientEffect: null,
+                    reasonSummary: '打开设置'
+                },
+                reason: null
+            })
+        };
+    }
+}
+
 function protocolDiagnostic(
     phase: 'initial' | 'repair'
 ): ModelProtocolDiagnostic {
@@ -602,6 +669,32 @@ function protocolDiagnostic(
         parsedJson: { kind: 'stop' },
         schemaIssues: [{
             path: 'RecoveryDecision.action',
+            code: 'missing-field',
+            message: '字段缺失。'
+        }],
+        sanitized: true,
+        truncated: false
+    };
+}
+
+function hoverProtocolDiagnostic(): ModelProtocolDiagnostic {
+    return {
+        schemaVersion: 1,
+        modelRole: 'recovery-planner',
+        phase: 'initial',
+        failureType: 'schema-invalid',
+        parsedJson: {
+            kind: 'recover',
+            action: {
+                type: 'HOVER',
+                target: { description: '应用11卡片' },
+                expectedTransientEffect: null,
+                reasonSummary: '显示收藏入口'
+            },
+            reason: null
+        },
+        schemaIssues: [{
+            path: 'RecoveryDecision.action.target.scope',
             code: 'missing-field',
             message: '字段缺失。'
         }],

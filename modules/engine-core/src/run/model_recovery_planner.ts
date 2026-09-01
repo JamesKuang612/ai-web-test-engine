@@ -1,4 +1,5 @@
 import type {
+    JsonValue,
     RecoveryAction,
     RecoveryDecision,
     RecoveryPlannerInput,
@@ -57,11 +58,18 @@ export class ModelRecoveryPlanner implements RecoveryPlannerPort {
         }, signal);
     }
 
-    public async repairProtocol(
+    public repairProtocol = async (
         diagnostic: ModelProtocolDiagnostic,
         signal: AbortSignal
-    ): Promise<RecoveryPlannerAttempt> {
-        return await this.generate({
+    ): Promise<RecoveryPlannerAttempt> => {
+        const guard = createSemanticRepairGuard(diagnostic.parsedJson);
+        if (!guard) {
+            return unavailableRepair(
+                diagnostic,
+                '原始 Recovery strategy identity 无法确定，禁止协议修复。'
+            );
+        }
+        const repaired = await this.generate({
             systemPrompt: [
                 '你只负责修复 RecoveryDecision JSON 的协议结构。',
                 '不得重新规划策略，不得改变原动作意图、目标或理由。',
@@ -78,7 +86,20 @@ export class ModelRecoveryPlanner implements RecoveryPlannerPort {
             modelRole: 'recovery-planner',
             protocolPhase: 'repair'
         }, signal);
-    }
+        if (repaired.status !== 'decision') {
+            return repaired;
+        }
+        const changedPaths = changedSemanticPaths(guard, repaired.decision);
+        return changedPaths.length === 0
+            ? repaired
+            : unavailableSemanticChange(repaired.decision, changedPaths);
+    };
+
+    public canRepairProtocol = (
+        diagnostic: ModelProtocolDiagnostic
+    ): boolean => {
+        return createSemanticRepairGuard(diagnostic.parsedJson) !== undefined;
+    };
 
     private async generate(
         request: ModelRequest,
@@ -111,6 +132,136 @@ export class ModelRecoveryPlanner implements RecoveryPlannerPort {
             };
         }
     }
+}
+
+interface SemanticRepairGuard {
+    values: Record<string, string>;
+}
+
+const RECOVERY_ACTION_TYPES = new Set([
+    'BACK', 'CLEAR', 'CLICK', 'HOVER', 'REOBSERVE', 'SCROLL', 'WAIT'
+]);
+
+/** 只提取 initial JSON 中已经存在且领域有效的语义字段。 */
+function createSemanticRepairGuard(
+    value: unknown
+): SemanticRepairGuard | undefined {
+    if (!isRecord(value) || (value.kind !== 'recover' && value.kind !== 'stop')) {
+        return undefined;
+    }
+    const values: Record<string, string> = { kind: value.kind };
+    if (value.kind === 'stop') {
+        preserveString(values, 'stop.reason', value.reason);
+        return { values };
+    }
+    if (!isRecord(value.action)) {
+        return undefined;
+    }
+    const action = value.action;
+    const actionType = action.type;
+    if (
+        typeof actionType !== 'string'
+        || !RECOVERY_ACTION_TYPES.has(actionType)
+    ) {
+        return undefined;
+    }
+    values['action.type'] = actionType;
+    if ([ 'CLEAR', 'CLICK', 'HOVER' ].includes(actionType)) {
+        if (!isRecord(action.target) || !nonEmptyString(action.target.description)) {
+            return undefined;
+        }
+        values['target.description'] = action.target.description;
+        preserveString(values, 'target.scope', action.target.scope);
+    }
+    preserveEnum(values, 'direction', action.direction, [ 'up', 'down' ]);
+    preserveEnum(values, 'amount', action.amount, [
+        'small', 'medium', 'page'
+    ]);
+    preserveEnum(values, 'duration', action.duration, [ 'short', 'medium' ]);
+    preserveString(values, 'reasonSummary', action.reasonSummary);
+    preserveString(
+        values,
+        'expectedTransientEffect',
+        action.expectedTransientEffect
+    );
+    return { values };
+}
+
+function changedSemanticPaths(
+    guard: SemanticRepairGuard,
+    repaired: RecoveryDecision
+): string[] {
+    const repairedGuard = createSemanticRepairGuard(repaired);
+    if (!repairedGuard) {
+        return [ 'strategy.identity' ];
+    }
+    return Object.entries(guard.values)
+        .filter(([ path, value ]) => repairedGuard.values[path] !== value)
+        .map(([ path ]) => path);
+}
+
+function unavailableRepair(
+    diagnostic: ModelProtocolDiagnostic,
+    reason: string
+): RecoveryPlannerAttempt {
+    return {
+        status: 'unavailable',
+        reason,
+        diagnostic
+    };
+}
+
+function unavailableSemanticChange(
+    decision: RecoveryDecision,
+    changedPaths: string[]
+): RecoveryPlannerAttempt {
+    return {
+        status: 'unavailable',
+        reason: `协议修复改变了 Recovery 语义：${ changedPaths.join(', ') }。`,
+        diagnostic: {
+            schemaVersion: 1,
+            modelRole: 'recovery-planner',
+            phase: 'repair',
+            failureType: 'schema-invalid',
+            parsedJson: decision as unknown as JsonValue,
+            schemaIssues: changedPaths.map((path) => ({
+                path,
+                code: 'semantic-preservation-failed',
+                message: 'repair 不得改变 initial JSON 中已有的语义值。'
+            })),
+            sanitized: true,
+            truncated: false
+        }
+    };
+}
+
+function preserveString(
+    output: Record<string, string>,
+    path: string,
+    value: unknown
+): void {
+    if (nonEmptyString(value)) {
+        output[path] = value;
+    }
+}
+
+function preserveEnum(
+    output: Record<string, string>,
+    path: string,
+    value: unknown,
+    allowed: string[]
+): void {
+    if (typeof value === 'string' && allowed.includes(value)) {
+        output[path] = value;
+    }
+}
+
+function nonEmptyString(value: unknown): value is string {
+    return typeof value === 'string' && Boolean(value.trim());
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 const recoveryDecisionSchema: RuntimeSchema<RecoveryDecision> = {

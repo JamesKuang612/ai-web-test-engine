@@ -96,7 +96,15 @@ describe('CodexAppServerModelAdapter', () => {
             model: 'gpt-5.6-sol',
             threadId: 'thread-001',
             turnId: 'turn-001',
-            text: 'token=secret-value https://example.test/path?q=secret not-json'
+            text: [
+                'Authorization: Bearer bearer-secret-value',
+                'Cookie: session=cookie-secret; theme=dark',
+                'password="multi word password"',
+                "token='multi word token'",
+                'credential = "multi word credential"',
+                'https://example.test/path?q=query-secret#fragment-secret',
+                'not-json'
+            ].join('\n')
         });
 
         await assert.rejects(
@@ -108,10 +116,19 @@ describe('CodexAppServerModelAdapter', () => {
             hasClassifiedFailure('invalid-json', (error) => {
                 assert.equal(error.diagnostic.modelRole, 'recovery-planner');
                 assert.equal(error.diagnostic.phase, 'initial');
-                assert.equal(
-                    error.diagnostic.rawOutputPreview?.includes('secret-value'),
-                    false
-                );
+                [
+                    'bearer-secret-value',
+                    'cookie-secret',
+                    'multi word password',
+                    'multi word token',
+                    'multi word credential',
+                    'query-secret',
+                    'fragment-secret'
+                ].forEach((secret) => assert.equal(
+                    error.diagnostic.rawOutputPreview?.includes(secret),
+                    false,
+                    secret
+                ));
                 assert.equal(
                     error.diagnostic.rawOutputPreview?.includes('?q='),
                     false
@@ -138,6 +155,8 @@ describe('CodexAppServerModelAdapter', () => {
             hasClassifiedFailure('schema-invalid', (error) => {
                 assert.deepEqual(error.diagnostic.parsedJson, { status: 123 });
                 assert.equal(error.diagnostic.schemaIssues[0]?.path, '$');
+                assert.equal(error.diagnostic.rawOutputPreview, undefined);
+                assert.equal(error.diagnostic.rawSha256?.length, 64);
             })
         );
     });

@@ -656,6 +656,9 @@ export class SemanticStepController<TRecord> {
         if (modeled.status === 'protocol-invalid') {
             if (
                 !repairProtocol
+                || this.modelRecoveryPlanner?.canRepairProtocol?.(
+                    modeled.diagnostic
+                ) === false
                 || state.recoveryProtocolRepairCalls >=
                     this.options.maxRecoveryProtocolRepairCallsPerStep
                 || !this.runtime.canUseModel()

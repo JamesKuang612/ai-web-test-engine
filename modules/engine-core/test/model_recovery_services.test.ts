@@ -72,7 +72,7 @@ describe('Phase 3 model recovery services', () => {
     });
 
     it('schema invalid 可做一次只修协议结构的 repair', async () => {
-        const diagnostic = protocolDiagnostic('initial');
+        const diagnostic = hoverProtocolDiagnostic();
         const adapter = new FakeModelAdapter([
             new ClassifiedModelFailure(
                 'schema-invalid',
@@ -80,9 +80,17 @@ describe('Phase 3 model recovery services', () => {
                 diagnostic
             ),
             {
-                kind: 'stop',
-                action: null,
-                reason: '没有安全恢复动作'
+                kind: 'recover',
+                action: {
+                    type: 'HOVER',
+                    target: {
+                        description: '应用11卡片',
+                        scope: null
+                    },
+                    expectedTransientEffect: null,
+                    reasonSummary: '显示收藏入口'
+                },
+                reason: null
             }
         ]);
         const planner = new ModelRecoveryPlanner(adapter);
@@ -99,6 +107,17 @@ describe('Phase 3 model recovery services', () => {
         );
 
         assert.equal(repaired.status, 'decision');
+        assert.deepEqual(
+            repaired.status === 'decision' ? repaired.decision : undefined,
+            {
+                kind: 'recover',
+                action: {
+                    type: 'HOVER',
+                    target: { description: '应用11卡片' },
+                    reasonSummary: '显示收藏入口'
+                }
+            }
+        );
         assert.equal(adapter.requests.length, 2);
         assert.equal(adapter.requests[1]?.protocolPhase, 'repair');
         assert.equal(adapter.requests[1]?.modelRole, 'recovery-planner');
@@ -110,6 +129,48 @@ describe('Phase 3 model recovery services', () => {
             adapter.requests[1]?.userPrompt.includes('visibleText'),
             false
         );
+    });
+
+    it('repair 改变已有 Recovery 策略时 deterministic reject', async () => {
+        const diagnostic = hoverProtocolDiagnostic();
+        const adapter = new FakeModelAdapter({
+            kind: 'recover',
+            action: {
+                type: 'CLICK',
+                target: { description: '设置', scope: null },
+                expectedTransientEffect: null,
+                reasonSummary: '打开设置'
+            },
+            reason: null
+        });
+        const planner = new ModelRecoveryPlanner(adapter);
+
+        const repaired = await planner.repairProtocol(diagnostic, signal());
+
+        assert.equal(repaired.status, 'unavailable');
+        assert.equal(
+            repaired.status === 'unavailable'
+                ? repaired.diagnostic.schemaIssues.some(
+                    ({ code }) => code === 'semantic-preservation-failed'
+                )
+                : false,
+            true
+        );
+    });
+
+    it('缺少 Recovery strategy identity 时不调用 repair 模型', async () => {
+        const diagnostic = unrepairableProtocolDiagnostic();
+        const adapter = new FakeModelAdapter({
+            kind: 'stop', action: null, reason: '不应调用'
+        });
+        const planner = new ModelRecoveryPlanner(adapter);
+
+        assert.equal(planner.canRepairProtocol(diagnostic), false);
+        assert.equal(
+            (await planner.repairProtocol(diagnostic, signal())).status,
+            'unavailable'
+        );
+        assert.equal(adapter.requests.length, 0);
     });
 
     it('已分类 provider failure 返回 unavailable 而不是抛内部异常', async () => {
@@ -187,6 +248,51 @@ function protocolDiagnostic(
             path: 'RecoveryDecision.action',
             code: 'missing-field',
             message: '字段缺失。'
+        }],
+        sanitized: true,
+        truncated: false
+    };
+}
+
+function hoverProtocolDiagnostic(): ModelProtocolDiagnostic {
+    return {
+        schemaVersion: 1,
+        modelRole: 'recovery-planner',
+        phase: 'initial',
+        failureType: 'schema-invalid',
+        rawSha256: 'hover-sha',
+        parsedJson: {
+            kind: 'recover',
+            action: {
+                type: 'HOVER',
+                target: { description: '应用11卡片' },
+                expectedTransientEffect: null,
+                reasonSummary: '显示收藏入口'
+            },
+            reason: null
+        },
+        schemaIssues: [{
+            path: 'RecoveryDecision.action.target.scope',
+            code: 'missing-field',
+            message: '字段缺失。'
+        }],
+        sanitized: true,
+        truncated: false
+    };
+}
+
+function unrepairableProtocolDiagnostic(): ModelProtocolDiagnostic {
+    return {
+        schemaVersion: 1,
+        modelRole: 'recovery-planner',
+        phase: 'initial',
+        failureType: 'invalid-json',
+        rawOutputPreview: '{broken',
+        rawSha256: 'broken-sha',
+        schemaIssues: [{
+            path: '$',
+            code: 'invalid-json',
+            message: '无法解析。'
         }],
         sanitized: true,
         truncated: false
