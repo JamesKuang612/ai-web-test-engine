@@ -83,6 +83,43 @@ describe('SemanticStepProgressEvaluator', () => {
     });
 });
 
+describe('SemanticStepProgressEvaluator WAIT', () => {
+    it('纯时间 WAIT 完成，但业务 WAIT 在“搜索中”时不得 complete', async () => {
+        const before = createPerception('before');
+        const searching = createPerception('searching', before);
+        searching.dom.visibleText = [ '搜索中...' ];
+        searching.stability = {
+            consistency: 'consistent',
+            state: 'transient',
+            transientSignals: [ 'loading-text' ]
+        };
+        const evaluator = new SemanticStepProgressEvaluator();
+        const pure = await evaluator.evaluate(waitInput(before, before),
+            new AbortController().signal);
+        const business = await evaluator.evaluate(waitInput(
+            before,
+            searching,
+            '搜索结果或无结果状态显示'
+        ), new AbortController().signal);
+
+        assert.equal(pure.status, 'complete');
+        assert.notEqual(business.status, 'complete');
+        assert.equal(business.status, 'no-progress');
+    });
+
+    it('business WAIT 仅在稳定页面出现业务终态时 complete', async () => {
+        const before = createPerception('before');
+        const after = createPerception('after', before);
+        after.dom.visibleText = [ '没有搜索到相关结果' ];
+        const progress = await new SemanticStepProgressEvaluator().evaluate(
+            waitInput(before, after, '搜索结果或无结果状态显示'),
+            new AbortController().signal
+        );
+
+        assert.equal(progress.status, 'complete');
+    });
+});
+
 describe('SemanticStepProgressEvaluator correctness', () => {
     it('CLICK 错跳 settings 时不能复用跳转前已有目标文本', async () => {
         const before = createPerception('before');
@@ -196,6 +233,11 @@ function createPerception(
                 visible: true
             }
         },
+        stability: {
+            consistency: 'consistent',
+            state: 'stable',
+            transientSignals: []
+        },
         ...previous
             ? {
                 delta: {
@@ -216,6 +258,41 @@ function createPerception(
                 }
             }
             : {}
+    };
+}
+
+function waitInput(
+    before: PagePerception,
+    after: PagePerception,
+    expectedEffect?: string
+): SemanticStepProgressInput {
+    return {
+        step: {
+            id: 'wait-step',
+            primaryAction: {
+                type: 'WAIT',
+                value: { source: 'literal', value: 200 },
+                ...expectedEffect ? { expectedEffect } : {},
+                reasonSummary: '等待页面状态'
+            },
+            ...expectedEffect ? { expectedEffect } : {},
+            source: 'runtime-wrapper'
+        },
+        attemptedAction: {
+            type: 'WAIT',
+            value: { source: 'literal', value: 200 },
+            ...expectedEffect ? { expectedEffect } : {},
+            reasonSummary: '等待页面状态'
+        },
+        before,
+        after,
+        actionResult: executedResult(),
+        effect: {
+            status: 'confirmed',
+            expectedEffect: expectedEffect ?? '等待 200ms',
+            evidence: [],
+            summary: '等待动作已执行。'
+        }
     };
 }
 

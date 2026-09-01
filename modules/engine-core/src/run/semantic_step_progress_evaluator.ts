@@ -52,12 +52,15 @@ export class SemanticStepProgressEvaluator {
         allowModelFallback = false
     ): Promise<SemanticStepProgress> {
         const deterministic = this.evaluateDeterministically(input);
+        const modelEligible = input.attemptedAction.type === 'CLICK'
+            || input.attemptedAction.type === 'HOVER'
+            || input.attemptedAction.type === 'WAIT'
+                && Boolean(input.step.expectedEffect);
         if (
             deterministic.status !== 'unknown'
             || !allowModelFallback
             || !this.options.modelFallback
-            || input.attemptedAction.type !== 'CLICK' &&
-                input.attemptedAction.type !== 'HOVER'
+            || !modelEligible
         ) {
             return deterministic;
         }
@@ -103,12 +106,28 @@ export class SemanticStepProgressEvaluator {
         const groundingImproved = isGroundingImproved(input);
         const changed = hasMeaningfulPerceptionDelta(input.after.delta);
         if (input.attemptedAction.type === 'WAIT') {
-            if (input.effect?.status === 'confirmed') {
-                return progress('complete', '明确的等待动作已经完成。', evidence);
+            if (!input.step.expectedEffect) {
+                return input.effect?.status === 'confirmed'
+                    ? progress('complete', '纯时间等待已经完成。', evidence)
+                    : progress('no-progress', '浏览器没有完成等待动作。', evidence);
+            }
+            if (isTransientPerception(input.after)) {
+                return progress(
+                    'no-progress',
+                    '等待后页面仍处于加载或搜索中的过渡状态。',
+                    evidence
+                );
+            }
+            if (hasBusinessWaitEvidence(input.step.expectedEffect, input.after)) {
+                return progress(
+                    'complete',
+                    '等待后的稳定页面已出现 expectedEffect 对应业务状态。',
+                    evidence
+                );
             }
             return changed || groundingImproved
                 ? progress('progress', '等待后页面出现了有意义变化。', evidence)
-                : progress('no-progress', '等待后页面没有有意义变化。', evidence);
+                : progress('unknown', '等待已完成，但业务终态证据不足。', evidence);
         }
         if (
             input.attemptedAction.type === 'CLICK'
@@ -153,6 +172,36 @@ export class SemanticStepProgressEvaluator {
             evidence
         );
     }
+}
+
+function isTransientPerception(perception: PagePerception): boolean {
+    return perception.dom.page.loading
+        || perception.stability?.consistency !== 'consistent'
+        || perception.stability.state !== 'stable'
+        || perception.dom.visibleText.some((text) => (
+            /搜索中|加载中|正在加载|请稍候|loading|searching/iu.test(text)
+        ));
+}
+
+function hasBusinessWaitEvidence(
+    expectedEffect: string,
+    perception: PagePerception
+): boolean {
+    if (/稳定|加载完成|渲染完成/iu.test(expectedEffect)) {
+        return true;
+    }
+    const visible = perception.dom.visibleText.join(' ');
+    if (
+        /搜索结果|无结果|搜索完成/iu.test(expectedEffect)
+        && /搜索结果|没有.*结果|未找到|暂无.*(?:数据|内容)|共\s*\d+\s*条/iu
+            .test(visible)
+    ) {
+        return true;
+    }
+    const quoted = [ ...expectedEffect.matchAll(/[“"]([^”"]+)[”"]/gu) ]
+        .map((match) => match[1].trim())
+        .filter((text) => text.length >= 2);
+    return quoted.length > 0 && quoted.every((text) => visible.includes(text));
 }
 
 function hasExplicitTargetPageEvidence(

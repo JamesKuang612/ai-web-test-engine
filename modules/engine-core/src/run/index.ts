@@ -7,6 +7,7 @@ export * from './model_recovery_planner';
 export * from './model_step_progress_evaluator';
 export * from './page_settler';
 export * from './recovery_ports';
+export * from './recovery_target_quality_policy';
 export * from './run_coordinator';
 export * from './run_context';
 export * from './run_lifecycle';

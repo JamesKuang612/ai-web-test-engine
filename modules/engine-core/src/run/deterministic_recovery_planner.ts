@@ -5,6 +5,9 @@ import type {
 import type {
     RecoveryPlannerPort,
 } from './recovery_ports';
+import {
+    isSpecificRecoveryTarget,
+} from './recovery_target_quality_policy';
 
 /** 只提出当前感知能够明确证明安全且通用的 transient 恢复。 */
 export class DeterministicRecoveryPlanner implements RecoveryPlannerPort {
@@ -34,13 +37,14 @@ export class DeterministicRecoveryPlanner implements RecoveryPlannerPort {
             && !matchesPrimaryTarget(element, input)
         ));
         if (filledSearch.length === 1) {
-            return recover({
-                type: 'CLEAR',
-                target: {
-                    description: elementDescription(filledSearch[0])
-                },
-                reasonSummary: '清除当前唯一生效的搜索或筛选条件'
-            });
+            const target = recoveryTarget(filledSearch[0]);
+            if (target) {
+                return recover({
+                    type: 'CLEAR',
+                    target,
+                    reasonSummary: '清除当前唯一生效的搜索或筛选条件'
+                });
+            }
         }
         if (
             input.failure.grounding?.status === 'not-found'
@@ -51,11 +55,14 @@ export class DeterministicRecoveryPlanner implements RecoveryPlannerPort {
                 element.visible && elementText(element).includes(scope)
             ));
             if (scopeMatches.length === 1) {
-                return recover({
-                    type: 'HOVER',
-                    target: { description: elementDescription(scopeMatches[0]) },
-                    reasonSummary: '悬浮原始目标所属区域以暴露隐藏控件'
-                });
+                const target = recoveryTarget(scopeMatches[0]);
+                if (target) {
+                    return recover({
+                        type: 'HOVER',
+                        target,
+                        reasonSummary: '悬浮原始目标所属区域以暴露隐藏控件'
+                    });
+                }
             }
         }
         if (input.failure.grounding?.status === 'not-visible') {
@@ -74,11 +81,14 @@ export class DeterministicRecoveryPlanner implements RecoveryPlannerPort {
                 element.visible && isDismissElement(element)
             ));
             if (dismiss.length === 1) {
-                return recover({
-                    type: 'CLICK',
-                    target: { description: elementDescription(dismiss[0]) },
-                    reasonSummary: '关闭当前阻挡操作的临时浮层'
-                });
+                const target = recoveryTarget(dismiss[0]);
+                if (target) {
+                    return recover({
+                        type: 'CLICK',
+                        target,
+                        reasonSummary: '关闭当前阻挡操作的临时浮层'
+                    });
+                }
             }
         }
         return {
@@ -109,11 +119,19 @@ function matchesPrimaryTarget(
     return Boolean(description && elementText(element).includes(description));
 }
 
-function elementDescription(
+function recoveryTarget(
     element: RecoveryPlannerInput['view']['elements'][number]
-): string {
-    return element.name ?? element.label ?? element.placeholder ??
-        element.text ?? element.visualDescription ?? element.role ?? '页面元素';
+): {description: string} | undefined {
+    const description = [
+        element.name,
+        element.label,
+        element.placeholder,
+        element.text,
+        element.visualDescription
+    ].find((value) => value && isSpecificRecoveryTarget({
+        description: value
+    }));
+    return description ? { description } : undefined;
 }
 
 function elementText(

@@ -38,6 +38,9 @@ import type {
     RecoveryPlannerPort,
     RecoverySafetyPolicy,
 } from './recovery_ports';
+import {
+    RecoveryTargetQualityPolicy,
+} from './recovery_target_quality_policy';
 
 export interface SemanticStepActionExecution<TRecord> {
     record: TRecord;
@@ -129,6 +132,7 @@ const DEFAULT_OPTIONS: SemanticStepControllerOptions = {
 export class SemanticStepController<TRecord> {
     private readonly deterministicPlanner = new DeterministicRecoveryPlanner();
     private readonly retryPolicy = new PrimaryRetryPolicy();
+    private readonly targetQualityPolicy = new RecoveryTargetQualityPolicy();
 
     constructor(
         private readonly runtime: SemanticStepRuntimePort<TRecord>,
@@ -577,7 +581,12 @@ export class SemanticStepController<TRecord> {
         };
         const deterministic = await this.deterministicPlanner.plan(input);
         if (deterministic.kind === 'recover') {
-            return deterministic;
+            return this.hasSpecificRecoveryTarget(deterministic)
+                ? deterministic
+                : {
+                    kind: 'stop',
+                    reason: '确定性 RecoveryTarget 缺少具体语义身份。'
+                };
         }
         if (
             !this.modelRecoveryPlanner
@@ -589,7 +598,21 @@ export class SemanticStepController<TRecord> {
         }
         state.recoveryPlannerCalls += 1;
         this.runtime.consumeModelCalls(1, 'recovery-planner');
-        return await this.modelRecoveryPlanner.plan(input, signal);
+        const modeled = await this.modelRecoveryPlanner.plan(input, signal);
+        return modeled.kind === 'recover' && !this.hasSpecificRecoveryTarget(
+            modeled
+        )
+            ? {
+                kind: 'stop',
+                reason: '模型 RecoveryTarget 缺少具体语义身份，已拒绝执行。'
+            }
+            : modeled;
+    }
+
+    private hasSpecificRecoveryTarget(
+        decision: Extract<RecoveryDecision, {kind: 'recover'}>
+    ): boolean {
+        return this.targetQualityPolicy.evaluate(decision.action).allowed;
     }
 
     private async ground(
