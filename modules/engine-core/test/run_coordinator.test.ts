@@ -287,7 +287,13 @@ describe('RunCoordinator 最终观察', () => {
         const browserAdapter = new FakeBrowserAdapter(
             false,
             false,
-            [ undefined, undefined, retryObservation ]
+            [
+                undefined,
+                undefined,
+                undefined,
+                retryObservation,
+                retryObservation
+            ]
         );
         const actionPlanner = new FakeActionPlanner([
             plannedClickCommand,
@@ -510,35 +516,15 @@ function assertCompletedAiRun(state: CompletedRunState): void {
         environment: startInput.environment,
         projectContext: startInput.projectContext
     });
-    assert.deepEqual(
-        artifactStore.savedJson.map(({ name }) => name),
-        [
-            'intent',
-            'observation-before-navigation',
-            'observation-after-navigation',
-            'page-perception-1',
-            'grounding-decision-1',
-            'observation-after-action-2',
-            'page-perception-2',
-            'grounding-decision-2',
-            'observation-after-action-3',
-            'page-perception-3',
-            'grounding-decision-3',
-            'observation-after-action-4',
-            'page-perception-4',
-            'grounding-decision-4',
-            'verdict',
-            'plan-compilation-source'
-        ]
-    );
+    assertCompletedArtifactNames(artifactStore);
     assert.equal(artifactStore.updatedSnapshots.at(-1)?.lifecycle, 'COMPLETED');
     assert.equal(browserAdapter.startCount, 1);
     assert.equal(browserAdapter.executeCount, 4);
-    assert.equal(browserAdapter.observeCount, 5);
-    assert.equal(browserAdapter.captureScreenshotCount, 4);
+    assert.equal(browserAdapter.observeCount, 9);
+    assert.equal(browserAdapter.captureScreenshotCount, 8);
     assert.equal(browserAdapter.closeCount, 1);
     assert.equal(artifactStore.traces.length, 4);
-    assert.equal(artifactStore.savedArtifacts.length, 4);
+    assert.equal(artifactStore.savedArtifacts.length, 8);
     assertObservationEventsIncludeScreenshot(eventPublisher.events);
     assert.equal(actionPlanner.callCount, 4);
     assert.deepEqual(
@@ -582,6 +568,39 @@ function assertCompletedAiRun(state: CompletedRunState): void {
         eventPublisher.events.map((_event, index) => index + 1)
     );
     assert.equal(eventPublisher.events.at(-1)?.type, 'run.completed');
+}
+
+function assertCompletedArtifactNames(artifactStore: FakeArtifactStore): void {
+    assert.deepEqual(artifactStore.savedJson.map(({ name }) => name), [
+        'intent',
+        'observation-before-navigation',
+        'observation-after-navigation',
+        'page-perception-1',
+        'observation-reobserve-2',
+        'page-perception-2',
+        'page-settling-1',
+        'grounding-decision-1',
+        'observation-after-action-2',
+        'page-perception-3',
+        'observation-reobserve-4',
+        'page-perception-4',
+        'page-settling-2',
+        'grounding-decision-2',
+        'observation-after-action-3',
+        'page-perception-5',
+        'observation-reobserve-6',
+        'page-perception-6',
+        'page-settling-3',
+        'grounding-decision-3',
+        'observation-after-action-4',
+        'page-perception-7',
+        'observation-reobserve-8',
+        'page-perception-8',
+        'page-settling-4',
+        'grounding-decision-4',
+        'verdict',
+        'plan-compilation-source'
+    ]);
 }
 
 function assertGroundingEvidencePersisted(

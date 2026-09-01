@@ -5,6 +5,7 @@ export * from './deterministic_recovery_safety_policy';
 export * from './primary_retry_policy';
 export * from './model_recovery_planner';
 export * from './model_step_progress_evaluator';
+export * from './page_settler';
 export * from './recovery_ports';
 export * from './run_coordinator';
 export * from './run_context';

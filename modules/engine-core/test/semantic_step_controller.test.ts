@@ -19,6 +19,57 @@ import {
 
 // eslint-disable-next-line max-lines-per-function
 describe('SemanticStepController', () => {
+    it('async search: CLEAR → internal settle → original action succeeds', async () => {
+        const initial = perception('initial', {
+            elements: [ element('search', '搜索', 'filled') ]
+        });
+        const searching = perception('searching', {
+            previous: initial,
+            elements: [ element('search', '搜索', 'empty') ],
+            visibleText: [ '搜索中...' ],
+            stability: 'transient'
+        });
+        const ready = perception('ready', {
+            previous: searching,
+            elements: [
+                element('search', '搜索', 'empty'),
+                element('new-app', '新建应用')
+            ]
+        });
+        const done = perception('done', {
+            previous: ready,
+            url: 'https://example.test/new-app',
+            title: '新建应用页面'
+        });
+        const runtime = new FakeRuntime(initial, (action, current) => {
+            if (action.type === 'TYPE') {
+                return grounded('search', current, '搜索');
+            }
+            return current.dom.stateFingerprint === 'ready'
+                || current.dom.stateFingerprint === 'done'
+                ? grounded('new-app', current, '新建应用')
+                : decision('blocked');
+        }, (action) => action.type === 'TYPE' ? searching : done,
+        (current) => current.dom.stateFingerprint === 'searching'
+            ? ready
+            : current);
+
+        const result = await controller(runtime).execute(step({
+            type: 'CLICK',
+            target: { description: '新建应用' },
+            expectedEffect: '进入新建应用页面',
+            reasonSummary: '创建应用'
+        }), intent, signal());
+
+        assert.equal(result.outcome.status, 'completed');
+        assert.deepEqual(runtime.executedTypes, [ 'TYPE', 'CLICK' ]);
+        assert.equal(result.recoveryAttempts.length, 1);
+        assert.equal(runtime.settleCalls, 3);
+        assert.deepEqual(result.executions.map(
+            ({ compilationContribution }) => compilationContribution
+        ), [ 'productive', 'productive' ]);
+    });
+
     it('search overlay: blocked → CLEAR → original action succeeds', async () => {
         const initial = perception('initial', {
             elements: [ element('search', '搜索', 'filled') ]
@@ -380,6 +431,7 @@ const intent: TestIntent = {
 class FakeRuntime implements SemanticStepRuntimePort<string> {
     public executedTypes: string[] = [];
     public modelPurposes: string[] = [];
+    public settleCalls = 0;
     private current: PagePerception;
 
     constructor(
@@ -391,7 +443,10 @@ class FakeRuntime implements SemanticStepRuntimePort<string> {
         private readonly transition: (
             action: SemanticAction,
             perception: PagePerception
-        ) => PagePerception
+        ) => PagePerception,
+        private readonly settleTransition: (
+            perception: PagePerception
+        ) => PagePerception = (perception) => perception
     ) {
         this.current = initial;
     }
@@ -404,6 +459,19 @@ class FakeRuntime implements SemanticStepRuntimePort<string> {
         action,
         current
     ) => this.grounder(action, current);
+    public settle: SemanticStepRuntimePort<string>['settle'] = async (
+        current
+    ) => {
+        this.settleCalls += 1;
+        const settled = this.settleTransition(current);
+        return { status: 'stable', perception: settled as PagePerception & {
+        stability: {
+            consistency: 'consistent',
+            state: 'stable',
+            transientSignals: []
+        }
+        }, samples: [] };
+    };
     public execute: SemanticStepRuntimePort<string>['execute'] = async (input) => {
         this.executedTypes.push(input.action.type);
         const after = this.transition(input.action, this.current);
@@ -444,6 +512,10 @@ class FakeRuntime implements SemanticStepRuntimePort<string> {
         return execution;
     };
     public recordReobserve = async () => {};
+    public reverifyEffectAfterSettling:
+    SemanticStepRuntimePort<string>['reverifyEffectAfterSettling'] = async (
+        execution
+    ) => execution.effect;
     public consumeModelCalls: SemanticStepRuntimePort<string>['consumeModelCalls'] =
         (_count, purpose) => this.modelPurposes.push(purpose);
 }
@@ -529,7 +601,8 @@ function perception(id: string, options: {
     title?: string,
     url?: string,
     loading?: boolean,
-    blocked?: boolean
+    blocked?: boolean,
+    stability?: 'stable' | 'transient'
 } = {}): PagePerception {
     const elements = options.elements ?? [];
     return {
@@ -567,6 +640,13 @@ function perception(id: string, options: {
                 visible: true
             }
         ])),
+        stability: {
+            consistency: 'consistent',
+            state: options.stability ?? 'stable',
+            transientSignals: options.stability === 'transient'
+                ? [ 'loading-text' ]
+                : []
+        },
         ...options.delta
             ? { delta: options.delta }
             : options.previous

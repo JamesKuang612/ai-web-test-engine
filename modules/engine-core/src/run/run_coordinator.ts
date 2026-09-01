@@ -42,6 +42,7 @@ import type {
     IntentBuilder,
 } from '../intent';
 import {
+    createPerceptionStability,
     PerceptionService,
 } from '../perception';
 import type {
@@ -50,6 +51,7 @@ import type {
     BrowserSession,
     BrowserStartOptions,
     EnvironmentValueResolver,
+    PageStabilityPort,
     RunEventPublisher,
 } from '../ports';
 import type {
@@ -88,6 +90,9 @@ import {
     normalizeRecoveryCommand,
     SemanticStepController,
 } from './semantic_step_controller';
+import {
+    PageSettler,
+} from './page_settler';
 import type {
     SemanticStepActionExecution,
 } from './semantic_step_controller';
@@ -116,6 +121,7 @@ export interface RunCoordinatorOptions {
 /** RunCoordinator 使用的规划与独立判定能力。 */
 export interface RunCoordinatorDecisionServices {
     actionPlanner: ActionPlanner;
+    pageStabilityPort?: PageStabilityPort;
     perceptionService?: PerceptionService;
     recoveryPlanner?: RecoveryPlannerPort;
     stepProgressEvaluator?: SemanticStepProgressEvaluator;
@@ -135,6 +141,7 @@ interface RunExecutionContext {
     modelCallCount: number;
     groundingSequence: number;
     perceptionSequence: number;
+    settlingSequence: number;
     repeatedStateActionCount: number;
     runCreated: boolean;
     runId: string;
@@ -219,6 +226,7 @@ const DEFAULT_OPTIONS: RunCoordinatorOptions = {
 export class RunCoordinator implements ExecutionEngine {
     private readonly actionEffectVerifier = new ActionEffectVerifier();
     private readonly groundedActionBuilder = new GroundedActionBuilder();
+    private readonly pageStabilityPort?: PageStabilityPort;
     private readonly perceptionService: PerceptionService;
     private readonly stepProgressEvaluator: SemanticStepProgressEvaluator;
     private readonly targetGrounder: TargetGrounder;
@@ -235,6 +243,7 @@ export class RunCoordinator implements ExecutionEngine {
     ) {
         this.targetGrounder = decisionServices.targetGrounder
             ?? new DeterministicTargetGrounder();
+        this.pageStabilityPort = decisionServices.pageStabilityPort;
         this.perceptionService = decisionServices.perceptionService ??
             new PerceptionService({
                 capture: async () => ({
@@ -373,6 +382,7 @@ export class RunCoordinator implements ExecutionEngine {
             modelCallCount: 0,
             groundingSequence: 0,
             perceptionSequence: 0,
+            settlingSequence: 0,
             repeatedStateActionCount: 0,
             runCreated: false,
             runId,
@@ -679,10 +689,32 @@ export class RunCoordinator implements ExecutionEngine {
     }
 
     /** 将当前 Planner 动作交给保持原目标不变的 bounded Step Controller。 */
+    // Runtime adapter wiring stays together so budget/evidence boundaries
+    // cannot drift between callbacks.
+    // eslint-disable-next-line max-lines-per-function
     private createSemanticStepController(
         context: RunExecutionContext,
         runtime: RunContext
     ): SemanticStepController<PlannedActionExecution> {
+        const settler = new PageSettler({
+            canContinue: () => this.getRemainingBudgets(context)
+                .maxDurationMs > 0,
+            pause: abortableDelay,
+            recapture: async (previous, signal) => {
+                const before = await this.samplePageStability(runtime, signal);
+                await this.refreshRuntimeObservation(context, runtime);
+                return await this.captureRuntimePerception(
+                    context,
+                    runtime,
+                    previous,
+                    before
+                );
+            },
+            sample: async (signal) => await this.samplePageStability(
+                runtime,
+                signal
+            )
+        });
         return new SemanticStepController<PlannedActionExecution>({
             canExecuteAction: () => {
                 const remaining = this.getRemainingBudgets(context);
@@ -695,13 +727,28 @@ export class RunCoordinator implements ExecutionEngine {
                     return runtime.latestPerception;
                 }
                 if (previous) {
+                    const before = await this.samplePageStability(
+                        runtime,
+                        signal
+                    );
                     await this.refreshRuntimeObservation(context, runtime);
+                    return await this.captureRuntimePerception(
+                        context,
+                        runtime,
+                        previous,
+                        before
+                    );
                 }
                 return await this.captureRuntimePerception(
                     context,
                     runtime,
                     previous ?? runtime.latestPerception
                 );
+            },
+            settle: async (perception, signal) => {
+                const result = await settler.settle(perception, signal);
+                await this.recordPageSettling(context, result);
+                return result;
             },
             ground: async (action, perception, visualAllowed, signal) => {
                 return await this.groundWithPerception(
@@ -761,6 +808,27 @@ export class RunCoordinator implements ExecutionEngine {
                     compilationContribution: 'non-productive'
                 };
             },
+            reverifyEffectAfterSettling: async (
+                execution,
+                settled,
+                signal
+            ) => {
+                signal.throwIfAborted();
+                if ([ 'TYPE', 'CHECK', 'SELECT' ].includes(
+                    execution.semanticAction.type
+                )) {
+                    return execution.effect;
+                }
+                const effect = this.actionEffectVerifier.verify({
+                    command: execution.record.command,
+                    result: execution.actionResult,
+                    before: execution.before.dom,
+                    after: settled.dom,
+                    evidence: execution.record.effect.evidence
+                });
+                execution.record.effect = effect;
+                return effect;
+            },
             recordReobserve: async (perception, attempt, signal) => {
                 await this.recordRecoveryReobserve(
                     context,
@@ -808,7 +876,8 @@ export class RunCoordinator implements ExecutionEngine {
     private async captureRuntimePerception(
         context: RunExecutionContext,
         runtime: RunContext,
-        previous: PagePerception | undefined
+        previous: PagePerception | undefined,
+        beforeStability?: Awaited<ReturnType<PageStabilityPort['sample']>>
     ): Promise<PagePerception> {
         const observation = runtime.latestObservation;
         if (!observation) {
@@ -820,6 +889,16 @@ export class RunCoordinator implements ExecutionEngine {
             previous,
             context.signal
         );
+        if (beforeStability) {
+            const afterStability = await this.samplePageStability(
+                runtime,
+                context.signal
+            );
+            perception.stability = createPerceptionStability({
+                before: beforeStability,
+                after: afterStability
+            });
+        }
         runtime.latestPerception = perception;
         const reference = await this.artifactStore.saveJson(
             context.runId,
@@ -830,6 +909,51 @@ export class RunCoordinator implements ExecutionEngine {
         return perception;
     }
 
+    private async samplePageStability(
+        runtime: RunContext,
+        signal: AbortSignal
+    ) {
+        if (this.pageStabilityPort) {
+            return await this.pageStabilityPort.sample(
+                runtime.browserSession,
+                signal
+            );
+        }
+        signal.throwIfAborted();
+        const observation = runtime.latestObservation;
+        return {
+            capturedAt: new Date().toISOString(),
+            fingerprint: observation?.stateFingerprint ?? 'no-observation',
+            loading: observation?.page.loading ?? true,
+            transientSignals: observation?.page.loading
+                ? [ 'document-loading' as const ]
+                : []
+        };
+    }
+
+    private async recordPageSettling(
+        context: RunExecutionContext,
+        result: Awaited<ReturnType<PageSettler['settle']>>
+    ): Promise<void> {
+        if (result.status === 'stable' && result.samples.length === 0) {
+            return;
+        }
+        const perception = result.status === 'stable'
+            ? result.perception
+            : result.diagnosticPerception;
+        const reference = await this.artifactStore.saveJson(
+            context.runId,
+            `page-settling-${ ++context.settlingSequence }`,
+            toJsonValue({
+                status: result.status,
+                perceptionId: perception.perceptionId,
+                samples: result.samples,
+                ...result.status === 'stable' ? {} : { reason: result.reason }
+            })
+        );
+        context.evidence.push(reference);
+    }
+
     /** REOBSERVE 只刷新观察和产物，不创建 Browser ActionResult/Trace。 */
     private async refreshRuntimeObservation(
         context: RunExecutionContext,
@@ -838,8 +962,8 @@ export class RunCoordinator implements ExecutionEngine {
         const evidence = await this.captureObservationEvidence(
             context,
             runtime.browserSession,
-            `observation-reobserve-${ runtime.history.length }`,
-            `screenshot-reobserve-${ runtime.history.length }.png`
+            `observation-reobserve-${ context.perceptionSequence + 1 }`,
+            `screenshot-reobserve-${ context.perceptionSequence + 1 }.png`
         );
         runtime.latestObservation = evidence.observation;
         runtime.latestObservationReference = evidence.observationReference;
@@ -2416,4 +2540,22 @@ function toJsonValue(value: unknown): JsonValue {
         return result;
     }
     throw new Error(`无法转换为 JSON 的值类型：${ typeof value }`);
+}
+
+function abortableDelay(
+    milliseconds: number,
+    signal: AbortSignal
+): Promise<void> {
+    signal.throwIfAborted();
+    return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            signal.removeEventListener('abort', onAbort);
+            resolve();
+        }, milliseconds);
+        const onAbort = () => {
+            clearTimeout(timeout);
+            reject(signal.reason);
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+    });
 }

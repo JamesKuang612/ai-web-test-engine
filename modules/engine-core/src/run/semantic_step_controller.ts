@@ -17,8 +17,14 @@ import type {
     TestIntent,
 } from '../contracts';
 import type {
+    PageSettlingResult,
+} from './page_settler';
+import type {
     SemanticStepProgressEvaluator,
 } from './semantic_step_progress_evaluator';
+import {
+    createPerceptionDelta,
+} from '../perception';
 import {
     createRecoveryPlanningView as buildRecoveryPlanningView,
 } from './semantic_step_progress_evaluator';
@@ -58,6 +64,11 @@ export interface SemanticStepRuntimePort<TRecord> {
         previous: PagePerception | undefined,
         signal: AbortSignal
     ) => Promise<PagePerception>;
+    /** 非 stable 结果只能作为诊断数据，Controller 不得继续 Ground/Evaluate。 */
+    settle: (
+        perception: PagePerception,
+        signal: AbortSignal
+    ) => Promise<PageSettlingResult>;
     ground: (
         action: SemanticAction,
         perception: PagePerception,
@@ -72,6 +83,11 @@ export interface SemanticStepRuntimePort<TRecord> {
         before: PagePerception,
         signal: AbortSignal
     }) => Promise<SemanticStepActionExecution<TRecord>>;
+    reverifyEffectAfterSettling: (
+        execution: SemanticStepActionExecution<TRecord>,
+        settled: PagePerception,
+        signal: AbortSignal
+    ) => Promise<EffectVerification>;
     recordReobserve: (
         perception: PagePerception,
         attempt: number,
@@ -128,6 +144,20 @@ export class SemanticStepController<TRecord> {
         signal: AbortSignal
     ): Promise<SemanticStepControllerResult<TRecord>> {
         const state = await this.createState(signal);
+        const initialSettling = await this.runtime.settle(
+            state.perception,
+            signal
+        );
+        if (initialSettling.status !== 'stable') {
+            state.perception = initialSettling.diagnosticPerception;
+            return this.result(state, {
+                status: initialSettling.status === 'budget-exhausted'
+                    ? 'budget-exhausted'
+                    : 'exhausted',
+                reason: initialSettling.reason
+            });
+        }
+        state.perception = initialSettling.perception;
         state.primaryGrounding = await this.ground(
             step.primaryAction,
             state.perception,
@@ -184,6 +214,7 @@ export class SemanticStepController<TRecord> {
                 });
             }
             const beforeGrounding = state.primaryGrounding;
+            const beforeRecoveryPerception = state.perception;
             const recovery = await this.executeRecovery(
                 step,
                 testIntent,
@@ -195,7 +226,34 @@ export class SemanticStepController<TRecord> {
             if ('outcome' in recovery) {
                 return this.result(state, recovery.outcome);
             }
-            state.perception = recovery.after;
+            const recoverySettling = await this.runtime.settle(
+                recovery.after,
+                signal
+            );
+            if (recoverySettling.status !== 'stable') {
+                state.perception = recoverySettling.diagnosticPerception;
+                return this.result(state, {
+                    status: recoverySettling.status === 'budget-exhausted'
+                        ? 'budget-exhausted'
+                        : 'exhausted',
+                    reason: recoverySettling.reason
+                });
+            }
+            state.perception = recoverySettling.perception;
+            recovery.after = recoverySettling.perception;
+            recovery.after.delta = createPerceptionDelta(
+                recovery.execution?.before ?? beforeRecoveryPerception,
+                recoverySettling.perception
+            );
+            if (recovery.execution) {
+                recovery.execution.after = recoverySettling.perception;
+                recovery.execution.effect =
+                    await this.runtime.reverifyEffectAfterSettling(
+                        recovery.execution,
+                        recoverySettling.perception,
+                        signal
+                    );
+            }
             state.primaryGrounding = await this.ground(
                 step.primaryAction,
                 state.perception,
@@ -301,10 +359,26 @@ export class SemanticStepController<TRecord> {
         });
         state.executions.push(execution);
         state.primaryExecuted = execution.actionResult.status === 'executed';
+        const settling = await this.runtime.settle(execution.after, signal);
+        if (settling.status !== 'stable') {
+            state.perception = settling.diagnosticPerception;
+            execution.after = settling.diagnosticPerception;
+            return settlingFailureOutcome(settling);
+        }
+        execution.after = settling.perception;
+        execution.after.delta = createPerceptionDelta(
+            execution.before,
+            settling.perception
+        );
+        execution.effect = await this.runtime.reverifyEffectAfterSettling(
+            execution,
+            settling.perception,
+            signal
+        );
         state.primaryEffect = execution.effect;
         state.primaryActionResult = execution.actionResult;
         state.primaryBefore = execution.before;
-        state.perception = execution.after;
+        state.perception = settling.perception;
         const groundingAfter = shouldRegroundAfterPrimary(step.primaryAction)
             ? await this.ground(
                 step.primaryAction,
@@ -796,6 +870,17 @@ function toSafeActionResult(result: ActionResult) {
 
 function shouldRegroundAfterPrimary(action: SemanticAction): boolean {
     return action.type === 'CLICK' || action.type === 'HOVER';
+}
+
+function settlingFailureOutcome(
+    result: Exclude<PageSettlingResult, {status: 'stable'}>
+): SemanticStepExecutionOutcome {
+    return {
+        status: result.status === 'budget-exhausted'
+            ? 'budget-exhausted'
+            : 'exhausted',
+        reason: result.reason
+    };
 }
 
 /** Recovery-only 动作在进入 Browser 前仍会被标准化成现有物理命令。 */

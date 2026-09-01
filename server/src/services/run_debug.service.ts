@@ -23,6 +23,7 @@ import {
     PlaywrightBrowserAdapter,
     PlaywrightCandidateMappingAdapter,
     PlaywrightPagePerceptionAdapter,
+    PlaywrightPageStabilityAdapter,
 } from '../adapters/browser';
 import { resolveArtifactRootDirectories } from '../adapters/storage/artifact_root';
 import { LocalEnvironmentValueResolver } from '../adapters/environment';
@@ -117,6 +118,9 @@ function createConfiguredExecutionEngine(
                     maxOutputTokens: 1_200,
                     timeoutMs: 300_000
                 }
+            ),
+            pageStabilityPort: new PlaywrightPageStabilityAdapter(
+                baseBrowserAdapter
             ),
             perceptionService,
             recoveryPlanner: new ModelRecoveryPlanner(modelAdapter, {
