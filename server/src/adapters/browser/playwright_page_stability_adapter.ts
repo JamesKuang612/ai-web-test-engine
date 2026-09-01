@@ -12,7 +12,10 @@ import type { PlaywrightPageProvider } from './playwright_page_provider';
 const MAX_SEMANTIC_CONTROLS = 80;
 const MAX_SEMANTIC_TEXT_LINES = 80;
 const MAX_SEMANTIC_TEXT_LENGTH = 160;
-const DYNAMIC_TOKEN_PATTERN = /\b(?:\d+(?:[.:/-]\d+)*|[a-f\d]{8,})\b/giu;
+const DATE_TIME_PATTERN = /\b(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?|\d{1,2}:\d{2}(?::\d{2})?)\b/gu;
+const COUNTDOWN_PATTERN = /(倒计时\s*)\d+(?:\.\d+)?(\s*(?:毫秒|秒|分钟|分|小时|天))/giu;
+const RELATIVE_TIME_PATTERN = /\d+(?:\.\d+)?\s*(毫秒|秒|分钟|分|小时|天)(前|后)/giu;
+const LONG_DYNAMIC_TOKEN_PATTERN = /\b(?:\d{8,}|[a-f\d]{8,})\b/giu;
 
 interface LightweightPageState {
     busy: boolean;
@@ -126,7 +129,10 @@ export class PlaywrightPageStabilityAdapter implements PageStabilityPort {
 
 function normalizeVolatileTokens(value: string): string {
     return value.trim().replace(/\s+/gu, ' ')
-        .replace(DYNAMIC_TOKEN_PATTERN, '#')
+        .replace(DATE_TIME_PATTERN, '#')
+        .replace(COUNTDOWN_PATTERN, '$1#$2')
+        .replace(RELATIVE_TIME_PATTERN, '# $1$2')
+        .replace(LONG_DYNAMIC_TOKEN_PATTERN, '#')
         .slice(0, 160);
 }
 

@@ -11,11 +11,11 @@ import type {
 } from '../../../../src/adapters/browser';
 
 describe('PlaywrightPageStabilityAdapter', () => {
-    it('忽略随机数字变化并保留结构与 transient 信号', async () => {
+    it('忽略倒计时与长随机标识变化并保留 transient 信号', async () => {
         const provider = new FakePageProvider([
-            state('倒计时 9 秒 / 订单 123456', false),
-            state('倒计时 8 秒 / 订单 987654', false),
-            state('倒计时 8 秒 / 订单 987654', true)
+            state('倒计时 9 秒 / 请求 123456789012', false),
+            state('倒计时 8 秒 / 请求 987654321098', false),
+            state('倒计时 8 秒 / 请求 987654321098', true)
         ]);
         const adapter = new PlaywrightPageStabilityAdapter(provider);
         const signal = new AbortController().signal;
@@ -26,6 +26,20 @@ describe('PlaywrightPageStabilityAdapter', () => {
         assert.equal(first.fingerprint, second.fingerprint);
         assert.notEqual(second.fingerprint, transient.fingerprint);
         assert.deepEqual(transient.transientSignals, [ 'loading-text' ]);
+    });
+
+    it('保留搜索结果数量等普通业务短整数', async () => {
+        const provider = new FakePageProvider([
+            state('搜索结果 0 条', false),
+            state('搜索结果 1 条', false)
+        ]);
+        const adapter = new PlaywrightPageStabilityAdapter(provider);
+        const signal = new AbortController().signal;
+
+        assert.notEqual(
+            (await adapter.sample(SESSION, signal)).fingerprint,
+            (await adapter.sample(SESSION, signal)).fingerprint
+        );
     });
 
     it('text-only async 业务状态变化必须改变 fingerprint', async () => {
