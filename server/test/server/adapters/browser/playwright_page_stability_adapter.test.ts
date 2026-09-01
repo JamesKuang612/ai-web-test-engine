@@ -27,6 +27,20 @@ describe('PlaywrightPageStabilityAdapter', () => {
         assert.notEqual(second.fingerprint, transient.fingerprint);
         assert.deepEqual(transient.transientSignals, [ 'loading-text' ]);
     });
+
+    it('text-only async 业务状态变化必须改变 fingerprint', async () => {
+        const provider = new FakePageProvider([
+            state('固定按钮', false, [ '搜索中...' ]),
+            state('固定按钮', false, [ '没有搜索到相关结果' ])
+        ]);
+        const adapter = new PlaywrightPageStabilityAdapter(provider);
+        const signal = new AbortController().signal;
+
+        assert.notEqual(
+            (await adapter.sample(SESSION, signal)).fingerprint,
+            (await adapter.sample(SESSION, signal)).fingerprint
+        );
+    });
 });
 
 const SESSION = { sessionId: 'session-1' };
@@ -45,7 +59,11 @@ class FakePageProvider implements PlaywrightPageProvider {
     public registerAccessibilityRef = () => undefined;
 }
 
-function state(controlName: string, loadingText: boolean) {
+function state(
+    controlName: string,
+    loadingText: boolean,
+    semanticText: string[] = [ controlName ]
+) {
     return {
         busy: false,
         controls: [ `button|button|${ controlName }||` ],
@@ -53,6 +71,7 @@ function state(controlName: string, loadingText: boolean) {
         pathname: 'https://example.test/workbench',
         progressbar: false,
         readyState: 'complete',
+        semanticText,
         spinner: false,
         title: '工作台'
     };

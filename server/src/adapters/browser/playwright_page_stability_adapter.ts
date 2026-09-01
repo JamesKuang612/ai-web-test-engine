@@ -10,6 +10,8 @@ import type {
 import type { PlaywrightPageProvider } from './playwright_page_provider';
 
 const MAX_SEMANTIC_CONTROLS = 80;
+const MAX_SEMANTIC_TEXT_LINES = 80;
+const MAX_SEMANTIC_TEXT_LENGTH = 160;
 const DYNAMIC_TOKEN_PATTERN = /\b(?:\d+(?:[.:/-]\d+)*|[a-f\d]{8,})\b/giu;
 
 interface LightweightPageState {
@@ -19,11 +21,16 @@ interface LightweightPageState {
     pathname: string;
     progressbar: boolean;
     readyState: string;
+    semanticText: string[];
     spinner: boolean;
     title: string;
 }
 
-const STABILITY_CAPTURE_SCRIPT = String.raw`function(maxControls) {
+const STABILITY_CAPTURE_SCRIPT = String.raw`function(
+    maxControls,
+    maxTextLines,
+    maxTextLength
+) {
     const visible = (element) => {
         const style = window.getComputedStyle(element);
         const rect = element.getBoundingClientRect();
@@ -51,6 +58,11 @@ const STABILITY_CAPTURE_SCRIPT = String.raw`function(maxControls) {
         element.hasAttribute('disabled') ? 'disabled' : ''
     ].join('|'));
     const bodyText = document.body?.innerText || '';
+    const semanticText = bodyText.split(/\n+/gu)
+        .map((text) => text.trim().replace(/\s+/gu, ' '))
+        .filter(Boolean)
+        .slice(0, maxTextLines)
+        .map((text) => text.slice(0, maxTextLength));
     return {
         busy: Array.from(document.querySelectorAll('[aria-busy="true"]'))
             .some(visible),
@@ -62,6 +74,7 @@ const STABILITY_CAPTURE_SCRIPT = String.raw`function(maxControls) {
             '[role="progressbar"],progress'
         )).some(visible),
         readyState: document.readyState,
+        semanticText,
         spinner: Array.from(document.querySelectorAll([
             '[class*="spinner" i]', '[class*="loading" i]',
             '[data-loading="true"]'
@@ -81,14 +94,22 @@ export class PlaywrightPageStabilityAdapter implements PageStabilityPort {
         signal.throwIfAborted();
         const page = this.pageProvider.getPage(session);
         const state = await page.evaluate(
-            `(${ STABILITY_CAPTURE_SCRIPT })(${ MAX_SEMANTIC_CONTROLS })`
+            `(${ STABILITY_CAPTURE_SCRIPT })(${
+                MAX_SEMANTIC_CONTROLS
+            },${ MAX_SEMANTIC_TEXT_LINES },${ MAX_SEMANTIC_TEXT_LENGTH })`
         ) as LightweightPageState;
         signal.throwIfAborted();
         const transientSignals = transientSignalsFor(state);
+        const semanticTextDigest = createHash('sha256')
+            .update(JSON.stringify(state.semanticText
+                .map(normalizeVolatileTokens)
+                .filter(Boolean)))
+            .digest('hex');
         const normalized = {
             controls: state.controls.map(normalizeVolatileTokens).sort(),
             loading: state.readyState === 'loading',
             pathname: state.pathname,
+            semanticTextDigest,
             title: normalizeVolatileTokens(state.title),
             transientSignals
         };

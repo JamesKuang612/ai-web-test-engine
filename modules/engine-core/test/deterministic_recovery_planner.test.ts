@@ -48,11 +48,23 @@ describe('RecoveryTargetQualityPolicy', () => {
     it('模型层泛化描述同样不能越过 proposal boundary', () => {
         const quality = new RecoveryTargetQualityPolicy();
 
-        assert.equal(quality.evaluate({
-            type: 'HOVER',
-            target: { description: 'button' },
-            reasonSummary: '尝试显示隐藏控件'
-        }).allowed, false);
+        [ 'button', '页面上的按钮', '某个 button', '这个图标' ]
+            .forEach((description) => assert.equal(quality.evaluate({
+                type: 'HOVER',
+                target: { description },
+                reasonSummary: '尝试显示隐藏控件'
+            }).allowed, false, description));
+    });
+
+    it('具体语义目标不会被 generic wrapper 清理误伤', () => {
+        const quality = new RecoveryTargetQualityPolicy();
+
+        [ '搜索输入框', '关闭按钮', '应用11卡片', '新建应用' ]
+            .forEach((description) => assert.equal(quality.evaluate({
+                type: 'HOVER',
+                target: { description },
+                reasonSummary: '执行低风险恢复'
+            }).allowed, true, description));
     });
 });
 
