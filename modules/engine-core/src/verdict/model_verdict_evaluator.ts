@@ -4,6 +4,9 @@ import type {
     JsonValue,
     VerdictDecision,
 } from '../contracts';
+import {
+    matchExactVisibleText,
+} from '../perception';
 import type {
     ModelAdapter,
     RuntimeSchema,
@@ -401,54 +404,6 @@ function requireSameCriterionIds(
     ) {
         throw new Error(`${ label }判断没有完整覆盖 TestIntent。`);
     }
-}
-
-/** 按 PageObservation 的 DOM 文本顺序进行完全相等匹配。 */
-function matchExactVisibleText(
-    visibleText: string[],
-    expectedValues: string[],
-    ordered: boolean
-): {
-    matched: boolean,
-    missing: string[]
-} {
-    const remainingText = [...visibleText];
-    const missing = expectedValues.filter((expected) => {
-        const index = remainingText.findIndex((actual) => actual === expected);
-        if (index < 0) {
-            return true;
-        }
-        remainingText.splice(index, 1);
-        return false;
-    });
-    if (missing.length > 0) {
-        return {
-            matched: false,
-            missing
-        };
-    }
-    if (!ordered) {
-        return {
-            matched: true,
-            missing: []
-        };
-    }
-
-    let cursor = 0;
-    const orderedMatch = expectedValues.every((expected) => {
-        const relativeIndex = visibleText
-            .slice(cursor)
-            .findIndex((actual) => actual === expected);
-        if (relativeIndex < 0) {
-            return false;
-        }
-        cursor += relativeIndex + 1;
-        return true;
-    });
-    return {
-        matched: orderedMatch,
-        missing: []
-    };
 }
 
 /** 在程序覆盖精确断言后重新计算最终业务结果。 */

@@ -292,7 +292,10 @@ describe('RunCoordinator deterministic success criteria', () => {
                 preferredEvidence: [ 'dom' ],
                 required: true
             })),
-            failureCriteria: [],
+            failureCriteria: values.map((_value, index) => ({
+                id: `exact-failure-${ index }`,
+                description: '对应精确文本缺失或文字不同'
+            })),
             exactTextAssertions: values.map((value, index) => ({
                 successCriterionId: `exact-${ index }`,
                 failureCriterionId: `exact-failure-${ index }`,
@@ -313,6 +316,7 @@ describe('RunCoordinator deterministic success criteria', () => {
             [ undefined, stable, stable, stable, stable ]
         );
         const actionPlanner = new FakeActionPlanner(plannedClickCommand);
+        const recoveryPlanner = new CountingRecoveryPlanner();
         const artifactStore = new FakeArtifactStore();
         const result = await new RunCoordinator(
             artifactStore,
@@ -321,6 +325,7 @@ describe('RunCoordinator deterministic success criteria', () => {
             browserAdapter,
             {
                 actionPlanner,
+                recoveryPlanner,
                 verdictEvaluator: new FakeVerdictEvaluator(passVerdict)
             },
             new FakeEnvironmentValueResolver()
@@ -329,7 +334,9 @@ describe('RunCoordinator deterministic success criteria', () => {
         assert.equal(result.result, 'PASS');
         assert.equal(browserAdapter.executeCount, 1);
         assert.equal(actionPlanner.callCount, 0);
+        assert.equal(recoveryPlanner.callCount, 0);
         assert.equal(result.metrics.actionCount, 1);
+        assert.equal(result.metrics.modelCallCount, 1);
         assert.deepEqual(browserAdapter.commands.map((command) => command.type), [
             'NAVIGATE'
         ]);
@@ -339,6 +346,80 @@ describe('RunCoordinator deterministic success criteria', () => {
         assert.deepEqual(
             values.every((value) => stablePerception?.dom?.visibleText?.includes(value)),
             true
+        );
+        const deterministicVerdict = artifactStore.savedJson.find(
+            ({ name }) => name === 'verdict'
+        )?.value as unknown as VerdictDecision;
+        assert.deepEqual(
+            deterministicVerdict.successCriteria.map(({ status }) => status),
+            values.map(() => 'MATCHED')
+        );
+        assert.deepEqual(
+            deterministicVerdict.failureCriteria.map(({ status }) => status),
+            values.map(() => 'NOT_MATCHED')
+        );
+    });
+});
+
+describe('RunCoordinator deterministic success coverage', () => {
+    it('exact text 只覆盖部分 required 条件时继续 Planner 而不短路 PASS', async () => {
+        const partialIntent: TestIntent = {
+            ...testIntent,
+            successCriteria: [{
+                id: 'exact-workspace',
+                description: '页面逐字显示工作台',
+                preferredEvidence: [ 'dom' ],
+                required: true
+            }, {
+                id: 'business-loaded',
+                description: '工作台业务数据已经加载完成',
+                preferredEvidence: [ 'dom', 'network' ],
+                required: true
+            }],
+            failureCriteria: [{
+                id: 'exact-workspace-failure',
+                description: '工作台文本缺失或文字不同'
+            }],
+            exactTextAssertions: [{
+                successCriterionId: 'exact-workspace',
+                failureCriterionId: 'exact-workspace-failure',
+                ordered: false,
+                values: [ '工作台' ]
+            }]
+        };
+        const stable = createObservation(
+            'https://test.jdydevelop.com/dashboard#/',
+            false,
+            false,
+            true
+        );
+        stable.visibleText = [ '工作台' ];
+        const browserAdapter = new FakeBrowserAdapter(
+            false,
+            false,
+            [ undefined, stable, stable, stable, stable ]
+        );
+        const actionPlanner = new FakeActionPlanner({
+            type: 'UNCERTAIN',
+            reasonSummary: '业务加载状态没有确定证据'
+        });
+        const result = await new RunCoordinator(
+            new FakeArtifactStore(),
+            new FakeRunEventPublisher(),
+            new FakeIntentBuilder(partialIntent),
+            browserAdapter,
+            {
+                actionPlanner,
+                verdictEvaluator: new FakeVerdictEvaluator(uncertainVerdict)
+            },
+            new FakeEnvironmentValueResolver()
+        ).start(startInput, new AbortController().signal);
+
+        assert.equal(result.result, 'UNCERTAIN');
+        assert.equal(actionPlanner.callCount, 1);
+        assert.deepEqual(
+            browserAdapter.commands.map(({ type }) => type),
+            [ 'NAVIGATE' ]
         );
     });
 });
@@ -1577,6 +1658,22 @@ class InvalidRecoveryPlanner implements RecoveryPlannerPort {
         status: 'protocol-invalid',
         diagnostic: recoveryProtocolDiagnostic('repair')
     });
+}
+
+/** 记录 deterministic PASS 是否错误进入 Recovery。 */
+class CountingRecoveryPlanner implements RecoveryPlannerPort {
+    public callCount = 0;
+
+    public plan: RecoveryPlannerPort['plan'] = () => {
+        this.callCount += 1;
+        return Promise.resolve({
+            status: 'decision',
+            decision: {
+                kind: 'stop',
+                reason: '测试不应调用 Recovery'
+            }
+        });
+    };
 }
 
 function recoveryProtocolDiagnostic(phase: 'initial' | 'repair') {

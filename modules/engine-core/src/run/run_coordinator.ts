@@ -105,6 +105,9 @@ import {
 import {
     SuccessCriteriaEvaluator,
 } from './success_criteria_evaluator';
+import type {
+    SuccessCriteriaEvaluation,
+} from './success_criteria_evaluator';
 
 const ANSI_ESCAPE_PATTERN = new RegExp(
     `${ String.fromCharCode(27) }\\[[0-?]*[ -/]*[@-~]`,
@@ -145,7 +148,7 @@ interface RunExecutionContext {
     lastImmediateObservation?: PageObservation;
     lastImmediateObservationReference?: EvidenceRef;
     currentStablePerception?: CurrentStablePerception;
-    deterministicSuccess?: boolean;
+    deterministicSuccess?: SuccessCriteriaEvaluation;
     settlingFailureReason?: string;
     modelCallCount: number;
     groundingSequence: number;
@@ -682,7 +685,7 @@ export class RunCoordinator implements ExecutionEngine {
         if (success.status !== 'satisfied') {
             return undefined;
         }
-        context.deterministicSuccess = true;
+        context.deterministicSuccess = success;
         return {
             navigation,
             plannedActions,
@@ -2392,20 +2395,13 @@ export class RunCoordinator implements ExecutionEngine {
         testIntent: TestIntent,
         execution: BrowserExecution
     ): Promise<RunResult> {
-        if (context.deterministicSuccess) {
+        const deterministicSuccess = context.deterministicSuccess;
+        if (deterministicSuccess) {
             const decision: VerdictDecision = {
                 result: 'PASS',
                 summary: '稳定页面已满足全部精确文本成功条件。',
-                successCriteria: testIntent.successCriteria.map((criterion) => ({
-                    criterionId: criterion.id,
-                    status: 'MATCHED',
-                    summary: 'DOM 稳定页面逐字包含目标文本。'
-                })),
-                failureCriteria: testIntent.failureCriteria.map((criterion) => ({
-                    criterionId: criterion.id,
-                    status: 'NOT_MATCHED',
-                    summary: '未发现失败证据。'
-                }))
+                successCriteria: deterministicSuccess.successCriteria,
+                failureCriteria: deterministicSuccess.failureCriteria
             };
             const verdictReference = await this.artifactStore.saveJson(
                 context.runId,
