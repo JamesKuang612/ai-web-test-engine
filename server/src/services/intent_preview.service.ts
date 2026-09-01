@@ -10,7 +10,7 @@ import type {
 import { service } from 'nstarter-core';
 import {
     CodexAppServerModelAdapter,
-    FineOneModelAdapter,
+    OpenAiCompatibleModelAdapter,
 } from '../adapters/model';
 import { config } from '../config';
 import { createLoginPocBuildInput } from './login_poc';
@@ -24,7 +24,7 @@ export class IntentPreviewInputError extends Error {
     }
 }
 
-/** 按 NStarter 配置选择 Codex 订阅或 FineOne HTTP 模型适配器。 */
+/** 按 NStarter 配置选择 Codex 订阅或 OpenAI-compatible 模型适配器。 */
 export function createConfiguredModelAdapter(): ModelAdapter {
     const llmConfig = config.components.llm;
     return llmConfig.provider === 'codex_app_server'
@@ -34,7 +34,7 @@ export function createConfiguredModelAdapter(): ModelAdapter {
             reasoningEffort: llmConfig.reasoning_effort,
             serviceTier: llmConfig.service_tier
         })
-        : new FineOneModelAdapter({
+        : new OpenAiCompatibleModelAdapter({
             baseUrl: llmConfig.base_url,
             apiKey: llmConfig.api_key,
             model: llmConfig.model,

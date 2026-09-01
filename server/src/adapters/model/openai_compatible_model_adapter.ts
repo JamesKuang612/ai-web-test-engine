@@ -13,18 +13,18 @@ import {
     createSafeModelProtocolDiagnostic,
 } from './model_protocol_diagnostic';
 
-export type FineOneApiProtocol =
+export type OpenAiCompatibleApiProtocol =
     | 'chat_completions'
     | 'responses';
 
-export interface FineOneModelAdapterOptions {
+export interface OpenAiCompatibleModelAdapterOptions {
     baseUrl: string;
     apiKey: string;
     model: string;
-    protocol?: FineOneApiProtocol;
+    protocol?: OpenAiCompatibleApiProtocol;
 }
 
-export type FineOneModelAdapterErrorCode =
+export type OpenAiCompatibleModelAdapterErrorCode =
     | 'API_ERROR'
     | 'INVALID_RESPONSE'
     | 'MISSING_API_KEY'
@@ -32,16 +32,16 @@ export type FineOneModelAdapterErrorCode =
     | 'SCHEMA_VALIDATION_FAILED'
     | 'TIMEOUT';
 
-/** FineOneAPI 调用、响应解析或结构校验失败。 */
-export class FineOneModelAdapterError extends Error {
+/** OpenAI-compatible provider 调用、响应解析或结构校验失败。 */
+export class OpenAiCompatibleModelAdapterError extends Error {
     /** 保存稳定错误分类及可选的上游 HTTP 状态码。 */
     constructor(
-        public readonly code: FineOneModelAdapterErrorCode,
+        public readonly code: OpenAiCompatibleModelAdapterErrorCode,
         message: string,
         public readonly statusCode?: number
     ) {
         super(message);
-        this.name = 'FineOneModelAdapterError';
+        this.name = 'OpenAiCompatibleModelAdapterError';
     }
 }
 
@@ -174,7 +174,7 @@ function parseModelContent(
     return undefined;
 }
 
-/** 从 FineOneAPI 错误响应中提取有限长度的安全消息。 */
+/** 从 OpenAI-compatible provider 错误响应中提取有限长度的安全消息。 */
 function getApiErrorMessage(responseBody: string): string {
     try {
         const value = JSON.parse(responseBody) as unknown;
@@ -193,16 +193,16 @@ function getApiErrorMessage(responseBody: string): string {
         '响应中没有错误信息。';
 }
 
-/** 通过 FineOneAPI 的 Responses 或 Chat Completions 协议调用模型。 */
-export class FineOneModelAdapter implements ModelAdapter {
+/** 通过 OpenAI-compatible provider 的 Responses 或 Chat Completions 协议调用模型。 */
+export class OpenAiCompatibleModelAdapter implements ModelAdapter {
     private readonly baseUrl: string;
     private readonly apiKey: string;
     private readonly model: string;
-    private readonly protocol: FineOneApiProtocol;
+    private readonly protocol: OpenAiCompatibleApiProtocol;
 
     /** 校验固定连接参数，并允许测试注入假的 fetch。 */
     constructor(
-        options: FineOneModelAdapterOptions,
+        options: OpenAiCompatibleModelAdapterOptions,
         private readonly fetcher: typeof fetch = global.fetch
     ) {
         this.baseUrl = options.baseUrl.trim().replace(/\/+$/u, '');
@@ -211,20 +211,20 @@ export class FineOneModelAdapter implements ModelAdapter {
         this.protocol = options.protocol ?? 'chat_completions';
 
         if (!this.baseUrl) {
-            throw new FineOneModelAdapterError(
+            throw new OpenAiCompatibleModelAdapterError(
                 'INVALID_RESPONSE',
-                'FineOneAPI baseUrl 不能为空。'
+                'OpenAI-compatible provider baseUrl 不能为空。'
             );
         }
         if (!this.model) {
-            throw new FineOneModelAdapterError(
+            throw new OpenAiCompatibleModelAdapterError(
                 'INVALID_RESPONSE',
-                'FineOneAPI model 不能为空。'
+                'OpenAI-compatible provider model 不能为空。'
             );
         }
     }
 
-    /** 请求 FineOneAPI，并使用调用方 Schema 校验模型输出。 */
+    /** 请求 OpenAI-compatible provider，并使用调用方 Schema 校验模型输出。 */
     public generateStructured = async <T>(
         request: ModelRequest,
         schema: RuntimeSchema<T>,
@@ -233,10 +233,10 @@ export class FineOneModelAdapter implements ModelAdapter {
         signal.throwIfAborted();
 
         if (!this.apiKey) {
-            throw classifiedFineOneFailure(
+            throw classifiedProviderFailure(
                 request,
                 'provider-unavailable',
-                'FineOneAPI API Key 尚未配置。'
+                'OpenAI-compatible provider API Key 尚未配置。'
             );
         }
 
@@ -262,7 +262,7 @@ export class FineOneModelAdapter implements ModelAdapter {
             } catch (error) {
                 throw new ClassifiedModelFailure(
                     'schema-invalid',
-                    `FineOneAPI 返回内容不符合 ${ schema.name } Schema。`,
+                    `OpenAI-compatible provider 返回内容不符合 ${ schema.name } Schema。`,
                     createSafeModelProtocolDiagnostic({
                         modelRole: request.modelRole ?? 'action-planner',
                         phase: request.protocolPhase ?? 'initial',
@@ -270,7 +270,7 @@ export class FineOneModelAdapter implements ModelAdapter {
                         model: parsedResponse.model,
                         requestId: parsedResponse.requestId,
                         parsedJson: parsedResponse.value,
-                        schemaIssues: fineOneSchemaIssues(error)
+                        schemaIssues: providerSchemaIssues(error)
                     })
                 );
             }
@@ -288,14 +288,14 @@ export class FineOneModelAdapter implements ModelAdapter {
                 throw error;
             }
             if (timeoutController.signal.aborted) {
-                throw classifiedFineOneFailure(
+                throw classifiedProviderFailure(
                     request,
                     'model-timeout',
-                    'FineOneAPI 请求超时。'
+                    'OpenAI-compatible provider 请求超时。'
                 );
             }
-            if (error instanceof FineOneModelAdapterError) {
-                throw classifiedFineOneFailure(
+            if (error instanceof OpenAiCompatibleModelAdapterError) {
+                throw classifiedProviderFailure(
                     request,
                     error.code === 'TIMEOUT'
                         ? 'model-timeout'
@@ -397,7 +397,7 @@ export class FineOneModelAdapter implements ModelAdapter {
         return this.parseChatCompletionsResponse(responseBody);
     }
 
-    /** 统一发送带鉴权的 FineOne JSON 请求并处理 HTTP 错误。 */
+    /** 统一发送带鉴权的 OpenAI-compatible JSON 请求并处理 HTTP 错误。 */
     private async sendRequest(
         path: string,
         body: Record<string, unknown>,
@@ -418,9 +418,9 @@ export class FineOneModelAdapter implements ModelAdapter {
         const responseBody = await response.text();
 
         if (!response.ok) {
-            throw new FineOneModelAdapterError(
+            throw new OpenAiCompatibleModelAdapterError(
                 'API_ERROR',
-                `FineOneAPI 请求失败（HTTP ${ response.status }）：${
+                `OpenAI-compatible provider 请求失败（HTTP ${ response.status }）：${
                     getApiErrorMessage(responseBody)
                 }`,
                 response.status
@@ -452,16 +452,16 @@ export class FineOneModelAdapter implements ModelAdapter {
         try {
             payload = JSON.parse(responseBody) as unknown;
         } catch {
-            throw new FineOneModelAdapterError(
+            throw new OpenAiCompatibleModelAdapterError(
                 'INVALID_RESPONSE',
-                'FineOneAPI 返回的响应不是合法 JSON。'
+                'OpenAI-compatible provider 返回的响应不是合法 JSON。'
             );
         }
 
         if (!isRecord(payload) || !Array.isArray(payload.choices)) {
-            throw new FineOneModelAdapterError(
+            throw new OpenAiCompatibleModelAdapterError(
                 'INVALID_RESPONSE',
-                'FineOneAPI 响应中缺少 choices。'
+                'OpenAI-compatible provider 响应中缺少 choices。'
             );
         }
 
@@ -471,9 +471,9 @@ export class FineOneModelAdapter implements ModelAdapter {
             !isRecord(firstChoice.message) ||
             typeof firstChoice.message.content !== 'string'
         ) {
-            throw new FineOneModelAdapterError(
+            throw new OpenAiCompatibleModelAdapterError(
                 'INVALID_RESPONSE',
-                'FineOneAPI 响应中缺少模型输出内容。'
+                'OpenAI-compatible provider 响应中缺少模型输出内容。'
             );
         }
 
@@ -481,9 +481,9 @@ export class FineOneModelAdapter implements ModelAdapter {
             firstChoice.message.content
         );
         if (!parsedContent) {
-            throw new FineOneModelAdapterError(
+            throw new OpenAiCompatibleModelAdapterError(
                 'INVALID_RESPONSE',
-                'FineOneAPI 模型输出不是无歧义的合法 JSON。'
+                'OpenAI-compatible provider 模型输出不是无歧义的合法 JSON。'
             );
         }
 
@@ -507,9 +507,9 @@ export class FineOneModelAdapter implements ModelAdapter {
             typeof payload.status === 'string' &&
             payload.status !== 'completed'
         ) {
-            throw new FineOneModelAdapterError(
+            throw new OpenAiCompatibleModelAdapterError(
                 'INVALID_RESPONSE',
-                `FineOneAPI Responses 状态不是 completed：${
+                `OpenAI-compatible provider Responses 状态不是 completed：${
                     payload.status
                 }。`
             );
@@ -520,9 +520,9 @@ export class FineOneModelAdapter implements ModelAdapter {
             ? parseModelContent(outputText)
             : undefined;
         if (!parsedContent) {
-            throw new FineOneModelAdapterError(
+            throw new OpenAiCompatibleModelAdapterError(
                 'INVALID_RESPONSE',
-                'FineOneAPI Responses 中缺少合法的结构化输出。'
+                'OpenAI-compatible provider Responses 中缺少合法的结构化输出。'
             );
         }
 
@@ -545,15 +545,15 @@ export class FineOneModelAdapter implements ModelAdapter {
         try {
             payload = JSON.parse(responseBody) as unknown;
         } catch {
-            throw new FineOneModelAdapterError(
+            throw new OpenAiCompatibleModelAdapterError(
                 'INVALID_RESPONSE',
-                'FineOneAPI 返回的响应不是合法 JSON。'
+                'OpenAI-compatible provider 返回的响应不是合法 JSON。'
             );
         }
         if (!isRecord(payload)) {
-            throw new FineOneModelAdapterError(
+            throw new OpenAiCompatibleModelAdapterError(
                 'INVALID_RESPONSE',
-                'FineOneAPI Responses 响应不是 JSON 对象。'
+                'OpenAI-compatible provider Responses 响应不是 JSON 对象。'
             );
         }
         return payload;
@@ -592,7 +592,7 @@ export class FineOneModelAdapter implements ModelAdapter {
     }
 }
 
-function fineOneSchemaIssues(error: unknown): ModelProtocolSchemaIssue[] {
+function providerSchemaIssues(error: unknown): ModelProtocolSchemaIssue[] {
     if (error instanceof RuntimeSchemaValidationError) {
         return error.issues;
     }
@@ -605,7 +605,7 @@ function fineOneSchemaIssues(error: unknown): ModelProtocolSchemaIssue[] {
     }];
 }
 
-function classifiedFineOneFailure(
+function classifiedProviderFailure(
     request: ModelRequest,
     failureType: 'invalid-json' | 'model-timeout' | 'provider-unavailable',
     message: string

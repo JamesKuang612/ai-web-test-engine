@@ -10,21 +10,23 @@ import {
 const visualConfig: IVisualGroundingComponentConf = {
     enabled: true,
     provider: 'midscene',
-    base_url: 'codex://app-server',
-    model: 'gpt-5.6-terra',
-    model_family: 'gpt-5',
+    base_url: 'https://api.deepseek.com',
+    api_key: 'test-deepseek-key',
+    model: 'deepseek-v4-flash-vision-exp',
+    model_family: 'deepseek',
     reasoning_enabled: false,
     timeout_ms: 120_000
 };
 
 describe('MidsceneVisualAgent', () => {
-    it('生成使用 Codex App Server 与 Terra 的隔离模型配置', () => {
+    it('生成使用 DeepSeek vision 的隔离模型配置', () => {
         const options = createMidsceneAgentOptions(visualConfig);
 
         assert.deepEqual(options.modelConfig, {
-            MIDSCENE_MODEL_BASE_URL: 'codex://app-server',
-            MIDSCENE_MODEL_FAMILY: 'gpt-5',
-            MIDSCENE_MODEL_NAME: 'gpt-5.6-terra',
+            MIDSCENE_MODEL_API_KEY: 'test-deepseek-key',
+            MIDSCENE_MODEL_BASE_URL: 'https://api.deepseek.com',
+            MIDSCENE_MODEL_FAMILY: 'deepseek',
+            MIDSCENE_MODEL_NAME: 'deepseek-v4-flash-vision-exp',
             MIDSCENE_MODEL_REASONING_ENABLED: 'false',
             MIDSCENE_MODEL_TIMEOUT: 120_000
         });
@@ -34,30 +36,30 @@ describe('MidsceneVisualAgent', () => {
         assert.equal(options.screenshotShrinkFactor, 1);
     });
 
-    it('拒绝绕开 Codex App Server 的视觉模型地址', () => {
+    it('拒绝 HTTP 视觉模型缺少 API Key', () => {
         assert.throws(
             () => createMidsceneAgentOptions({
                 ...visualConfig,
-                base_url: 'https://example.com/v1'
+                api_key: ''
             }),
-            /必须通过 Codex App Server/u
+            /必须配置 API Key/u
         );
     });
 
-    it('仓库默认配置已指向 Terra 视觉模型', () => {
+    it('仓库默认配置已指向 DeepSeek 视觉模型', () => {
         const options = createConfiguredMidsceneAgentOptions();
 
         assert.equal(
             options.modelConfig?.MIDSCENE_MODEL_BASE_URL,
-            'codex://app-server'
+            'https://api.deepseek.com'
         );
         assert.equal(
             options.modelConfig?.MIDSCENE_MODEL_NAME,
-            'gpt-5.6-terra'
+            'deepseek-v4-flash-vision-exp'
         );
         assert.equal(
             options.modelConfig?.MIDSCENE_MODEL_FAMILY,
-            'gpt-5'
+            'deepseek'
         );
     });
 });

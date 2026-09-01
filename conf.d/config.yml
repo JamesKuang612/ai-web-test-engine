@@ -38,19 +38,20 @@ components:
       width: 1280
       height: 720
   llm:
-    provider: codex_app_server
-    base_url: https://api.example.com/v1
+    provider: openai_compatible
+    base_url: https://api.deepseek.com
     api_key: ''
-    model: gpt-5.6-terra
-    protocol: responses
-    reasoning_effort: high
+    model: deepseek-v4-flash
+    protocol: chat_completions
+    reasoning_effort: low
     codex_command: codex
   visual_grounding:
     enabled: true
     provider: midscene
-    base_url: codex://app-server
-    model: gpt-5.6-terra
-    model_family: gpt-5
+    base_url: https://api.deepseek.com
+    api_key: ''
+    model: deepseek-v4-flash-vision-exp
+    model_family: deepseek
     reasoning_enabled: false
     timeout_ms: 120000
 includes:

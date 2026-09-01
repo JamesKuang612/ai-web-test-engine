@@ -1,8 +1,8 @@
-/** FineOneAPI 当前支持的两种 OpenAI 兼容请求协议。 */
+/** OpenAI-compatible Provider 支持的两种请求协议。 */
 export type LlmApiProtocol = 'chat_completions' | 'responses';
 
 /** 当前可选的本地订阅或 HTTP 模型 Provider。 */
-export type LlmProvider = 'codex_app_server' | 'fine_one';
+export type LlmProvider = 'codex_app_server' | 'openai_compatible';
 
 /** Codex 模型支持的推理强度。 */
 export type LlmReasoningEffort =
@@ -24,13 +24,14 @@ export interface IVisualGroundingComponentConf {
     readonly enabled: boolean;
     readonly provider: VisualGroundingProvider;
     readonly base_url: string;
+    readonly api_key?: string;
     readonly model: string;
-    readonly model_family: 'gpt-5';
+    readonly model_family: 'deepseek' | 'gpt-5';
     readonly reasoning_enabled: boolean;
     readonly timeout_ms: number;
 }
 
-/** 模型 Provider 配置；FineOne API Key 只允许由本机私有配置覆盖。 */
+/** 模型 Provider 配置；HTTP API Key 只允许由本机私有配置覆盖。 */
 export interface ILlmComponentConf {
     readonly provider: LlmProvider;
     readonly base_url: string;

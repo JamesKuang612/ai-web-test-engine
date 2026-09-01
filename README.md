@@ -98,36 +98,31 @@ test-results/<runId>/
 
 ### 模型 Provider
 
-开发环境默认使用本机 Codex 订阅调用 `gpt-5.6-terra`，不需要在项目中填写 API Key。首次使用前需要安装 Codex CLI 并完成登录：
-
-```bash
-codex login
-codex --version
-```
+开发环境默认通过 OpenAI-compatible API 调用 DeepSeek。API Key 只写入本机的 `~/.ai-web-test-engine/config.yml`，不要提交到 Git：
 
 默认配置位于 `conf.d/config.yml`：
 
 ```yaml
 components:
   llm:
-    provider: codex_app_server
-    model: gpt-5.6-terra
-    reasoning_effort: high
-    codex_command: codex
+    provider: openai_compatible
+    base_url: https://api.deepseek.com
+    model: deepseek-v4-flash
+    protocol: chat_completions
 ```
 
-每次模型调用都会创建一个不持久化的临时线程，并禁用工具、网络和环境访问。需要回退到 FineOneAPI 时，将 `provider` 改为 `fine_one`；API Key 只写入本机的 `~/.ai-web-test-engine/config.yml`，不要提交到 Git。
+需要回退到本机 Codex 订阅时，将 `provider` 改为 `codex_app_server`，并配置 `model`、`reasoning_effort` 和 `codex_command`。Codex 适配器每次调用都会创建不持久化的临时线程，并禁用工具、网络和环境访问。
 
-视觉定位使用 `@midscene/web`，并通过同一个 Codex App Server 调用 `gpt-5.6-terra`：
+视觉定位使用 `@midscene/web` 调用 DeepSeek 多模态模型：
 
 ```yaml
 components:
   visual_grounding:
     enabled: true
     provider: midscene
-    base_url: codex://app-server
-    model: gpt-5.6-terra
-    model_family: gpt-5
+    base_url: https://api.deepseek.com
+    model: deepseek-v4-flash-vision-exp
+    model_family: deepseek
     reasoning_enabled: false
     timeout_ms: 120000
 ```

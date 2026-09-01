@@ -149,7 +149,7 @@
         },
         "ILlmComponentConf": {
             "additionalProperties": false,
-            "description": "模型 Provider 配置；FineOne API Key 只允许由本机私有配置覆盖。",
+            "description": "模型 Provider 配置；HTTP API Key 只允许由本机私有配置覆盖。",
             "properties": {
                 "api_key": {
                     "type": "string"
@@ -331,6 +331,9 @@
             "additionalProperties": false,
             "description": "Midscene 视觉模型配置；暂不代表视觉能力已进入执行链路。",
             "properties": {
+                "api_key": {
+                    "type": "string"
+                },
                 "base_url": {
                     "type": "string"
                 },
@@ -341,7 +344,10 @@
                     "type": "string"
                 },
                 "model_family": {
-                    "const": "gpt-5",
+                    "enum": [
+                        "deepseek",
+                        "gpt-5"
+                    ],
                     "type": "string"
                 },
                 "provider": {
@@ -368,7 +374,7 @@
             "type": "object"
         },
         "LlmApiProtocol": {
-            "description": "FineOneAPI 当前支持的两种 OpenAI 兼容请求协议。",
+            "description": "OpenAI-compatible Provider 支持的两种请求协议。",
             "enum": [
                 "chat_completions",
                 "responses"
@@ -379,7 +385,7 @@
             "description": "当前可选的本地订阅或 HTTP 模型 Provider。",
             "enum": [
                 "codex_app_server",
-                "fine_one"
+                "openai_compatible"
             ],
             "type": "string"
         },

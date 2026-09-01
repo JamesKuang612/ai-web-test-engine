@@ -7,8 +7,8 @@ import {
     ClassifiedModelFailure,
 } from '@ai-web-test-engine/core';
 import {
-    FineOneApiProtocol,
-    FineOneModelAdapter,
+    OpenAiCompatibleApiProtocol,
+    OpenAiCompatibleModelAdapter,
 } from '../../../../src/adapters/model';
 
 interface StatusResult {
@@ -56,7 +56,7 @@ const statusSchema: RuntimeSchema<StatusResult> = {
 function createApiResponse(content: unknown): Response {
     return new Response(JSON.stringify({
         id: 'request-001',
-        model: 'gpt-5.6-sol',
+        model: 'deepseek-v4-flash',
         choices: [
             {
                 finish_reason: 'stop',
@@ -77,7 +77,7 @@ function createApiResponse(content: unknown): Response {
 function createResponsesApiResponse(content: string): Response {
     return new Response(JSON.stringify({
         id: 'response-001',
-        model: 'gpt-5.6-sol',
+        model: 'deepseek-v4-flash',
         status: 'completed',
         output: [
             {
@@ -100,22 +100,22 @@ function createResponsesApiResponse(content: string): Response {
     });
 }
 
-/** 使用测试 Key 和指定 fetch 创建 FineOne 适配器。 */
+/** 使用测试 Key 和指定 fetch 创建 OpenAI-compatible 适配器。 */
 function createAdapter(
     fetcher: typeof fetch,
     apiKey = 'test-api-key',
-    protocol: FineOneApiProtocol = 'chat_completions'
-): FineOneModelAdapter {
-    return new FineOneModelAdapter({
-        baseUrl: 'https://fineone.example.com/v1/',
+    protocol: OpenAiCompatibleApiProtocol = 'chat_completions'
+): OpenAiCompatibleModelAdapter {
+    return new OpenAiCompatibleModelAdapter({
+        baseUrl: 'https://api.deepseek.example.com/',
         apiKey,
-        model: 'gpt-5.6-sol',
+        model: 'deepseek-v4-flash',
         protocol
     }, fetcher);
 }
 
-describe('FineOneModelAdapter', () => {
-    it('调用 gpt-5.6-sol 并使用 RuntimeSchema 解析严格 JSON', async () => {
+describe('OpenAiCompatibleModelAdapter', () => {
+    it('调用 DeepSeek 并使用 RuntimeSchema 解析严格 JSON', async () => {
         let requestedUrl = '';
         let requestedInit: RequestInit | undefined;
         const fetcher = (async (
@@ -139,18 +139,18 @@ describe('FineOneModelAdapter', () => {
             value: {
                 status: 'ok'
             },
-            model: 'gpt-5.6-sol',
+            model: 'deepseek-v4-flash',
             requestId: 'request-001'
         });
         assert.equal(
             requestedUrl,
-            'https://fineone.example.com/v1/chat/completions'
+            'https://api.deepseek.example.com/chat/completions'
         );
 
         const body = JSON.parse(
             String(requestedInit?.body)
         ) as Record<string, unknown>;
-        assert.equal(body.model, 'gpt-5.6-sol');
+        assert.equal(body.model, 'deepseek-v4-flash');
         assert.equal(body.max_tokens, 100);
         assert.deepEqual(body.response_format, {
             type: 'json_object'
@@ -193,18 +193,18 @@ describe('FineOneModelAdapter', () => {
             value: {
                 status: 'ok'
             },
-            model: 'gpt-5.6-sol',
+            model: 'deepseek-v4-flash',
             requestId: 'response-001'
         });
         assert.equal(
             requestedUrl,
-            'https://fineone.example.com/v1/responses'
+            'https://api.deepseek.example.com/responses'
         );
 
         const body = JSON.parse(
             String(requestedInit?.body)
         ) as Record<string, any>;
-        assert.equal(body.model, 'gpt-5.6-sol');
+        assert.equal(body.model, 'deepseek-v4-flash');
         assert.equal(body.instructions, request.systemPrompt);
         assert.equal(body.input, request.userPrompt);
         assert.equal(body.max_output_tokens, 100);

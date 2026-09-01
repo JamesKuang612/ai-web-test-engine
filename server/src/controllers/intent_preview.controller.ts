@@ -6,7 +6,7 @@ import type {
 import { controller } from 'nstarter-core';
 import {
     CodexAppServerError,
-    FineOneModelAdapterError,
+    OpenAiCompatibleModelAdapterError,
 } from '../adapters/model';
 import {
     intentPreviewService,
@@ -16,8 +16,10 @@ import {
     IntentPreviewService,
 } from '../services/intent_preview.service';
 
-/** 将 FineOne 稳定错误分类映射为对应的 HTTP 状态码。 */
-function getFineOneErrorStatus(error: FineOneModelAdapterError): number {
+/** 将 OpenAI-compatible Provider 错误映射为对应的 HTTP 状态码。 */
+function getProviderErrorStatus(
+    error: OpenAiCompatibleModelAdapterError
+): number {
     if (error.code === 'MISSING_API_KEY') {
         return 503;
     }
@@ -83,8 +85,8 @@ export class IntentPreviewController {
                 });
                 return;
             }
-            if (error instanceof FineOneModelAdapterError) {
-                res.status(getFineOneErrorStatus(error)).json({
+            if (error instanceof OpenAiCompatibleModelAdapterError) {
+                res.status(getProviderErrorStatus(error)).json({
                     code: error.code,
                     error: error.message
                 });
