@@ -84,11 +84,14 @@ describe('SemanticStepProgressEvaluator', () => {
 });
 
 describe('SemanticStepProgressEvaluator correctness', () => {
-    it('CLICK New App 实际进入 settings 时不能直接判 complete', async () => {
+    it('CLICK 错跳 settings 时不能复用跳转前已有目标文本', async () => {
         const before = createPerception('before');
         const after = createPerception('after', before);
+        before.dom.visibleText = [ '工作台', '新建应用' ];
         after.dom.page.url = 'https://example.test/settings';
+        after.dom.visibleText = [ '工作台', '新建应用' ];
         after.delta!.urlChanged = true;
+        after.delta!.visibleText.added = [];
         let modelCalls = 0;
         const evaluator = new SemanticStepProgressEvaluator({
             modelFallback: {

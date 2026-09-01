@@ -16,9 +16,6 @@ import type {
     SemanticStepProgress,
     TestIntent,
 } from '../contracts';
-import {
-    hasMeaningfulPerceptionDelta,
-} from '../contracts';
 import type {
     SemanticStepProgressEvaluator,
 } from './semantic_step_progress_evaluator';
@@ -686,6 +683,12 @@ function classifyRecoveryProgress<TRecord>(
     ) {
         return 'wrong-state';
     }
+    if (
+        execution?.restorative
+        && execution.effect.status === 'confirmed'
+    ) {
+        return 'progress';
+    }
     if (after.status === 'grounded' && before.status !== 'grounded') {
         return 'progress';
     }
@@ -693,9 +696,6 @@ function classifyRecoveryProgress<TRecord>(
         return 'progress';
     }
     if (overlayImproved(afterPerception.delta)) {
-        return 'progress';
-    }
-    if (hasMeaningfulPerceptionDelta(afterPerception.delta)) {
         return 'progress';
     }
     return 'no-progress';

@@ -284,6 +284,49 @@ describe('SemanticStepController', () => {
         );
     });
 
+    it('无关 visibleText/candidate delta 不构成 primary progress', async () => {
+        const initial = perception('initial');
+        const unrelatedDelta = emptyDelta();
+        unrelatedDelta.visibleText.added = [ '后台任务已经完成' ];
+        unrelatedDelta.candidates.added = [ 'toast-close' ];
+        const changed = perception('changed', {
+            previous: initial,
+            delta: unrelatedDelta,
+            visibleText: [ '后台任务已经完成' ]
+        });
+        const model = new SequenceRecoveryPlanner([{
+            kind: 'recover',
+            action: {
+                type: 'CLICK',
+                target: { description: '关闭菜单' },
+                reasonSummary: '关闭临时菜单'
+            }
+        }]);
+        const runtime = new FakeRuntime(
+            initial,
+            (action, current) => action.target?.description === '关闭菜单'
+                ? grounded('close', current, '关闭菜单')
+                : decision('not-found'),
+            () => changed
+        );
+
+        const result = await controller(
+            runtime,
+            new SemanticStepProgressEvaluator(),
+            model
+        ).execute(step({
+            type: 'CLICK',
+            target: { description: '新建应用' },
+            reasonSummary: '创建应用'
+        }), intent, signal());
+
+        assert.equal(result.executions[0]?.recoveryOutcome, 'no-progress');
+        assert.equal(
+            result.executions[0]?.compilationContribution,
+            'non-productive'
+        );
+    });
+
     it('非导航 wrong-state 不会授权 BACK', () => {
         const policy = new DeterministicRecoverySafetyPolicy();
         const common = {

@@ -129,6 +129,7 @@ export class SemanticStepProgressEvaluator {
                 && input.after.delta?.urlChanged
                 && hasExplicitTargetPageEvidence(
                     input.step.expectedEffect,
+                    input.before,
                     input.after
                 )
             ) {
@@ -156,14 +157,22 @@ export class SemanticStepProgressEvaluator {
 
 function hasExplicitTargetPageEvidence(
     expectedEffect: string | undefined,
+    before: PagePerception,
     after: PagePerception
 ): boolean {
     if (!expectedEffect) {
         return false;
     }
-    return [ after.dom.page.title, ...after.dom.visibleText ].some((text) => (
-        text.trim().length >= 3 && expectedEffect.includes(text.trim())
-    ));
+    const title = after.dom.page.title.trim();
+    const changedTitleMatches = before.dom.page.title !== after.dom.page.title
+        && title.length >= 3
+        && expectedEffect.includes(title);
+    const addedTextMatches = (after.delta?.visibleText.added ?? [])
+        .some((text) => {
+            const normalized = text.trim();
+            return normalized.length >= 3 && expectedEffect.includes(normalized);
+        });
+    return changedTitleMatches || addedTextMatches;
 }
 
 function isDeterministicControlAction(type: string): boolean {
