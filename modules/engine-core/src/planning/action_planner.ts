@@ -19,7 +19,7 @@ export interface PlannerHistoryEntry {
 /** 当前运行剩余的确定性预算。 */
 export interface RemainingRunBudgets extends RunBudgets {}
 
-/** 每轮规划所需的脱敏测试意图、页面状态和执行历史。 */
+/** 每轮规划所需的脱敏测试意图、稳定页面状态和执行历史。 */
 export interface PlanActionInput {
     testIntent: TestIntent;
     observation: PageObservation;

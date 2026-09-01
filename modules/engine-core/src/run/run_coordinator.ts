@@ -74,6 +74,7 @@ import {
     RunLifecycle,
 } from './run_lifecycle';
 import type {
+    CurrentStablePerception,
     RunContext,
 } from './run_context';
 import type {
@@ -101,6 +102,9 @@ import type {
 import {
     SemanticStepProgressEvaluator,
 } from './semantic_step_progress_evaluator';
+import {
+    SuccessCriteriaEvaluator,
+} from './success_criteria_evaluator';
 
 const ANSI_ESCAPE_PATTERN = new RegExp(
     `${ String.fromCharCode(27) }\\[[0-?]*[ -/]*[@-~]`,
@@ -138,8 +142,11 @@ interface RunExecutionContext {
     eventSequence: number;
     input: StartRunInput;
     lifecycle: RunLifecycle;
-    latestObservation?: PageObservation;
-    latestObservationReference?: EvidenceRef;
+    lastImmediateObservation?: PageObservation;
+    lastImmediateObservationReference?: EvidenceRef;
+    currentStablePerception?: CurrentStablePerception;
+    deterministicSuccess?: boolean;
+    settlingFailureReason?: string;
     modelCallCount: number;
     groundingSequence: number;
     perceptionSequence: number;
@@ -234,6 +241,7 @@ export class RunCoordinator implements ExecutionEngine {
     private readonly perceptionService: PerceptionService;
     private readonly stepProgressEvaluator: SemanticStepProgressEvaluator;
     private readonly targetGrounder: TargetGrounder;
+    private readonly successCriteriaEvaluator = new SuccessCriteriaEvaluator();
 
     /** 注入运行产物存储、事件发布、意图构建和浏览器能力。 */
     constructor(
@@ -512,14 +520,26 @@ export class RunCoordinator implements ExecutionEngine {
                 session,
                 navigation
             );
+            const initialStable = await this.settleRuntimePage(context, runtime);
+            if (!initialStable) {
+                return {
+                    navigation,
+                    plannedActions: [],
+                    stopCommand: this.createStopCommand(
+                        'UNCERTAIN',
+                        context.settlingFailureReason ??
+                            '当前页面未形成稳定感知。'
+                    )
+                };
+            }
             const execution = await this.runActionLoop(
                 context,
                 runtime,
                 navigation
             );
-            context.latestObservation = runtime.latestObservation;
-            context.latestObservationReference =
-                runtime.latestObservationReference;
+            context.currentStablePerception = runtime.stablePerceptionUsable
+                ? runtime.currentStablePerception
+                : undefined;
             return execution;
         } finally {
             await this.browserAdapter.close(session);
@@ -527,6 +547,7 @@ export class RunCoordinator implements ExecutionEngine {
     }
 
     /** 重复执行 Observe、Plan、Act、Verify，直到终止动作或预算边界。 */
+    // eslint-disable-next-line max-lines-per-function
     private async runActionLoop(
         context: RunExecutionContext,
         runtime: RunContext,
@@ -542,6 +563,16 @@ export class RunCoordinator implements ExecutionEngine {
                     plannedActions,
                     stopCommand: budgetStop
                 };
+            }
+
+            const criteriaStop = this.evaluateStableSuccessCriteria(
+                context,
+                runtime,
+                navigation,
+                plannedActions
+            );
+            if (criteriaStop) {
+                return criteriaStop;
             }
 
             const semanticAction = await this.planNextAction(context, runtime);
@@ -561,8 +592,8 @@ export class RunCoordinator implements ExecutionEngine {
                 semanticAction,
                 ++semanticStepSequence
             );
-            const previousFingerprint = runtime.latestObservation
-                ?.stateFingerprint;
+            const previousFingerprint = runtime.currentStablePerception
+                ?.perception.dom.stateFingerprint;
             const controller = this.createSemanticStepController(
                 context,
                 runtime,
@@ -623,6 +654,43 @@ export class RunCoordinator implements ExecutionEngine {
                 };
             }
         }
+    }
+
+    private evaluateStableSuccessCriteria(
+        context: RunExecutionContext,
+        runtime: RunContext,
+        navigation: NavigationExecution,
+        plannedActions: PlannedActionExecution[]
+    ): BrowserExecution | undefined {
+        const stable = runtime.stablePerceptionUsable
+            ? runtime.currentStablePerception
+            : undefined;
+        if (!stable) {
+            return {
+                navigation,
+                plannedActions,
+                stopCommand: this.createStopCommand(
+                    'UNCERTAIN',
+                    '当前页面尚未形成稳定感知，停止继续规划。'
+                )
+            };
+        }
+        const success = this.successCriteriaEvaluator.evaluate(
+            runtime.testIntent,
+            stable.perception
+        );
+        if (success.status !== 'satisfied') {
+            return undefined;
+        }
+        context.deterministicSuccess = true;
+        return {
+            navigation,
+            plannedActions,
+            stopCommand: this.createStopCommand(
+                'FINISH',
+                '稳定页面已满足全部精确文本成功条件。'
+            )
+        };
     }
 
     private createRuntimeStep(
@@ -694,6 +762,46 @@ export class RunCoordinator implements ExecutionEngine {
     }
 
     /** 将当前 Planner 动作交给保持原目标不变的 bounded Step Controller。 */
+    private async settleRuntimePage(
+        context: RunExecutionContext,
+        runtime: RunContext
+    ): Promise<boolean> {
+        if (!runtime.stablePerceptionUsable) {
+            const initial = await this.captureRuntimePerception(
+                context,
+                runtime,
+                undefined
+            );
+            const settler = new PageSettler({
+                canContinue: () => this.getRemainingBudgets(context)
+                    .maxDurationMs > 0,
+                pause: abortableDelay,
+                recapture: async (previous, signal) => {
+                    const before = await this.samplePageStability(runtime, signal);
+                    await this.refreshRuntimeObservation(context, runtime);
+                    return await this.captureRuntimePerception(
+                        context,
+                        runtime,
+                        previous,
+                        before
+                    );
+                },
+                sample: async (signal) => await this.samplePageStability(
+                    runtime,
+                    signal
+                )
+            });
+            const result = await settler.settle(initial, context.signal);
+            await this.recordPageSettling(context, result);
+            if (result.status !== 'stable') {
+                context.settlingFailureReason = result.reason;
+                return false;
+            }
+            this.commitStablePerception(runtime, result.perception);
+        }
+        return true;
+    }
+
     // Runtime adapter wiring stays together so budget/evidence boundaries
     // cannot drift between callbacks.
     // eslint-disable-next-line max-lines-per-function
@@ -729,8 +837,12 @@ export class RunCoordinator implements ExecutionEngine {
             canUseModel: () => this.hasStepModelBudget(context),
             perceive: async (previous, signal) => {
                 signal.throwIfAborted();
-                if (!previous && runtime.latestPerception) {
-                    return runtime.latestPerception;
+                if (
+                    !previous &&
+                    runtime.stablePerceptionUsable &&
+                    runtime.currentStablePerception
+                ) {
+                    return runtime.currentStablePerception.perception;
                 }
                 if (previous) {
                     const before = await this.samplePageStability(
@@ -748,12 +860,15 @@ export class RunCoordinator implements ExecutionEngine {
                 return await this.captureRuntimePerception(
                     context,
                     runtime,
-                    previous ?? runtime.latestPerception
+                    previous ?? runtime.currentStablePerception?.perception
                 );
             },
             settle: async (perception, signal) => {
                 const result = await settler.settle(perception, signal);
                 await this.recordPageSettling(context, result);
+                if (result.status === 'stable') {
+                    this.commitStablePerception(runtime, result.perception);
+                }
                 return result;
             },
             ground: async (action, perception, visualAllowed, signal) => {
@@ -779,7 +894,7 @@ export class RunCoordinator implements ExecutionEngine {
                 if (!command) {
                     throw new Error('REOBSERVE 不能进入 Browser execute。');
                 }
-                const beforeReference = runtime.latestObservationReference;
+                const beforeReference = runtime.currentStablePerception?.reference;
                 if (!beforeReference) {
                     throw new Error('执行 SemanticStep 前缺少页面观察引用。');
                 }
@@ -928,7 +1043,7 @@ export class RunCoordinator implements ExecutionEngine {
         previous: PagePerception | undefined,
         beforeStability?: Awaited<ReturnType<PageStabilityPort['sample']>>
     ): Promise<PagePerception> {
-        const observation = runtime.latestObservation;
+        const observation = runtime.lastImmediateObservation;
         if (!observation) {
             throw new Error('Perception 缺少最新页面观察。');
         }
@@ -948,14 +1063,34 @@ export class RunCoordinator implements ExecutionEngine {
                 after: afterStability
             });
         }
-        runtime.latestPerception = perception;
         const reference = await this.artifactStore.saveJson(
             context.runId,
             `page-perception-${ ++context.perceptionSequence }`,
             toJsonValue(perception)
         );
         context.evidence.push(reference);
+        runtime.pendingPerceptionReference = reference;
         return perception;
+    }
+
+    /** 只有 Runtime perception boundary 可以推进当前稳定页面事实。 */
+    private commitStablePerception(
+        runtime: RunContext,
+        perception: PagePerception
+    ): void {
+        const reference = runtime.pendingPerceptionReference;
+        if (!reference) {
+            return;
+        }
+        const revision = runtime.perceptionRevision + 1;
+        runtime.perceptionRevision = revision;
+        runtime.currentStablePerception = {
+            revision,
+            perception,
+            reference
+        };
+        runtime.stablePerceptionUsable = true;
+        runtime.pendingPerceptionReference = undefined;
     }
 
     private async samplePageStability(
@@ -969,7 +1104,7 @@ export class RunCoordinator implements ExecutionEngine {
             );
         }
         signal.throwIfAborted();
-        const observation = runtime.latestObservation;
+        const observation = runtime.lastImmediateObservation;
         return {
             capturedAt: new Date().toISOString(),
             fingerprint: observation?.stateFingerprint ?? 'no-observation',
@@ -1014,8 +1149,8 @@ export class RunCoordinator implements ExecutionEngine {
             `observation-reobserve-${ context.perceptionSequence + 1 }`,
             `screenshot-reobserve-${ context.perceptionSequence + 1 }.png`
         );
-        runtime.latestObservation = evidence.observation;
-        runtime.latestObservationReference = evidence.observationReference;
+        runtime.lastImmediateObservation = evidence.observation;
+        runtime.lastImmediateObservationReference = evidence.observationReference;
     }
 
     /** Grounder 是 semantic target 到物理 target 的唯一绑定边界。 */
@@ -1519,8 +1654,10 @@ export class RunCoordinator implements ExecutionEngine {
             input: context.input,
             testIntent,
             browserSession,
-            latestObservation: navigation.afterObservation,
-            latestObservationReference: navigation.afterObservationReference,
+            lastImmediateObservation: navigation.afterObservation,
+            lastImmediateObservationReference: navigation.afterObservationReference,
+            stablePerceptionUsable: false,
+            perceptionRevision: 0,
             history: [historyEntry],
             budgets: context.input.budgets,
             lifecycle: context.lifecycle.current(),
@@ -1552,9 +1689,9 @@ export class RunCoordinator implements ExecutionEngine {
         );
         const remainingBudgets = this.getRemainingBudgets(context);
         this.requirePlannerBudget(remainingBudgets);
-        const observation = runtime.latestObservation;
-        if (!observation) {
-            throw new Error('Planner 缺少最新页面观察。');
+        const stable = runtime.currentStablePerception;
+        if (!stable) {
+            throw new Error('Planner 缺少稳定页面感知。');
         }
         context.modelCallCount += 1;
         runtime.counters.modelCallCount = context.modelCallCount;
@@ -1562,7 +1699,7 @@ export class RunCoordinator implements ExecutionEngine {
         const action = await this.decisionServices.actionPlanner.plan(
             {
                 testIntent: runtime.testIntent,
-                observation,
+                observation: stable.perception.dom,
                 history: runtime.history,
                 availableEnvironmentVariables: Object.keys(
                     context.input.environment.variables
@@ -1695,7 +1832,7 @@ export class RunCoordinator implements ExecutionEngine {
             recoveryAttempt?: number
         }
     ): Promise<PlannedActionExecution> {
-        const beforeObservation = runtime.latestObservation;
+        const beforeObservation = runtime.currentStablePerception?.perception.dom;
         if (!beforeObservation) {
             throw new Error('执行页面动作前缺少最新页面观察。');
         }
@@ -1703,6 +1840,7 @@ export class RunCoordinator implements ExecutionEngine {
             context,
             grounded.command
         );
+        runtime.stablePerceptionUsable = false;
         const result = await this.actPlannedCommand(
             context,
             runtime.browserSession,
@@ -1746,8 +1884,8 @@ export class RunCoordinator implements ExecutionEngine {
             afterScreenshotReference: after.screenshotReference,
             traceSequence
         };
-        runtime.latestObservation = execution.afterObservation;
-        runtime.latestObservationReference = execution.afterObservationReference;
+        runtime.lastImmediateObservation = execution.afterObservation;
+        runtime.lastImmediateObservationReference = execution.afterObservationReference;
         return execution;
     }
 
@@ -1941,8 +2079,6 @@ export class RunCoordinator implements ExecutionEngine {
         );
         context.evidence.push(adjudicationReference);
         execution.adjudicationStatus = 'completed';
-        runtime.latestObservation = execution.afterObservation;
-        runtime.latestObservationReference = execution.afterObservationReference;
         runtime.history.push({
             semanticAction: execution.semanticAction,
             actionResult: execution.result,
@@ -2080,7 +2216,7 @@ export class RunCoordinator implements ExecutionEngine {
     private async publishVerdict(
         context: RunExecutionContext,
         result: RunResult,
-        observationRef = context.latestObservationReference?.ref
+        observationRef = context.currentStablePerception?.reference.ref
     ): Promise<void> {
         await this.publishEvent(
             context.runId,
@@ -2103,12 +2239,13 @@ export class RunCoordinator implements ExecutionEngine {
         replay?: PersistedReplay
     ): Promise<void> {
         const latestAction = execution.plannedActions.at(-1);
+        const latestStable = context.currentStablePerception;
         const latestObservation = replay?.finalObservation ??
-            context.latestObservation ?? latestAction?.afterObservation ??
+            latestStable?.perception.dom ?? latestAction?.afterObservation ??
             execution.navigation.afterObservation;
         const latestObservationReference =
             replay?.finalObservationReference ??
-            context.latestObservationReference ??
+            latestStable?.reference ??
             latestAction?.afterObservationReference ??
             execution.navigation.afterObservationReference;
         context.snapshot = {
@@ -2255,9 +2392,45 @@ export class RunCoordinator implements ExecutionEngine {
         testIntent: TestIntent,
         execution: BrowserExecution
     ): Promise<RunResult> {
-        const latestAction = execution.plannedActions.at(-1);
-        const latestObservation = context.latestObservation ??
-            latestAction?.afterObservation ?? execution.navigation.afterObservation;
+        if (context.deterministicSuccess) {
+            const decision: VerdictDecision = {
+                result: 'PASS',
+                summary: '稳定页面已满足全部精确文本成功条件。',
+                successCriteria: testIntent.successCriteria.map((criterion) => ({
+                    criterionId: criterion.id,
+                    status: 'MATCHED',
+                    summary: 'DOM 稳定页面逐字包含目标文本。'
+                })),
+                failureCriteria: testIntent.failureCriteria.map((criterion) => ({
+                    criterionId: criterion.id,
+                    status: 'NOT_MATCHED',
+                    summary: '未发现失败证据。'
+                }))
+            };
+            const verdictReference = await this.artifactStore.saveJson(
+                context.runId,
+                'verdict',
+                toVerdictJson(decision)
+            );
+            context.evidence.push(verdictReference);
+            return {
+                schemaVersion: 1,
+                runId: context.runId,
+                lifecycle: 'COMPLETED',
+                result: 'PASS',
+                summary: decision.summary,
+                evidence: context.evidence,
+                traceRef: `${ context.runId }/trace.jsonl`,
+                metrics: this.createMetrics(context)
+            };
+        }
+        const latestObservation = context.currentStablePerception?.perception.dom;
+        if (!latestObservation) {
+            return this.createInsufficientVerdictResult(
+                context,
+                '最终页面没有稳定感知证据，不能判定业务成功。'
+            );
+        }
         const history = this.createExecutionHistory(execution);
         if (!this.isObservationReady(latestObservation)) {
             return this.createInsufficientVerdictResult(

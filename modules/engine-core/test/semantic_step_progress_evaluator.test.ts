@@ -120,6 +120,45 @@ describe('SemanticStepProgressEvaluator WAIT', () => {
     });
 });
 
+describe('SemanticStepProgressEvaluator URL handling', () => {
+    it('URL 短暂变化后回到原地址不能单独判定 wrong-state', async () => {
+        const before = createPerception('before');
+        const after = createPerception('after', before);
+        after.dom.page.url = before.dom.page.url;
+        after.delta!.urlChanged = true;
+        const progress = await new SemanticStepProgressEvaluator().evaluate({
+            step: {
+                id: 'step-url',
+                primaryAction: {
+                    type: 'CLICK',
+                    target: { description: '入口' },
+                    expectedEffect: '页面发生业务变化',
+                    reasonSummary: '点击入口'
+                },
+                expectedEffect: '页面发生业务变化',
+                source: 'runtime-wrapper'
+            },
+            attemptedAction: {
+                type: 'CLICK',
+                target: { description: '入口' },
+                expectedEffect: '页面发生业务变化',
+                reasonSummary: '点击入口'
+            },
+            before,
+            after,
+            actionResult: executedResult(),
+            effect: {
+                status: 'confirmed',
+                expectedEffect: '页面发生业务变化',
+                evidence: [],
+                summary: 'URL 短暂变化后恢复'
+            }
+        }, new AbortController().signal);
+
+        assert.notEqual(progress.status, 'wrong-state');
+    });
+});
+
 describe('SemanticStepProgressEvaluator correctness', () => {
     it('CLICK 错跳 settings 时不能复用跳转前已有目标文本', async () => {
         const before = createPerception('before');

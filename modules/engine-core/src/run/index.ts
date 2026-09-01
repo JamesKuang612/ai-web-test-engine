@@ -13,3 +13,4 @@ export * from './run_context';
 export * from './run_lifecycle';
 export * from './semantic_step_progress_evaluator';
 export * from './semantic_step_controller';
+export * from './success_criteria_evaluator';

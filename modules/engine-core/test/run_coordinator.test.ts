@@ -259,8 +259,8 @@ describe('RunCoordinator', () => {
         assert.equal(result.metrics.actionCount, 1);
         assert.equal(result.metrics.modelCallCount, 3);
         assert.equal(browserAdapter.executeCount, 1);
-        assert.equal(browserAdapter.observeCount, 2);
-        assert.equal(browserAdapter.captureScreenshotCount, 1);
+        assert.equal(browserAdapter.observeCount, 3);
+        assert.equal(browserAdapter.captureScreenshotCount, 2);
         assert.equal(actionPlanner.callCount, 1);
         assert.equal(artifactStore.traces.length, 1);
         assert.equal(artifactStore.savedJson.some(
@@ -272,6 +272,75 @@ describe('RunCoordinator', () => {
         assert.equal(result.summary, uncertainVerdict.summary);
     });
 
+});
+
+describe('RunCoordinator deterministic success criteria', () => {
+    it('稳定页面满足全部 exact text 时不调用 Planner', async () => {
+        const values = [
+            '我的待办',
+            '我发起的',
+            '我处理的',
+            '抄送我的',
+            '发起流程',
+            '待办委托'
+        ];
+        const exactIntent: TestIntent = {
+            ...testIntent,
+            successCriteria: values.map((value, index) => ({
+                id: `exact-${ index }`,
+                description: `页面显示${ value }`,
+                preferredEvidence: [ 'dom' ],
+                required: true
+            })),
+            failureCriteria: [],
+            exactTextAssertions: values.map((value, index) => ({
+                successCriterionId: `exact-${ index }`,
+                failureCriterionId: `exact-failure-${ index }`,
+                ordered: false,
+                values: [ value ]
+            }))
+        };
+        const stable = createObservation(
+            'https://test.jdydevelop.com/dashboard#/',
+            false,
+            false,
+            true
+        );
+        stable.visibleText = values;
+        const browserAdapter = new FakeBrowserAdapter(
+            false,
+            false,
+            [ undefined, stable, stable, stable, stable ]
+        );
+        const actionPlanner = new FakeActionPlanner(plannedClickCommand);
+        const artifactStore = new FakeArtifactStore();
+        const result = await new RunCoordinator(
+            artifactStore,
+            new FakeRunEventPublisher(),
+            new FakeIntentBuilder(exactIntent),
+            browserAdapter,
+            {
+                actionPlanner,
+                verdictEvaluator: new FakeVerdictEvaluator(passVerdict)
+            },
+            new FakeEnvironmentValueResolver()
+        ).start(startInput, new AbortController().signal);
+
+        assert.equal(result.result, 'PASS');
+        assert.equal(browserAdapter.executeCount, 1);
+        assert.equal(actionPlanner.callCount, 0);
+        assert.equal(result.metrics.actionCount, 1);
+        assert.deepEqual(browserAdapter.commands.map((command) => command.type), [
+            'NAVIGATE'
+        ]);
+        const stablePerception = artifactStore.savedJson
+            .map(({ value }) => value as { dom?: { visibleText?: string[] } })
+            .find((value) => value.dom?.visibleText?.includes('我的待办'));
+        assert.deepEqual(
+            values.every((value) => stablePerception?.dom?.visibleText?.includes(value)),
+            true
+        );
+    });
 });
 
 describe('RunCoordinator 最终观察', () => {
@@ -328,15 +397,15 @@ describe('RunCoordinator 最终观察', () => {
             verdictEvaluator.lastInput?.observation.visibleText,
             [ '应用列表', '蒋捷欣' ]
         );
-        assert.equal(
-            artifactStore.updatedSnapshots.at(-1)?.metadata.observationRef,
-            `${ result.runId }/json/observation-after-action-2.json`
+        assert.match(
+            artifactStore.updatedSnapshots.at(-1)?.metadata.observationRef ?? '',
+            new RegExp(`^${ result.runId }/json/page-perception-\\d+\\.json$`, 'u')
         );
-        assert.equal(
+        assert.match(
             eventPublisher.events.find(
                 (event) => event.type === 'verdict.completed'
-            )?.payload.observationRef,
-            `${ result.runId }/json/observation-after-action-2.json`
+            )?.payload.observationRef ?? '',
+            new RegExp(`^${ result.runId }/json/page-perception-\\d+\\.json$`, 'u')
         );
     });
 });
@@ -847,7 +916,7 @@ describe('RunCoordinator 稳定性保护', () => {
         assert.equal(result.failure?.category, 'VERDICT_INSUFFICIENT');
         assert.equal(verdictEvaluator.callCount, 0);
         assert.equal(browserAdapter.startCount, 1);
-        assert.match(result.summary, /未渲染出可验证内容/u);
+        assert.match(result.summary, /未渲染出可验证内容|稳定感知证据/u);
     });
 });
 

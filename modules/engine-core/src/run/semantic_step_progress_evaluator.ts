@@ -83,12 +83,7 @@ export class SemanticStepProgressEvaluator {
         if (input.actionResult && input.actionResult.status !== 'executed') {
             return progress('no-progress', '浏览器没有执行该动作。', evidence);
         }
-        if (
-            input.effect?.status === 'contradicted'
-            || input.actionResult?.browserSignals.urlChanged &&
-                input.attemptedAction.type === 'CLICK' &&
-                input.before.dom.page.url === input.after.dom.page.url
-        ) {
+        if (input.effect?.status === 'contradicted') {
             return progress('wrong-state', '动作结果与预期方向矛盾。', evidence);
         }
         return this.evaluateExecutedAction(input, evidence);

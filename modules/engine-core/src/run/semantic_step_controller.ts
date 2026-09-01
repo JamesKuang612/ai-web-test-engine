@@ -883,12 +883,7 @@ function classifyRecoveryProgress<TRecord>(
     afterPerception: PagePerception,
     execution: SemanticStepActionExecution<TRecord> | undefined
 ): 'progress' | 'no-progress' | 'wrong-state' {
-    if (
-        execution?.effect.status === 'contradicted' && !execution.restorative
-        || execution?.actionResult.browserSignals.urlChanged &&
-            !execution.restorative &&
-            execution.recoveryAction?.type !== 'BACK'
-    ) {
+    if (execution?.effect.status === 'contradicted' && !execution.restorative) {
         return 'wrong-state';
     }
     if (

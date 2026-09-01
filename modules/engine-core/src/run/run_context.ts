@@ -20,9 +20,12 @@ export interface RunContext {
     input: StartRunInput;
     testIntent: TestIntent;
     browserSession: BrowserSession;
-    latestObservation?: PageObservation;
-    latestObservationReference?: EvidenceRef;
-    latestPerception?: PagePerception;
+    lastImmediateObservation?: PageObservation;
+    lastImmediateObservationReference?: EvidenceRef;
+    currentStablePerception?: CurrentStablePerception;
+    stablePerceptionUsable: boolean;
+    perceptionRevision: number;
+    pendingPerceptionReference?: EvidenceRef;
     history: PlannerHistoryEntry[];
     budgets: RunBudgets;
     lifecycle: RunLifecycleState;
@@ -32,4 +35,11 @@ export interface RunContext {
         repeatedStateActionCount: number
     };
     startedAt: number;
+}
+
+/** Runtime 唯一可供决策模块读取的当前稳定页面事实。 */
+export interface CurrentStablePerception {
+    readonly revision: number;
+    readonly perception: PagePerception;
+    readonly reference: EvidenceRef;
 }
